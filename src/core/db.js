@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS records (
@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS records (
   portal_date TEXT,
   portal_status TEXT DEFAULT 'Not Tracked',
   change_ticket TEXT DEFAULT '',
+  tags TEXT DEFAULT '',
   archived INTEGER DEFAULT 0,
   source TEXT DEFAULT 'manual',
   verified_at TEXT,
@@ -166,8 +167,11 @@ class Database {
   migrate() {
     this.db.exec(SCHEMA);
     const v = this.get("SELECT value FROM settings WHERE key='schema_version'");
-    if (!v) this.run("INSERT INTO settings(key,value) VALUES('schema_version', ?)", [JSON.stringify(SCHEMA_VERSION)]);
-    // Future migrations: if (Number(JSON.parse(v.value)) < 2) {...}
+    // v2: free-form tags on records (platform groups, programs, customers…).
+    if (!this.all('PRAGMA table_info(records)').some((c) => c.name === 'tags')) this.db.exec("ALTER TABLE records ADD COLUMN tags TEXT DEFAULT ''");
+    const ver = JSON.stringify(SCHEMA_VERSION);
+    if (!v) this.run("INSERT INTO settings(key,value) VALUES('schema_version', ?)", [ver]);
+    else if (v.value !== ver) this.run("UPDATE settings SET value=? WHERE key='schema_version'", [ver]);
     this.save();
   }
 

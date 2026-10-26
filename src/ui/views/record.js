@@ -6,7 +6,7 @@ import { DocButtons, openDoc } from '../docs.js';
 const BLANK = {
   device: '', platform: '', bundle: '', family: '', category: 'EMV L1 Contact', scheme: '', kernel_version: '', approval_number: '',
   issue_date: '', expiry_date: '', expiry_basis: '', restricted: false, stage: '', disposition: '', owner: '', customer: '', market: '',
-  next_action: '', next_action_date: '', extension_used: false, notes: '', portal_date: '', portal_status: 'Not Tracked', change_ticket: '', archived: false,
+  next_action: '', next_action_date: '', extension_used: false, notes: '', portal_date: '', portal_status: 'Not Tracked', change_ticket: '', tags: '', archived: false,
 };
 
 export function RecordDrawer({ id, app, onClose, tab: startTab }) {
@@ -89,6 +89,7 @@ export function RecordDrawer({ id, app, onClose, tab: startTab }) {
         <label class="field">Stage<${Select} value=${form.stage} onChange=${set('stage')} placeholder=${`Automatic (${r ? r.stageNow : 'Monitoring'})`} options=${tax.stages} /></label>
         <label class="field">Disposition<${Select} value=${form.disposition} onChange=${set('disposition')} placeholder="(none)" options=${tax.dispositions} /></label>
         ${F('owner', 'Owner')}${F('customer', 'Customer')}${F('market', 'Market')}${F('next_action_date', 'Next action date', 'date')}
+        <label class="field" style="grid-column:span 2">Tags<input type="text" value=${form.tags} onInput=${set('tags')} placeholder="Comma separated, e.g. Retail, Program X, Customer A" /></label>
       </div>
       <label class="field mt">Next action<input type="text" value=${form.next_action} onInput=${set('next_action')} placeholder="e.g. Request renewal quote from lab" /></label>
       <label class="field mt">Notes<textarea rows="3" value=${form.notes} onInput=${set('notes')}></textarea></label>

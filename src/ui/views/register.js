@@ -13,7 +13,11 @@ export const DUE = [
   { value: 'missing', label: 'No expiry date', test: (d) => d == null },
 ];
 
-const EMPTY = { scheme: '', category: '', platform: '', bundle: '', window: '', health: '', stage: '', owner: '', disposition: '', portal: '', archived: false, month: '', ids: null };
+const EMPTY = { scheme: '', category: '', platform: '', bundle: '', tag: '', changed: '', window: '', health: '', stage: '', owner: '', disposition: '', portal: '', archived: false, month: '', ids: null, idsLabel: '' };
+
+export const CHANGED = [{ value: 'today', label: 'Changed today', days: 0 }, { value: 'week', label: 'Changed in 7 days', days: 7 }, { value: 'month', label: 'Changed in 30 days', days: 30 }];
+
+export const tagList = (r) => String(r.tags || '').split(',').map((t) => t.trim()).filter(Boolean);
 
 const COLS = [
   ['device', 'Device'], ['scheme', 'Brand'], ['category', 'Approval type'], ['approval_number', 'Approval no.'],
@@ -31,6 +35,12 @@ export function applyFilter(records, f, q) {
     if (f.category && r.category !== f.category) return false;
     if (f.platform && (r.platform || '(none)') !== f.platform) return false;
     if (f.bundle && (r.bundle || '(none)') !== f.bundle) return false;
+    if (f.tag && !(f.tag === '(none)' ? !tagList(r).length : tagList(r).some((t) => t.toLowerCase() === f.tag.toLowerCase()))) return false;
+    if (f.changed) {
+      const c = CHANGED.find((x) => x.value === f.changed);
+      const since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - c.days);
+      if (!r.updated_at || new Date(r.updated_at) < since) return false;
+    }
     if (f.health && r.health !== f.health) return false;
     if (f.stage && r.stageNow !== f.stage) return false;
     if (f.owner && (r.owner || '(unassigned)') !== f.owner) return false;
@@ -39,7 +49,7 @@ export function applyFilter(records, f, q) {
     if (f.month && String(r.expiry_date || '').slice(0, 7) !== f.month) return false;
     if (due && !due.test(r.days)) return false;
     if (words.length) {
-      const hay = [r.device, r.family, r.platform, r.bundle, r.scheme, r.category, r.approval_number, r.owner, r.customer, r.market, r.notes, r.kernel_version, r.next_action, r.change_ticket].join(' ').toLowerCase();
+      const hay = [r.device, r.family, r.platform, r.bundle, r.tags, r.scheme, r.category, r.approval_number, r.owner, r.customer, r.market, r.notes, r.kernel_version, r.next_action, r.change_ticket].join(' ').toLowerCase();
       if (!words.every((w) => hay.includes(w))) return false;
     }
     return true;
@@ -50,6 +60,8 @@ export function filterLabel(f, q) {
   const parts = [];
   if (f.ids) parts.push(`${f.ids.length} selected records`);
   for (const k of ['scheme', 'category', 'platform', 'bundle', 'stage', 'owner', 'disposition', 'portal']) if (f[k]) parts.push(f[k]);
+  if (f.tag) parts.push(`Tag: ${f.tag}`);
+  if (f.changed) parts.push(CHANGED.find((x) => x.value === f.changed).label);
   if (f.window) parts.push(DUE.find((d) => d.value === f.window).label);
   if (f.health) parts.push(HEALTH[f.health].label);
   if (f.month) parts.push(`Expiring ${f.month}`);
@@ -68,7 +80,10 @@ export function Register({ app, params }) {
 
   // Filters requested by another screen (dashboard tile, timeline, action).
   useEffect(() => {
-    if (params && params.filter) { setF({ ...EMPTY, ...params.filter }); setSel(new Set()); }
+    if (params && params.filter) {
+      setF({ ...EMPTY, ...params.filter });
+      setSel(params.select && params.filter.ids ? new Set(params.filter.ids) : new Set());
+    }
   }, [params]);
 
   const tax = app.info.taxonomy;
@@ -88,6 +103,7 @@ export function Register({ app, params }) {
 
   if (!records) return html`<div class="row"><${Spinner} /> Loading…</div>`;
   const live = records.filter((r) => !r.archived);
+  const tags = unique(live.flatMap(tagList));
   const opt = (key, none) => unique(live.map((r) => r[key] || none));
   const active = Object.entries(f).some(([k, v]) => (k === 'archived' ? v : v && (Array.isArray(v) ? v.length : true)));
   const healthCounts = {};
@@ -103,7 +119,7 @@ export function Register({ app, params }) {
   const draft = async () => { try { setEmail(await call('aiDraftEmail', [...sel], { purpose: 'renewal status' })); } catch (e) { toastError(e); } };
 
   return html`
-    <div class="page-head"><div><h1>Certifications</h1><p>${plural(list.length, 'record')}${list.length !== live.length ? ` of ${live.length}` : ''}${f.ids ? ' · from an action' : ''}</p></div>
+    <div class="page-head"><div><h1>Certifications</h1><p>${plural(list.length, 'record')}${list.length !== live.length ? ` of ${live.length}` : ''}${f.ids ? ` · ${f.idsLabel || 'from an action'}` : ''}</p></div>
       <div class="row"><button class="btn" onClick=${exportX}><${Icon} name="download" /> Excel</button><button class="btn" onClick=${exportC}>CSV</button>
       <button class="btn" onClick=${() => app.openReport({ ids: active || q || sel.size ? ids() : null, filterLabel: label() })}><${Icon} name="report" /> Report</button>
       <button class="btn primary" onClick=${() => app.openRecord(null)}><${Icon} name="plus" /> Add record</button></div></div>
@@ -116,6 +132,8 @@ export function Register({ app, params }) {
       <${Select} value=${f.category} onChange=${(v) => setF({ ...f, category: v })} placeholder="All approval types" options=${tax.categories.filter((c) => live.some((r) => r.category === c))} />
       <${Select} value=${f.platform} onChange=${(v) => setF({ ...f, platform: v })} placeholder="All platforms" options=${opt('platform', '(none)')} />
       <${Select} value=${f.bundle} onChange=${(v) => setF({ ...f, bundle: v })} placeholder="All bundles" options=${opt('bundle', '(none)')} />
+      ${tags.length || f.tag ? html`<${Select} value=${f.tag} onChange=${(v) => setF({ ...f, tag: v })} placeholder="All tags" options=${[...tags, '(none)']} />` : null}
+      <${Select} value=${f.changed} onChange=${(v) => setF({ ...f, changed: v })} placeholder="Changed: any time" options=${CHANGED} />
       <${Select} value=${f.window} onChange=${(v) => setF({ ...f, window: v, month: '' })} placeholder="Any expiry" options=${DUE} />
       <${Select} value=${f.stage} onChange=${(v) => setF({ ...f, stage: v })} placeholder="All stages" options=${tax.stages} />
       <${Select} value=${f.owner} onChange=${(v) => setF({ ...f, owner: v })} placeholder="All owners" options=${opt('owner', '(unassigned)')} />
@@ -123,7 +141,7 @@ export function Register({ app, params }) {
       <${Select} value=${f.portal} onChange=${(v) => setF({ ...f, portal: v })} placeholder="Portal: any" options=${tax.portalStatuses} />
       <label class="check small"><input type="checkbox" checked=${f.archived} onChange=${(e) => setF({ ...f, archived: e.target.checked })} /> Show archived</label>
       ${f.month ? html`<span class="chip on" onClick=${() => setF({ ...f, month: '' })}>Expiring ${f.month} <${Icon} name="x" size="12" /></span>` : null}
-      ${f.ids ? html`<span class="chip on" onClick=${() => setF({ ...f, ids: null })}>${f.ids.length} records from an action <${Icon} name="x" size="12" /></span>` : null}
+      ${f.ids ? html`<span class="chip on" onClick=${() => setF({ ...f, ids: null, idsLabel: '' })}>${plural(f.ids.length, 'record')} ${f.idsLabel || 'from an action'} <${Icon} name="x" size="12" /></span>` : null}
       ${active || q ? html`<button class="btn sm ghost" onClick=${() => { setF(EMPTY); app.setSearch(''); }}>Clear filters</button>` : null}
     </div>
 
@@ -133,7 +151,8 @@ export function Register({ app, params }) {
         ${COLS.map(([k, l]) => html`<th class="sort" onClick=${() => setSort({ key: k, dir: sort.key === k ? -sort.dir : 1 })}>${l}${sort.key === k ? (sort.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`)}</tr></thead>
       <tbody>${list.slice(0, limit).map((r) => html`<tr key=${r.id} class=${`click ${sel.has(r.id) ? 'sel' : ''}`} onClick=${() => app.openRecord(r.id)}>
         <td class="chk" onClick=${(e) => e.stopPropagation()}><input type="checkbox" aria-label="Select" checked=${sel.has(r.id)} onChange=${() => toggle(r.id)} /></td>
-        <td><div class="dev">${r.device}${r.archived ? html` <span class="tag">Archived</span>` : null}</div><div class="faint small">${[r.platform, r.bundle, r.kernel_version].filter(Boolean).join(' · ')}</div></td>
+        <td><div class="dev">${r.device}${r.archived ? html` <span class="tag">Archived</span>` : null}</div><div class="faint small">${[r.platform, r.bundle, r.kernel_version].filter(Boolean).join(' · ')}</div>
+          ${r.tags ? html`<div class="tagrow">${tagList(r).map((t) => html`<span class="utag" onClick=${(e) => { e.stopPropagation(); setF({ ...f, tag: t }); }} title="Show records with this tag">${t}</span>`)}</div>` : null}</td>
         <td>${r.scheme}</td><td class="nowrap">${r.category}</td>
         <td class="small ellipsis" style="max-width:170px" title=${r.approval_number}>${r.approval_number}</td>
         <td class="nowrap">${fmtDate(r.expiry_date) || html`<span class="faint">—</span>`}${r.restricted ? html` <span class="tag" title="Restricted / final extension">R</span>` : null}</td>
@@ -146,37 +165,49 @@ export function Register({ app, params }) {
       </tr>`)}</tbody></table>
       ${list.length > limit ? html`<div class="row" style="justify-content:center;padding:12px"><button class="btn" onClick=${() => setLimit(limit + 500)}>Show more (${list.length - limit} hidden)</button></div>` : null}
     </div>`}
-    ${sel.size ? html`<${BulkBar} ids=${[...sel]} tax=${tax} owners=${opt('owner', '').filter(Boolean)} onDone=${() => { setSel(new Set()); reload(); app.refresh(); }} onClear=${() => setSel(new Set())} onEmail=${draft} />` : null}
+    ${sel.size ? html`<${BulkBar} ids=${[...sel]} tax=${tax} values=${{ owner: opt('owner', ''), platform: opt('platform', ''), bundle: opt('bundle', ''), family: opt('family', ''), customer: opt('customer', ''), market: opt('market', ''), 'tags+': tags, 'tags-': unique(records.filter((r) => sel.has(r.id)).flatMap(tagList)) }} onDone=${() => { reload(); app.refresh(); }} onClear=${() => setSel(new Set())} onEmail=${draft} />` : null}
     ${email ? html`<${EmailModal} email=${email} onClose=${() => setEmail(null)} />` : null}`;
 }
 
 const BULK_FIELDS = [
+  ['platform', 'Platform'], ['bundle', 'Bundle'], ['family', 'Family / model group'], ['kernel_version', 'Kernel / version'],
+  ['tags+', 'Add tag'], ['tags-', 'Remove tag'],
   ['owner', 'Owner'], ['stage', 'Stage'], ['disposition', 'Disposition'], ['next_action', 'Next action'], ['next_action_date', 'Next action date'],
-  ['portal_status', 'Portal status'], ['customer', 'Customer'], ['market', 'Market'], ['archived', 'Archive'],
+  ['portal_status', 'Portal status'], ['customer', 'Customer'], ['market', 'Market'], ['change_ticket', 'Change ticket'], ['archived', 'Archive'],
 ];
 
-function BulkBar({ ids, tax, owners, onDone, onClear, onEmail }) {
-  const [field, setField] = useState('owner');
+function BulkBar({ ids, tax, values, onDone, onClear, onEmail }) {
+  const [field, setField] = useState('platform');
   const [value, setValue] = useState('');
+  const isTag = field === 'tags+' || field === 'tags-';
   const apply = async () => {
+    if (isTag && !value.trim()) return toast('Type a tag first');
     try {
       const v = field === 'archived' ? value === 'yes' : value;
-      const r = await call('bulkUpdate', ids, { [field]: v });
+      const tags = field === 'tags+' ? { add: v.split(',') } : field === 'tags-' ? { remove: v.split(',') } : null;
+      const r = await call('bulkUpdate', ids, tags ? {} : { [field]: v }, tags);
       toast(`Updated ${plural(r.changed, 'record')}`, 'ok');
+      if (r.skipped && r.skipped.length) {
+        toast(`Skipped ${plural(r.skipped.length, 'record')}: ${r.skipped.slice(0, 3).map((x) => `${x.label} (${x.reason})`).join('; ')}${r.skipped.length > 3 ? '…' : ''}`, 'err');
+      }
       setValue('');
       onDone();
     } catch (e) { toastError(e); }
   };
+  const list = values[field] ? values[field].filter(Boolean) : null;
   const input = field === 'stage' ? html`<${Select} value=${value} onChange=${setValue} placeholder="(automatic)" options=${tax.stages} />`
     : field === 'disposition' ? html`<${Select} value=${value} onChange=${setValue} placeholder="(none)" options=${tax.dispositions} />`
       : field === 'portal_status' ? html`<${Select} value=${value} onChange=${setValue} options=${tax.portalStatuses} placeholder="Choose" />`
         : field === 'archived' ? html`<${Select} value=${value} onChange=${setValue} options=${[{ value: 'yes', label: 'Archive' }, { value: 'no', label: 'Restore' }]} placeholder="Choose" />`
           : field === 'next_action_date' ? html`<input type="date" value=${value} onInput=${(e) => setValue(e.target.value)} />`
-            : html`<input type="text" list=${field === 'owner' ? 'owners-list' : null} value=${value} placeholder="Value (blank clears)" onInput=${(e) => setValue(e.target.value)} />`;
+            : html`<input type="text" list=${list ? 'bulk-values' : null} value=${value} aria-label="Value"
+                placeholder=${isTag ? 'Tag, e.g. Retail or Program X' : 'Value (blank clears)'} onInput=${(e) => setValue(e.target.value)}
+                onKeyDown=${(e) => { if (e.key === 'Enter') apply(); }} />`;
   return html`<div class="bulkbar"><b>${ids.length} selected</b><span style="opacity:.6">Set</span>
     <select value=${field} onChange=${(e) => { setField(e.target.value); setValue(''); }} aria-label="Field">${BULK_FIELDS.map(([k, l]) => html`<option value=${k}>${l}</option>`)}</select>
-    ${input}<datalist id="owners-list">${owners.map((o) => html`<option value=${o} />`)}</datalist>
+    ${input}${list ? html`<datalist id="bulk-values">${list.map((o) => html`<option value=${o} />`)}</datalist>` : null}
     <button class="btn primary" onClick=${apply}>Apply</button><span class="grow"></span>
     <button class="btn" onClick=${onEmail}><${Icon} name="mail" /> Draft email</button>
     <button class="btn" onClick=${onClear}>Clear selection</button></div>`;
 }
+

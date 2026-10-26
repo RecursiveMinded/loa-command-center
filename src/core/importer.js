@@ -26,6 +26,7 @@ const COLUMNS = {
   next_action: ['next action', 'action'],
   next_action_date: ['next action date', 'action date', 'target date', 'due date'],
   notes: ['notes', 'comments', 'comment', 'remarks'],
+  tags: ['tags', 'tag', 'labels', 'groups'],
   portal_date: ['published date', 'website date', 'portal date', 'published value'],
 };
 
@@ -115,6 +116,7 @@ function rowsToRecords(table, { sheetName = '', defaults = {} } = {}) {
       next_action: String(get('next_action') || '').trim(),
       next_action_date: parseDate(get('next_action_date')),
       notes: String(get('notes') || '').trim(),
+      tags: String(get('tags') || '').trim(),
       portal_date: parseDate(get('portal_date')),
     };
     const st = String(get('stage') || '').trim();
@@ -163,7 +165,7 @@ async function readWorkbook(filename, bytes) {
   return sheets;
 }
 
-const IMPORT_FIELDS = ['platform', 'bundle', 'family', 'kernel_version', 'approval_number', 'issue_date', 'expiry_date', 'owner', 'customer', 'market', 'next_action', 'next_action_date', 'notes', 'portal_date', 'stage', 'disposition'];
+const IMPORT_FIELDS = ['platform', 'bundle', 'family', 'kernel_version', 'approval_number', 'issue_date', 'expiry_date', 'owner', 'customer', 'market', 'next_action', 'next_action_date', 'notes', 'tags', 'portal_date', 'stage', 'disposition'];
 
 /**
  * Merge candidates into the store. dryRun returns the same report without writing.

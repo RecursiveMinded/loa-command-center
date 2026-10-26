@@ -42,8 +42,8 @@ function pdfFromPages(pages) {
   const errors = [];
   let failed = false;
   const check = (ok, msg) => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${msg}`); if (!ok) failed = true; };
+  const p = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   try {
-    const p = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     p.on('pageerror', (e) => errors.push(e.message));
     p.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
     await p.goto(`http://127.0.0.1:${PORT}/`);
@@ -63,11 +63,23 @@ function pdfFromPages(pages) {
     await p.waitForSelector('text=Finished 1 file', { timeout: 60000 });
     const note = await p.locator('.queue .qitem').first().innerText();
     check(/3 letters found/.test(note), `PDF read and split: ${note.replace(/\s+/g, ' ')}`);
+    await p.waitForFunction(() => document.querySelectorAll('.card.review').length >= 3, null, { timeout: 15000 }).catch(() => {});
     const cards = await p.locator('.card.review').count();
     check(cards === 3, `${cards} letters waiting for review`);
     // Approve one letter, then reopen its LOA from the record.
     await p.locator('.card.review').first().locator('button:has-text("Approve")').click();
     await p.waitForFunction(() => document.querySelectorAll('.card.review').length === 2);
+    // Bulk edit what the review just created or updated.
+    await p.click('text=Bulk edit these');
+    await p.waitForSelector('.bulkbar b:has-text("selected")');
+    await p.fill('.bulkbar input[aria-label="Value"]', 'Lab platform');
+    await p.click('.bulkbar >> text=Apply');
+    await p.waitForSelector('td >> text=Lab platform');
+    await p.selectOption('.bulkbar select[aria-label="Field"]', 'tags+');
+    await p.fill('.bulkbar input[aria-label="Value"]', 'Program X');
+    await p.click('.bulkbar >> text=Apply');
+    await p.waitForSelector('.utag >> text=Program X');
+    check(true, 'bulk edit after review: platform and tag set');
     await p.click('nav >> text=Certifications');
     await p.locator('button.linktag').first().click();
     await p.waitForSelector('.drawer >> text=Northwind merged.pdf');
@@ -84,7 +96,10 @@ function pdfFromPages(pages) {
     check(true, 'summary report');
     check(!errors.length, `no page errors${errors.length ? `: ${errors.join(' | ')}` : ''}`);
   } catch (e) {
-    check(false, e.message);
+    check(false, e.message.split('\n')[0]);
+    const shot = path.join(tmp, 'failure.png');
+    await p.screenshot({ path: shot }).catch(() => {});
+    console.log(`screenshot: ${shot}\n${e.message}`);
   } finally {
     await browser.close();
     server.kill();

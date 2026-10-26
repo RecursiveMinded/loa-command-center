@@ -205,3 +205,44 @@ test('a new app version saves the old database before opening it', async () => {
   const again = await AppApi.create({ dataDir: dir });
   assert.equal(again.listBackups().filter((b) => b.name.includes('-before-v')).length, 1, 'only once per version');
 });
+
+test('bulk edit sets platform and tags, and skips clashing records', async () => {
+  const { api } = await fresh();
+  const a = api.saveRecord(null, { device: 'NX200', scheme: 'Amex', category: 'EMV L2 Contactless' }).record;
+  const b = api.saveRecord(null, { device: 'NX300', scheme: 'Amex', category: 'EMV L2 Contactless' }).record;
+  const c = api.saveRecord(null, { device: 'NX300', scheme: 'Amex', category: 'EMV L2 Contactless', platform: 'Alpha' }).record;
+
+  let r = api.bulkUpdate([a.id, b.id], { platform: 'Alpha' });
+  assert.equal(r.changed, 1, 'NX200 moves to Alpha');
+  assert.equal(r.skipped.length, 1, 'NX300 already exists on Alpha');
+  assert.equal(r.skipped[0].id, b.id);
+  assert.equal(api.getRecord(a.id).record.platform, 'Alpha');
+  assert.equal(api.getRecord(b.id).record.platform, '', 'the skipped record is untouched');
+
+  r = api.bulkUpdate([a.id, c.id], {}, { add: ['Retail', ' program x '] });
+  assert.equal(r.changed, 2);
+  api.bulkUpdate([a.id], {}, { add: ['retail', 'Customer A'] });
+  assert.equal(api.getRecord(a.id).record.tags, 'Retail, program x, Customer A', 'no duplicate tags, case-insensitive');
+  api.bulkUpdate([a.id, c.id], {}, { remove: ['PROGRAM X'] });
+  assert.equal(api.getRecord(c.id).record.tags, 'Retail');
+  assert.deepEqual(api.listTags().map((t) => [t.tag, t.count]), [['Customer A', 1], ['Retail', 2]]);
+  assert.match(api.exportCsv({}), /Tags/);
+  assert.ok(api.getRecord(a.id).audit.some((x) => x.field === 'tags'), 'tag changes are audited');
+});
+
+test('a version 1 database gains the tags column on open', async () => {
+  const { Database } = require('../src/core/db');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'loa-mig-'));
+  const file = path.join(dir, 'loa.db');
+  const db = await Database.open(file);
+  db.db.exec('CREATE TABLE r2 AS SELECT * FROM records');
+  db.db.exec('DROP TABLE records');
+  db.db.exec(`CREATE TABLE records AS SELECT ${db.all('PRAGMA table_info(r2)').map((c) => c.name).filter((n) => n !== 'tags').join(', ')} FROM r2`);
+  db.db.exec('DROP TABLE r2');
+  db.run("UPDATE settings SET value='1' WHERE key='schema_version'");
+  db.close();
+  const again = await Database.open(file);
+  assert.ok(again.all('PRAGMA table_info(records)').some((c) => c.name === 'tags'));
+  assert.equal(again.get("SELECT value FROM settings WHERE key='schema_version'").value, '2');
+  again.close();
+});
