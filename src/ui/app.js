@@ -13,6 +13,7 @@ import { Settings } from './views/settings.js';
 import { RecordDrawer } from './views/record.js';
 import { Assistant } from './views/assistant.js';
 import { selfTest } from './selftest.js';
+import { useUpdate, installUpdate } from './update.js';
 
 window.__loaSelfTest = selfTest;
 
@@ -33,6 +34,7 @@ try {
 
 function App() {
   const [boot, setBoot] = useState(null);
+  const update = useUpdate();
   const [route, setRoute] = useState({ name: 'dashboard', params: null });
   const [version, setVersion] = useState(0);
   const [counts, setCounts] = useState({ inbox: 0, critical: 0 });
@@ -132,6 +134,8 @@ function App() {
         <button class="btn" onClick=${() => setAi(true)}><${Icon} name="spark" /> Ask</button>
         <button class="btn primary" onClick=${() => setReport({})} title="Ctrl+P"><${Icon} name="report" /> Summary report</button>
       </header>
+      ${update && update.state === 'ready' ? html`<div class="callout good update-bar"><span class="grow">Version ${update.version} is ready to install. Your data is kept.</span>
+        <button class="btn sm primary" onClick=${() => installUpdate().catch(toastError)}>Restart to update</button></div>` : null}
       <div class="content"><${View} app=${app} params=${route.params} key=${route.name} /></div>
     </main>
     ${record !== undefined ? html`<${RecordDrawer} key=${record || 'new'} id=${record} app=${app} onClose=${() => setRecord(undefined)} />` : null}

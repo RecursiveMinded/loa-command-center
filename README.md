@@ -33,13 +33,17 @@ The builds are not code-signed yet, so Windows SmartScreen may show "Windows pro
 
 Data lives in `%LOCALAPPDATA%\LOA Command Center` (database, archived LOAs, backups). It can be moved from Settings → Data.
 
-**Updating:** run the new Setup (or replace the Portable exe). The data folder is separate from the program, so records, LOAs and settings carry over, and uninstalling does not remove it. The first time a new version starts, it saves a copy of the previous database in `Backups` (`…-before-vX.Y.Z.db`), restorable from Settings → Data.
+**Updating:** the installed app updates itself: it checks at start-up and every 12 hours, downloads new versions in the background and installs them on restart (Settings → General → Updates). The Portable exe is replaced by hand. The data folder is separate from the program, so records, LOAs and settings carry over, and uninstalling does not remove it. The first time a new version starts, it saves a copy of the previous database in `Backups` (`…-before-vX.Y.Z.db`), restorable from Settings → Data.
 
 ### Turning on the local AI (optional)
 
 1. Install Ollama from <https://ollama.com/download>.
 2. Run `ollama pull gemma3:4b` (or `gemma3:1b` on low-memory laptops).
 3. In the app: Settings → AI assistant → Ollama → Test connection.
+
+### Publishing updates
+
+Updates are served from a public repository next to this one, named `<this repo>-releases` (set in `build.publish` in `package.json`); the source stays private. One-time setup: create that public repository with a README, create a fine-grained token with **Contents: read and write** on it only, and save it as the Actions secret `RELEASES_TOKEN` in this repository. After that, every push to `main` with a new `version` in `package.json` publishes that version there, and installed apps pick it up.
 
 ## Develop
 

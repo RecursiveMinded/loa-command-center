@@ -31,6 +31,7 @@ const DEFAULT_SETTINGS = {
   ai: { provider: 'off', baseUrl: 'http://127.0.0.1:11434', model: 'gemma3:4b', apiKey: '' },
   runInBackground: true,
   startWithWindows: false,
+  autoUpdate: true,
   backupKeep: 14,
   lastBackup: null,
 };

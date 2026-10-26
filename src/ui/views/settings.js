@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'preact/hooks';
 import { html, Icon, fmtWhen, plural, useLoad, Spinner, toast, toastError, Select, bytes } from '../lib.js';
 import { call, native, isDesktop } from '../api.js';
 import { extractPdf } from '../extract.js';
+import { useUpdate, checkForUpdates, installUpdate } from '../update.js';
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -27,6 +28,27 @@ export function Settings({ app, params }) {
     </div>`;
 }
 
+function Updates({ s, save, app }) {
+  const st = useUpdate();
+  const text = !st ? '' : {
+    unsupported: 'The portable version does not update itself. Download the new Portable exe, or use the installer to get automatic updates.',
+    checking: 'Checking for updates…',
+    current: `You have the latest version${st.checkedAt ? ` (checked ${fmtWhen(st.checkedAt)})` : ''}.`,
+    downloading: `Downloading version ${st.version || ''}${st.percent ? ` (${st.percent}%)` : ''}…`,
+    ready: `Version ${st.version} is downloaded and ready.`,
+    error: st.message,
+    idle: 'Checks shortly after start-up and every 12 hours.',
+  }[st.state];
+  return html`<div class="card pad"><h3>Updates</h3>
+    <p class="muted small">Version ${app.info.version}. New versions download in the background and install when you restart. Your records, LOAs and settings are kept, and a copy of the database is saved first.</p>
+    ${st && st.state !== 'unsupported' ? html`<label class="check mt"><input type="checkbox" checked=${s.autoUpdate !== false} onChange=${(e) => save({ autoUpdate: e.target.checked })} /> Check for updates automatically</label>` : null}
+    <p class="small mt">${text}</p>
+    ${st && st.state !== 'unsupported' ? html`<div class="row mt">
+      ${st.state === 'ready' ? html`<button class="btn primary" onClick=${() => installUpdate().catch(toastError)}>Restart to update</button>`
+        : html`<button class="btn" disabled=${['checking', 'downloading'].includes(st.state)} onClick=${() => checkForUpdates().catch(toastError)}>Check now</button>`}</div>` : null}
+  </div>`;
+}
+
 function General({ s, save, app }) {
   const [name, setName] = useState(s.userName || '');
   const [company, setCompany] = useState(s.companyName || '');
@@ -45,6 +67,7 @@ function General({ s, save, app }) {
     ${isDesktop ? html`<div class="card pad"><h3>Windows</h3>
       <label class="check mt"><input type="checkbox" checked=${s.runInBackground !== false} onChange=${(e) => save({ runInBackground: e.target.checked })} /> Keep running in the system tray when the window is closed, so reminders still arrive</label><br />
       <label class="check mt"><input type="checkbox" checked=${!!s.startWithWindows} onChange=${(e) => save({ startWithWindows: e.target.checked })} /> Start with Windows (in the tray)</label></div>` : null}
+    ${isDesktop ? html`<${Updates} s=${s} save=${save} app=${app} />` : null}
     <div class="card pad"><h3>About</h3><p class="muted small">LOA Command Center ${app.info.version}. Works offline. LOA text is read on this computer, and the optional AI assistant only talks to a model running on your own machine or network.</p></div>
   </div>`;
 }

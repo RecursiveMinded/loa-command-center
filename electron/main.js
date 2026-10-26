@@ -6,6 +6,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell, Notification, Tray, Menu, na
 const fs = require('fs');
 const path = require('path');
 const { AppApi, PUBLIC_METHODS } = require('../src/core/api');
+const updates = require('./updater');
 
 const APP_NAME = 'LOA Command Center';
 app.setName(APP_NAME);
@@ -250,6 +251,9 @@ function registerIpc() {
           app.exit(0);
           return target;
         }
+        case 'updateStatus': return updates.getStatus();
+        case 'checkForUpdates': return await updates.check();
+        case 'installUpdate': { const ok = updates.install(); if (ok) quitting = true; return ok; }
         case 'relaunch': { app.relaunch(); quitting = true; app.exit(0); return true; }
         default: throw new Error(`Unknown native op ${op}`);
       }
@@ -308,6 +312,21 @@ function applyOsSettings() {
   } catch (e) { logError(e); }
 }
 
+function startUpdates() {
+  let told = null;
+  updates.init({
+    enabled: () => api.getSettings().autoUpdate !== false,
+    log: logError,
+    changed: (st) => {
+      if (win) win.webContents.send('update', st);
+      if (st.state === 'ready' && told !== st.version) {
+        told = st.version;
+        notify(`Update ready: version ${st.version}`, 'Restart LOA Command Center to install it. It also installs the next time you quit.', 'settings');
+      }
+    },
+  });
+}
+
 // --------------------------------------------------------------- lifecycle
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -329,6 +348,7 @@ if (!app.requestSingleInstanceLock()) {
     createTray();
     applyOsSettings();
     startScheduler();
+    startUpdates();
   });
   app.on('before-quit', () => { quitting = true; try { api && api.db.close(); } catch (_) { /* closing */ } });
   app.on('window-all-closed', () => { /* stay in tray */ });
