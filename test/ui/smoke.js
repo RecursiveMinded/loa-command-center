@@ -36,7 +36,13 @@ function pdfFromPages(pages) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'loa-ui-'));
   const pdf = path.join(tmp, 'Northwind merged.pdf');
   fs.writeFileSync(pdf, pdfFromPages([L.amex, L.emvco, L.mastercard]));
-  const server = spawn(process.execPath, [path.join(__dirname, '..', '..', 'dev', 'server.js'), path.join(tmp, 'data'), String(PORT)], { stdio: 'inherit' });
+  // A letter whose device the reader cannot find (the fake AI supplies it).
+  const blind = path.join(tmp, 'No device.pdf');
+  fs.writeFileSync(blind, pdfFromPages([L.discover.replace('Product: Flex/3XXX CL1 ', '')]));
+  // A family letter for devices that are not in the register yet.
+  const family = path.join(tmp, 'New family.pdf');
+  fs.writeFileSync(family, pdfFromPages([L.discover.replace('Flex/3XXX', 'Zeta/7XXX')]));
+  const server = spawn(process.execPath, [path.join(__dirname, '..', '..', 'dev', 'server.js'), path.join(tmp, 'data'), String(PORT)], { stdio: 'inherit', env: { ...process.env, LOA_FAKE_AI: 'Flex/3500-CL1' } });
   await new Promise((r) => setTimeout(r, 1200));
   const browser = await chromium.launch();
   const errors = [];
@@ -89,6 +95,32 @@ function pdfFromPages(pages) {
     const [dl] = await Promise.all([p.waitForEvent('download'), p.locator('.drawer button[title="Save a copy"]').first().click()]);
     check(dl.suggestedFilename() === 'Northwind merged.pdf', `LOA saved as a copy: ${dl.suggestedFilename()}`);
     await p.keyboard.press('Escape');
+    // A letter with no device found: the AI fills it in, then Dismiss still works.
+    await p.click('nav >> text=LOA inbox');
+    const [ch2] = await Promise.all([p.waitForEvent('filechooser'), p.click('text=Choose files')]);
+    await ch2.setFiles(blind);
+    await p.waitForSelector('.card.review:has-text("No device.pdf")', { timeout: 60000 });
+    const blindCard = p.locator('.card.review:has-text("No device.pdf")');
+    await blindCard.locator('button:has-text("AI: find missing values")').click();
+    await p.waitForSelector('.card.review:has-text("No device.pdf") >> text=Flex/3500-CL1', { timeout: 10000 });
+    await p.locator('.card.review:has-text("No device.pdf") button:has-text("Reject")').click();
+    await p.waitForFunction(() => ![...document.querySelectorAll('.card.review')].some((c) => c.textContent.includes('No device.pdf')), null, { timeout: 10000 });
+    check(true, 'AI fills a missing device, then the letter can still be dismissed');
+    // Nothing in the register for that family yet: create the records from the letter.
+    const [ch3] = await Promise.all([p.waitForEvent('filechooser'), p.click('text=Choose files')]);
+    await ch3.setFiles(family);
+    await p.waitForSelector('.card.review:has-text("New family.pdf")', { timeout: 60000 });
+    const famCard = p.locator('.card.review:has-text("New family.pdf")');
+    await famCard.locator('input[aria-label="New device name"]').fill('Zeta/7100-CL1, Zeta/7200-CL1');
+    await famCard.locator('button:has-text("Add")').click();
+    await famCard.locator('label.field:has-text("Platform") input').fill('Gamma');
+    if (process.env.LOA_SHOTS) await famCard.screenshot({ path: path.join(process.env.LOA_SHOTS, 'create-from-letter.png') });
+    await famCard.locator('button:has-text("Approve 1 change")').click();
+    await p.waitForSelector('text=Applied: 2 created', { timeout: 10000 });
+    await p.click('nav >> text=Certifications');
+    await p.click('button:has-text("Clear filters")');
+    await p.waitForSelector('text=Zeta/7200-CL1', { timeout: 10000 });
+    check(true, 'family letter with no matching records creates them');
     const st = await p.evaluate(() => window.__loaSelfTest());
     check(st.ok, `PDF reader and OCR self test ${JSON.stringify(st)}`);
     await p.click('.topbar >> text=Summary report');

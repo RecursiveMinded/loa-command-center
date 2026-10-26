@@ -357,3 +357,5 @@ table.t td .faint.small { white-space: nowrap; }
 .utag { font-size: 11px; line-height: 16px; padding: 0 6px; border-radius: 9px; background: var(--brand-soft); color: var(--text); cursor: pointer; white-space: nowrap; }
 .utag:hover { text-decoration: underline; }
 .recent-bar { margin-bottom: 14px; gap: 10px; }
+.newrecs { border: 1px dashed var(--line); border-radius: 8px; padding: 10px 12px; background: var(--panel); }
+.newrecs .utag .linkbtn { margin-left: 4px; padding: 0 2px; }

@@ -221,11 +221,12 @@ class AppApi {
     if (!it) throw new Error('Review item not found');
     const text = this.store.documentText(it.document_id);
     const seg = require('./loa-parser').segmentLetters(text.split('\n\f\n'))[it.letter_index] || { text };
+    const has = (f) => !!(f && f.value);
     const missing = [];
-    if (!it.parsed.approvalNumber) missing.push('approval_number');
-    if (!it.parsed.products.length) missing.push('products');
-    if (!it.parsed.expiryDate) missing.push('expiry_date');
-    if (!it.parsed.issueDate) missing.push('issue_date');
+    if (!has(it.parsed.approvalNumber)) missing.push('approval_number');
+    if (!(it.parsed.products || []).some(has)) missing.push('products');
+    if (!has(it.parsed.expiryDate)) missing.push('expiry_date');
+    if (!has(it.parsed.issueDate)) missing.push('issue_date');
     if (!missing.length) return { changed: false, message: 'Nothing is missing from this letter.' };
     const found = await this.ai.assistExtract(seg.text, missing);
     const p = it.parsed;

@@ -246,3 +246,48 @@ test('a version 1 database gains the tags column on open', async () => {
   assert.equal(again.get("SELECT value FROM settings WHERE key='schema_version'").value, '2');
   again.close();
 });
+
+test('AI help on a letter with no device rebuilds its proposals', async () => {
+  const { api } = await fresh();
+  api.loadSampleData();
+  api.ingestDocument({ filename: 'blind.pdf', bytes: Buffer.from('blind'), pages: [L.discover.replace('Product: Flex/3XXX CL1 ', '')] });
+  const it = api.listInbox('pending').find((i) => i.filename === 'blind.pdf');
+  assert.equal(it.proposals.length, 0);
+  let asked = null;
+  api.ai.assistExtract = async (_t, missing) => { asked = missing; return { products: ['Flex/3500-CL1'] }; };
+  const r = await api.assistInbox(it.id);
+  assert.ok(asked.includes('products'), 'an empty device list counts as missing');
+  assert.ok(!asked.includes('expiry_date'), 'a date that was found is not asked for');
+  assert.equal(r.changed, true);
+  const after = api.listInbox('pending').find((i) => i.id === it.id);
+  assert.ok(after.proposals.length > 0);
+  api.rejectInbox(it.id, '');
+  assert.ok(!api.listInbox('pending').some((i) => i.id === it.id));
+});
+
+test('records can be created from a letter when the ones it covers do not exist yet', async () => {
+  const { api } = await fresh();
+  api.ingestDocument({ filename: 'family.pdf', bytes: Buffer.from('family'), pages: [L.discover] });
+  const fam = api.listInbox('pending').find((i) => i.filename === 'family.pdf');
+  assert.equal(fam.proposals[0].action, 'unmatched');
+  const res = api.applyInbox(fam.id, [{ index: 0, recordIds: [], create: ['Flex/3500-CL1', ' ', 'Flex/3600-CL1'], edits: { platform: 'Beta' } }]);
+  assert.deepEqual(res.map((r) => r.action), ['created', 'created']);
+  const made = api.listRecords();
+  assert.equal(made.length, 2);
+  for (const r of made) {
+    assert.equal(r.scheme, fam.parsed.scheme);
+    assert.equal(r.category, fam.parsed.category);
+    assert.equal(r.platform, 'Beta');
+    assert.equal(r.expiry_date, fam.parsed.expiryDate.value);
+    const full = api.getRecord(r.id);
+    assert.equal(full.documents.length, 1, 'the letter is linked to the new record');
+  }
+
+  api.ingestDocument({ filename: 'blind.pdf', bytes: Buffer.from('blind'), pages: [L.discover.replace('Product: Flex/3XXX CL1 ', '')] });
+  const blind = api.listInbox('pending').find((i) => i.filename === 'blind.pdf');
+  assert.equal(blind.proposals.length, 0);
+  const res2 = api.applyInbox(blind.id, [{ create: ['NX900'], edits: { expiry_date: '2030-01-31' } }]);
+  assert.equal(res2[0].action, 'created');
+  assert.equal(api.getRecord(res2[0].record_id).record.expiry_date, '2030-01-31');
+  assert.ok(!api.listInbox('pending').some((i) => i.id === blind.id));
+});

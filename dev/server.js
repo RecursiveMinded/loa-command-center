@@ -27,6 +27,8 @@ function encode(v) {
 
 (async () => {
   const api = await AppApi.create({ dataDir });
+  // Tests: LOA_FAKE_AI="NX200" makes the AI 'find' that device in any letter.
+  if (process.env.LOA_FAKE_AI) api.ai.assistExtract = async (_text, missing) => (missing.includes('products') ? { products: [process.env.LOA_FAKE_AI] } : {});
   http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://x');

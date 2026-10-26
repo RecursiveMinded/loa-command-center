@@ -96,7 +96,12 @@ export function Inbox({ app, params }) {
     ${tab === 'documents' ? html`<${Documents} docs=${docs} app=${app} reload=${reloadDocs} />`
       : !items ? html`<div class="row"><${Spinner} /> Loading…</div>`
         : !items.length ? html`<div class="card"><div class="empty"><${Icon} name="inbox" /><h3>${tab === 'pending' ? 'Nothing to review' : 'Nothing here yet'}</h3><div>${tab === 'pending' ? 'Drop LOAs above to get started.' : ''}</div></div></div>`
-          : items.map((it) => html`<${Review} key=${it.id} it=${it} app=${app} threshold=${threshold} readOnly=${tab !== 'pending'} onDone=${() => { reload(); app.refresh(); }} />`)}`;
+          : items.map((it) => html`<${Review} key=${`${it.id}:${proposalSig(it)}`} it=${it} app=${app} threshold=${threshold} readOnly=${tab !== 'pending'} onDone=${() => { reload(); app.refresh(); }} />`)}`;
+}
+
+/** Changes when matching or the AI rebuilds a letter's proposals, so its card starts fresh. */
+function proposalSig(it) {
+  return it.proposals.map((p) => `${p.action}:${p.record_id || p.device || ''}`).join('|');
 }
 
 function Review({ it, app, threshold, readOnly, onDone }) {
@@ -104,14 +109,18 @@ function Review({ it, app, threshold, readOnly, onDone }) {
   const [checked, setChecked] = useState(() => it.proposals.map((p) => p.action !== 'unmatched' && !(p.warnings || []).some((w) => /Confirm it covers/.test(w))));
   const [edits, setEdits] = useState(() => it.proposals.map(() => ({})));
   const [picks, setPicks] = useState(() => it.proposals.map(() => []));
+  const [creates, setCreates] = useState(() => it.proposals.map(() => []));
+  const [fresh, setFresh] = useState({ devices: [], edits: {} });
   const [editing, setEditing] = useState(-1);
   const [busy, setBusy] = useState(false);
   const [text, setText] = useState(null);
   const safe = it.proposals.length && it.proposals.every((p) => isSafe(p, L, threshold));
 
   const approve = async () => {
-    const decisions = it.proposals.map((p, i) => ({ index: i, edits: edits[i], recordIds: picks[i] })).filter((d, i) => checked[i] && (it.proposals[i].action !== 'unmatched' || picks[i].length));
-    if (!decisions.length) return toast('Tick at least one change, or reject the letter');
+    const decisions = it.proposals.map((p, i) => ({ index: i, edits: edits[i], recordIds: picks[i], create: creates[i] }))
+      .filter((d, i) => checked[i] && (it.proposals[i].action !== 'unmatched' || picks[i].length || creates[i].length));
+    if (!it.proposals.length && fresh.devices.length) decisions.push({ create: fresh.devices, edits: fresh.edits });
+    if (!decisions.length) return toast(it.proposals.length ? 'Tick at least one change, or reject the letter' : 'Add a device name to create its record, or dismiss the letter');
     setBusy(true);
     try {
       const res = await call('applyInbox', it.id, decisions);
@@ -158,13 +167,17 @@ function Review({ it, app, threshold, readOnly, onDone }) {
       </div>
       ${(L.warnings || []).map((w) => html`<div class="warnline"><${Icon} name="warn" />${w}</div>`)}
       ${L.informational ? html`<div class="callout mt">Supporting document (${L.type || 'bulletin'}). It is kept in the archive and searchable, but does not change any dates.</div>` : null}
-      ${!it.proposals.length && !L.informational ? html`<div class="callout warn mt">No matching records for this letter's brand and approval type. Import your tracker or portal page first, add the record by hand, or add a device alias in Settings, then press Re-match.</div>` : null}
-      ${it.proposals.map((p, i) => html`<${Proposal} key=${i} p=${p} on=${checked[i]} readOnly=${readOnly} edits=${edits[i]} editing=${editing === i} picks=${picks[i]} app=${app}
+      ${!it.proposals.length && !L.informational ? html`<div class="callout warn mt">No matching records for this letter's brand and approval type. Create the record below, import your tracker first, or add a device alias in Settings and press Re-match.</div>` : null}
+      ${!it.proposals.length && !L.informational && !readOnly ? html`<${NewRecords} title="Create records from this letter" L=${L} names=${fresh.devices} edits=${fresh.edits} withFields
+        onNames=${(devices) => setFresh({ ...fresh, devices })} onEdits=${(e) => setFresh({ ...fresh, edits: { ...fresh.edits, ...e } })} />` : null}
+      ${it.proposals.map((p, i) => html`<${Proposal} key=${i} p=${p} on=${!!checked[i]} readOnly=${readOnly} edits=${edits[i] || {}} editing=${editing === i} picks=${picks[i] || []} creates=${creates[i] || []} L=${L} app=${app}
         onToggle=${() => setChecked(checked.map((c, j) => (j === i ? !c : c)))} onEdit=${() => setEditing(editing === i ? -1 : i)}
         onEdits=${(e) => setEdits(edits.map((x, j) => (j === i ? { ...x, ...e } : x)))}
-        onPicks=${(ids) => { setPicks(picks.map((x, j) => (j === i ? ids : x))); setChecked(checked.map((c, j) => (j === i ? ids.length > 0 : c))); }} />`)}
+        onPicks=${(ids) => { setPicks(picks.map((x, j) => (j === i ? ids : x))); setChecked(checked.map((c, j) => (j === i ? ids.length + (creates[i] || []).length > 0 : c))); }}
+        onCreates=${(names) => { setCreates(creates.map((x, j) => (j === i ? names : x))); setChecked(checked.map((c, j) => (j === i ? names.length + (picks[i] || []).length > 0 : c))); }} />`)}
       ${readOnly ? null : html`<div class="row mt-l">
-        ${it.proposals.length ? html`<button class="btn primary" disabled=${busy} onClick=${approve}><${Icon} name="check" /> Approve ${plural(checked.filter(Boolean).length, 'change')}</button>` : null}
+        ${it.proposals.length ? html`<button class="btn primary" disabled=${busy} onClick=${approve}><${Icon} name="check" /> Approve ${plural(checked.filter(Boolean).length, 'change')}</button>`
+          : !L.informational ? html`<button class="btn primary" disabled=${busy || !fresh.devices.length} onClick=${approve}><${Icon} name="check" /> Create ${plural(fresh.devices.length, 'record')}</button>` : null}
         <button class="btn" disabled=${busy} onClick=${reject}>${it.proposals.length ? 'Reject' : 'Dismiss'}</button>
         ${missing && !L.informational ? html`<button class="btn" disabled=${busy} onClick=${aiFill} title="Ask the local AI to find missing values; it may only use text present in the letter"><${Icon} name="spark" /> AI: find missing values</button>` : null}
         <span class="grow"></span>${busy ? html`<${Spinner} />` : null}</div>`}
@@ -183,7 +196,7 @@ function Fact({ k, v, ev, optional }) {
   return html`<div class="fact"><div class="k">${k}</div><div class=${`v ${v ? '' : 'miss'}`}>${v || (optional ? '—' : 'Not found')}</div>${ev ? html`<div class="ev" title=${ev}>${ev}</div>` : null}</div>`;
 }
 
-function Proposal({ p, on, readOnly, edits, editing, picks, app, onToggle, onEdit, onEdits, onPicks }) {
+function Proposal({ p, on, readOnly, edits, editing, picks, creates, L, app, onToggle, onEdit, onEdits, onPicks, onCreates }) {
   const a = ACTION[p.action] || { label: p.action, cls: '' };
   const changes = Object.entries(p.changes || {});
   const editable = ['update', 'replacement', 'create'].includes(p.action);
@@ -204,7 +217,8 @@ function Proposal({ p, on, readOnly, edits, editing, picks, app, onToggle, onEdi
       ${(p.warnings || []).map((w) => html`<div class="warnline"><${Icon} name="warn" />${w}</div>`)}
       ${editing ? html`<div class="grid3 mt">${fields.map((k) => html`<label class="field">${{ device: 'Device', platform: 'Platform', bundle: 'Bundle' }[k] || FIELD[k]}
         <input type=${k.endsWith('_date') ? 'date' : 'text'} value=${edits[k] != null ? edits[k] : (base && base[k]) || ''} onInput=${(e) => onEdits({ [k]: e.target.value })} /></label>`)}</div>` : null}
-      ${p.action === 'unmatched' && !readOnly ? html`<${RecordPicker} p=${p} picks=${picks} onPicks=${onPicks} />` : null}
+      ${p.action === 'unmatched' && !readOnly ? html`<${RecordPicker} p=${p} picks=${picks} onPicks=${onPicks} />
+        <${NewRecords} title=${`Or create records for ${p.device}`} L=${L} names=${creates} edits=${edits} withFields onNames=${onCreates} onEdits=${onEdits} />` : null}
     </div></div>`;
 }
 
@@ -230,6 +244,32 @@ function RecordPicker({ p, picks, onPicks }) {
       ${list.length ? list.map((r) => html`<label class="check small" style="display:flex;padding:3px 0"><input type="checkbox" checked=${set.has(r.id)} onChange=${() => toggle(r.id)} />
         <b>${r.device}</b><span class="muted">${[r.platform, r.bundle].filter(Boolean).join(' · ')}</span><span class="faint">expires ${fmtDate(r.expiry_date) || '—'}</span></label>`)
         : html`<div class="muted small">No ${p.scheme} ${p.category} records.</div>`}</div></div>`;
+}
+
+/**
+ * Device names to add as new records, filled in from the letter (brand, type,
+ * approval number and dates). Used when the records a letter covers do not exist yet.
+ */
+function NewRecords({ title, L, names, edits, withFields, onNames, onEdits }) {
+  const [draft, setDraft] = useState('');
+  const add = () => {
+    const more = draft.split(/[,;\n]/).map((x) => x.trim()).filter(Boolean);
+    if (!more.length) return;
+    const seen = new Set(names.map((x) => x.toLowerCase()));
+    onNames([...names, ...more.filter((x) => !seen.has(x.toLowerCase()) && seen.add(x.toLowerCase()))]);
+    setDraft('');
+  };
+  const needExpiry = !val(L.expiryDate);
+  return html`<div class="newrecs mt"><div class="small"><b>${title}</b> <span class="muted">· ${L.scheme || 'Unknown brand'} ${L.category}${val(L.expiryDate) ? `, expires ${fmtDate(val(L.expiryDate))}` : ''}</span></div>
+    <div class="row mt"><input type="text" class="grow" placeholder="Device name, e.g. Self/5000 (separate several with commas)" value=${draft}
+      onInput=${(e) => setDraft(e.target.value)} onKeyDown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }} aria-label="New device name" />
+      <button class="btn sm" onClick=${add} disabled=${!draft.trim()}><${Icon} name="plus" /> Add</button></div>
+    ${names.length ? html`<div class="tagrow mt">${names.map((n) => html`<span class="utag">${n}<button class="linkbtn" title="Remove" onClick=${() => onNames(names.filter((x) => x !== n))}>×</button></span>`)}</div>` : null}
+    ${withFields && names.length ? html`<div class="grid3 mt">
+      <label class="field">Platform<input type="text" value=${edits.platform || ''} onInput=${(e) => onEdits({ platform: e.target.value })} /></label>
+      <label class="field">Bundle<input type="text" value=${edits.bundle || ''} onInput=${(e) => onEdits({ bundle: e.target.value })} /></label>
+      <label class="field">${FIELD.expiry_date}${needExpiry ? ' (not in letter)' : ''}<input type="date" value=${edits.expiry_date || val(L.expiryDate) || ''} onInput=${(e) => onEdits({ expiry_date: e.target.value })} /></label>
+    </div>` : null}</div>`;
 }
 
 function summarize(res) {
