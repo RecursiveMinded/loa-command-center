@@ -180,3 +180,22 @@ test('reports, exports, backup and restore', async () => {
   assert.equal(api.listRecords().length, n);
   assert.equal(api.health().integrity, 'ok');
 });
+
+test('a new app version saves the old database before opening it', async () => {
+  const { api, dir } = await fresh();
+  assert.equal(api.listBackups().filter((b) => b.name.includes('-before-v')).length, 0, 'no backup on a first install');
+  api.loadSampleData();
+  api.setSettings({ appVersion: '0.9.0' });
+  api.db.close();
+  const old = fs.readFileSync(path.join(dir, 'loa.db'));
+
+  const next = await AppApi.create({ dataDir: dir });
+  const saved = next.listBackups().filter((b) => b.name.includes('-before-v'));
+  assert.equal(saved.length, 1);
+  assert.deepEqual(fs.readFileSync(saved[0].path), old, 'the backup is the untouched previous file');
+  assert.equal(next.listRecords().length > 0, true, 'records carry over');
+  next.db.close();
+
+  const again = await AppApi.create({ dataDir: dir });
+  assert.equal(again.listBackups().filter((b) => b.name.includes('-before-v')).length, 1, 'only once per version');
+});

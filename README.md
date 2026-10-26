@@ -33,6 +33,8 @@ The builds are not code-signed yet, so Windows SmartScreen may show "Windows pro
 
 Data lives in `%LOCALAPPDATA%\LOA Command Center` (database, archived LOAs, backups). It can be moved from Settings → Data.
 
+**Updating:** run the new Setup (or replace the Portable exe). The data folder is separate from the program, so records, LOAs and settings carry over, and uninstalling does not remove it. The first time a new version starts, it saves a copy of the previous database in `Backups` (`…-before-vX.Y.Z.db`), restorable from Settings → Data.
+
 ### Turning on the local AI (optional)
 
 1. Install Ollama from <https://ollama.com/download>.

@@ -24,8 +24,11 @@ class AppApi {
   static async create({ dataDir, actor = '' }) {
     fs.mkdirSync(dataDir, { recursive: true });
     const dbFile = path.join(dataDir, 'loa.db');
+    // Keep the file as it was before this version opens (and migrates) it.
+    const before = fs.existsSync(dbFile) ? fs.readFileSync(dbFile) : null;
     const db = await Database.open(dbFile);
     const api = new AppApi(db, dataDir, actor);
+    api.upgradeBackup(before);
     api.autoBackup();
     return api;
   }
@@ -333,6 +336,21 @@ class AppApi {
     fs.writeFileSync(file, this.db.exportBytes());
     this.store.setSettings({ lastBackup: new Date().toISOString() });
     this.pruneBackups();
+    return file;
+  }
+
+  /** First start of a new app version: save the previous database untouched. */
+  upgradeBackup(before) {
+    const s = this.store.getSettings();
+    if (s.appVersion === VERSION) return null;
+    let file = null;
+    if (before && this.backupDir && this.store.listRecords().length) {
+      fs.mkdirSync(this.backupDir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+      file = path.join(this.backupDir, `loa-${stamp}-before-v${VERSION}.db`);
+      fs.writeFileSync(file, before);
+    }
+    this.store.setSettings({ appVersion: VERSION });
     return file;
   }
 
