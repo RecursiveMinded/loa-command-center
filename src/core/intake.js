@@ -89,24 +89,14 @@ function buildProposals(letter, records, { norm, aliases = {}, noiseWords = [], 
         proposals.push({ action: 'unmatched', device: prod.value, category: letter.category, scheme: letter.scheme, score: 0, changes: {}, warnings: [`"${prod.value}" names a device family. Choose the records it covers.`] });
         continue;
       }
+      const device = displayDevice(prod.value, noiseWords);
       proposals.push({
         action: 'create',
-        device: displayDevice(prod.value, noiseWords),
+        device,
         category: letter.category,
         scheme: letter.scheme,
         score: 0,
-        record: {
-          device: displayDevice(prod.value, noiseWords),
-          category: letter.category,
-          scheme: letter.scheme,
-          approval_number: prod.label || approval || '',
-          issue_date: issue,
-          expiry_date: pExpiry,
-          expiry_basis: letter.expiryBasis || '',
-          kernel_version: prod.interface || val(letter.kernelVersion) || '',
-          restricted: !!letter.restricted,
-          stage: letter.restricted ? 'Restricted Extension' : '',
-        },
+        record: letterRecord(letter, device, prod),
         changes: {},
         warnings: pExpiry ? [] : ['No expiry date: the record will show as "Missing date"'],
       });
@@ -129,6 +119,22 @@ function buildProposals(letter, records, { norm, aliases = {}, noiseWords = [], 
     }
   }
   return dedupe(proposals);
+}
+
+/** A new record built from a letter's details, for one device it names. */
+function letterRecord(letter, device, prod = {}) {
+  return {
+    device,
+    category: letter.category,
+    scheme: letter.scheme,
+    approval_number: prod.label || val(letter.approvalNumber) || '',
+    issue_date: val(letter.issueDate),
+    expiry_date: prod.expiry || val(letter.expiryDate),
+    expiry_basis: letter.expiryBasis || '',
+    kernel_version: prod.interface || val(letter.kernelVersion) || '',
+    restricted: !!letter.restricted,
+    stage: letter.restricted ? 'Restricted Extension' : '',
+  };
 }
 
 function sameScheme(a, b) {
@@ -274,7 +280,10 @@ class Intake {
 
   /**
    * Apply chosen proposals of an inbox item.
-   * decisions: [{ index, edits?: {expiry_date, issue_date, approval_number, device, ...}, recordIds?: [] }]
+   * decisions: [{ index, edits?: {expiry_date, issue_date, approval_number, device, ...}, recordIds?: [], create?: [] }]
+   * `create` lists device names to add as new records from the letter, for a
+   * family letter whose records do not exist yet. A decision with no index
+   * only creates records (a letter that matched nothing).
    */
   apply(inboxId, decisions, { actor = this.store.actor } = {}) {
     const item = this.store.getInbox(inboxId);
@@ -285,9 +294,26 @@ class Intake {
     this.store.db.tx(() => {
       for (const d of decisions) {
         const p = item.proposals[d.index];
-        if (!p) continue;
         const edits = d.edits || {};
         const src = `LOA: ${item.filename || 'document'}${L.pageStart ? ` p.${L.pageStart}` : ''}`;
+        for (const name of d.create || []) {
+          const device = String(name || '').trim();
+          if (!device) continue;
+          const prod = (p && (L.products || []).find((x) => x.value === p.device)) || {};
+          const rec = {
+            ...letterRecord(L, device, prod),
+            ...pick(edits, ['platform', 'bundle', 'expiry_date', 'issue_date', 'approval_number']),
+            source: 'loa', verified_at: new Date().toISOString(), verified_by: actor,
+          };
+          if (!L.category || !L.scheme) throw new Error('The letter has no brand or approval type, so a record cannot be created from it');
+          let r = this.store.findByKey(rec);
+          if (!r) r = this.store.createRecord(rec, { source: src, actor });
+          this.store.linkDocument(item.document_id, r.id);
+          const apId = this.store.db.get('SELECT id FROM approvals WHERE record_id=? ORDER BY id DESC LIMIT 1', [r.id]);
+          if (apId) this.store.db.run('UPDATE approvals SET document_id=?, inbox_id=? WHERE id=?', [item.document_id, inboxId, apId.id]);
+          results.push({ action: 'created', record_id: r.id });
+        }
+        if (!p) continue;
         if (p.action === 'create') {
           const rec = { ...p.record, ...edits, source: 'loa', verified_at: new Date().toISOString(), verified_by: actor };
           let r = this.store.findByKey(rec);
