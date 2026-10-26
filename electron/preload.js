@@ -7,7 +7,7 @@ contextBridge.exposeInMainWorld('loa', {
   native: (op, args) => ipcRenderer.invoke('native', op, args),
   pathForFile: (file) => { try { return webUtils.getPathForFile(file); } catch (_) { return ''; } },
   on: (channel, fn) => {
-    if (!['navigate', 'digest'].includes(channel)) return () => {};
+    if (!['navigate', 'digest', 'update'].includes(channel)) return () => {};
     const h = (_e, payload) => fn(payload);
     ipcRenderer.on(channel, h);
     return () => ipcRenderer.removeListener(channel, h);

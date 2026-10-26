@@ -53,15 +53,48 @@ jobs:
           $p = Start-Process -FilePath $exe.FullName -ArgumentList "--smoke-test" -PassThru -Wait -RedirectStandardOutput smoke.txt
           Get-Content smoke.txt
           if ($p.ExitCode -ne 0) { throw "Smoke test failed ($($p.ExitCode))" }
+      - name: Check the update manifest was built
+        shell: pwsh
+        run: if (!(Test-Path release/latest.yml)) { throw "release/latest.yml is missing" }
       - uses: actions/upload-artifact@v4
         with:
           name: LOA-Command-Center-Windows
           path: |
             release/*.exe
+            release/latest.yml
           if-no-files-found: error
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_tag || github.ref_name }}
-          files: release/*.exe
+          files: |
+            release/*.exe
+            release/*.blockmap
+            release/latest.yml
+      - name: Is this version already published for auto-update?
+        id: pub
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          "version=$v" >> $env:GITHUB_OUTPUT
+          gh api "repos/${{ github.repository }}/releases/tags/v$v" --silent 2>$null
+          if ($LASTEXITCODE -eq 0) { "exists=true" >> $env:GITHUB_OUTPUT; "v$v is already published" } else { "exists=false" >> $env:GITHUB_OUTPUT; "v$v is new" }
+          $global:LASTEXITCODE = 0
+      - name: Publish the update
+        if: steps.pub.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          target_commitish: ${{ github.sha }}
+          tag_name: v${{ steps.pub.outputs.version }}
+          name: LOA Command Center v${{ steps.pub.outputs.version }}
+          body: Installed copies update themselves. For a new install, download the Setup exe.
+          files: |
+            release/LOA-Command-Center-Setup-*.exe
+            release/LOA-Command-Center-Setup-*.exe.blockmap
+            release/LOA-Command-Center-Portable-*.exe
+            release/latest.yml
+          fail_on_unmatched_files: true

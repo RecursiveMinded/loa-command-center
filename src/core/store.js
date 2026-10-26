@@ -31,6 +31,7 @@ const DEFAULT_SETTINGS = {
   ai: { provider: 'off', baseUrl: 'http://127.0.0.1:11434', model: 'gemma3:4b', apiKey: '' },
   runInBackground: true,
   startWithWindows: false,
+  autoUpdate: true,
   backupKeep: 14,
   lastBackup: null,
 };
@@ -233,7 +234,7 @@ class Store {
   }
 
   documentsFor(recordId) {
-    return this.db.all(`SELECT d.id, d.filename, d.stored_path, d.uploaded_at, d.page_count FROM documents d
+    return this.db.all(`SELECT d.id, d.filename, d.stored_path, d.size, d.uploaded_at, d.page_count FROM documents d
       JOIN document_links l ON l.document_id = d.id WHERE l.record_id=? ORDER BY d.uploaded_at DESC`, [recordId]);
   }
 

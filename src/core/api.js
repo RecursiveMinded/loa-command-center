@@ -24,8 +24,11 @@ class AppApi {
   static async create({ dataDir, actor = '' }) {
     fs.mkdirSync(dataDir, { recursive: true });
     const dbFile = path.join(dataDir, 'loa.db');
+    // Keep the file as it was before this version opens (and migrates) it.
+    const before = fs.existsSync(dbFile) ? fs.readFileSync(dbFile) : null;
     const db = await Database.open(dbFile);
     const api = new AppApi(db, dataDir, actor);
+    api.upgradeBackup(before);
     api.autoBackup();
     return api;
   }
@@ -79,7 +82,7 @@ class AppApi {
     return {
       record: this.decorate(r),
       approvals,
-      documents: this.store.documentsFor(id),
+      documents: this.store.documentsFor(id).map(({ stored_path: p, ...d }) => ({ ...d, missing: !p || !fs.existsSync(p) })),
       audit: this.store.auditLog({ recordId: id, limit: 200 }),
       coverage: replacement ? coverage(r.expiry_date || (current && current.expiry_date), replacement.issue_date) : null,
     };
@@ -199,6 +202,14 @@ class AppApi {
   }
 
   documentText(id) { return this.store.documentText(id); }
+
+  /** The archived LOA itself, for viewing or saving a copy outside the desktop app. */
+  documentFile(id) {
+    const p = this.documentPath(id);
+    if (!p) throw new Error('The archived file is missing');
+    const d = this.store.getDocument(id);
+    return { name: d.filename, bytes: fs.readFileSync(p) };
+  }
 
   unlinkDocument(documentId, recordId) { this.store.unlinkDocument(documentId, recordId); return this.getRecord(recordId); }
 
@@ -336,6 +347,21 @@ class AppApi {
     return file;
   }
 
+  /** First start of a new app version: save the previous database untouched. */
+  upgradeBackup(before) {
+    const s = this.store.getSettings();
+    if (s.appVersion === VERSION) return null;
+    let file = null;
+    if (before && this.backupDir && this.store.listRecords().length) {
+      fs.mkdirSync(this.backupDir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+      file = path.join(this.backupDir, `loa-${stamp}-before-v${VERSION}.db`);
+      fs.writeFileSync(file, before);
+    }
+    this.store.setSettings({ appVersion: VERSION });
+    return file;
+  }
+
   autoBackup() {
     if (!this.backupDir) return;
     const s = this.store.getSettings();
@@ -394,7 +420,7 @@ class AppApi {
 const PUBLIC_METHODS = [
   'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'bulkUpdate',
   'activateReplacement', 'listAliases', 'setAlias', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
-  'ingestDocument', 'listInbox', 'applyInbox', 'rejectInbox', 'approveAllSafe', 'rematch', 'listDocuments',
+  'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'approveAllSafe', 'rematch', 'listDocuments',
   'documentText', 'unlinkDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
   'aiDraftEmail', 'backup', 'listBackups', 'restore', 'health',

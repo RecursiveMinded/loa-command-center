@@ -141,7 +141,7 @@ export function Register({ app, params }) {
         <td class="small nowrap">${r.stageNow}</td>
         <td class="small">${r.owner || html`<span class="faint">—</span>`}</td>
         <td class="small ellipsis" style="max-width:200px" title=${r.next_action}>${r.next_action}${r.next_action_date ? html` <span class="faint">${fmtDate(r.next_action_date)}</span>` : null}</td>
-        <td class="num">${r.doc_count ? html`<span class="tag">${r.doc_count}</span>` : html`<span class="faint">—</span>`}</td>
+        <td class="num">${r.doc_count ? html`<button class="tag linktag" title="View the LOAs for this record" onClick=${(e) => { e.stopPropagation(); app.openRecord(r.id, 'documents'); }}><${Icon} name="file" /> ${r.doc_count}</button>` : html`<span class="faint">—</span>`}</td>
         <td class="small nowrap">${r.portal_status === 'Not Tracked' ? html`<span class="faint">—</span>` : r.portal_status}</td>
       </tr>`)}</tbody></table>
       ${list.length > limit ? html`<div class="row" style="justify-content:center;padding:12px"><button class="btn" onClick=${() => setLimit(limit + 500)}>Show more (${list.length - limit} hidden)</button></div>` : null}

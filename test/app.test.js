@@ -72,6 +72,12 @@ test('dropping LOAs: proposals, review, apply, audit and dedupe', async () => {
   const detail = api.getRecord(nx200.id);
   assert.deepEqual(detail.approvals.map((a) => a.role).sort(), ['current', 'superseded']);
   assert.ok(detail.audit.some((a) => a.field === 'expiry_date' && a.old_value === '2026-06-01' && a.actor === 'Tester'));
+  assert.equal(detail.documents.length, 1);
+  assert.equal(detail.documents[0].missing, false);
+  assert.equal(detail.documents[0].stored_path, undefined, 'file paths stay in the main process');
+  const loa = api.documentFile(detail.documents[0].id);
+  assert.equal(loa.name, 'merged.pdf');
+  assert.equal(loa.bytes.toString(), 'pdf-bytes-1', 'the archived LOA can be reopened or saved');
 
   const again = api.ingestDocument({ filename: 'copy.pdf', bytes: Buffer.from('pdf-bytes-1'), pages: [L.amex] });
   assert.equal(again.status, 'duplicate');
@@ -179,4 +185,23 @@ test('reports, exports, backup and restore', async () => {
   await api.restore(file);
   assert.equal(api.listRecords().length, n);
   assert.equal(api.health().integrity, 'ok');
+});
+
+test('a new app version saves the old database before opening it', async () => {
+  const { api, dir } = await fresh();
+  assert.equal(api.listBackups().filter((b) => b.name.includes('-before-v')).length, 0, 'no backup on a first install');
+  api.loadSampleData();
+  api.setSettings({ appVersion: '0.9.0' });
+  api.db.close();
+  const old = fs.readFileSync(path.join(dir, 'loa.db'));
+
+  const next = await AppApi.create({ dataDir: dir });
+  const saved = next.listBackups().filter((b) => b.name.includes('-before-v'));
+  assert.equal(saved.length, 1);
+  assert.deepEqual(fs.readFileSync(saved[0].path), old, 'the backup is the untouched previous file');
+  assert.equal(next.listRecords().length > 0, true, 'records carry over');
+  next.db.close();
+
+  const again = await AppApi.create({ dataDir: dir });
+  assert.equal(again.listBackups().filter((b) => b.name.includes('-before-v')).length, 1, 'only once per version');
 });

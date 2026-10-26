@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'preact/hooks';
 import { html, Icon, Drawer, fmtDate, fmtWhen, Spinner, toast, toastError, HealthPill, Select, daysLabel } from '../lib.js';
-import { call, native, isDesktop } from '../api.js';
+import { call } from '../api.js';
+import { DocButtons, openDoc } from '../docs.js';
 
 const BLANK = {
   device: '', platform: '', bundle: '', family: '', category: 'EMV L1 Contact', scheme: '', kernel_version: '', approval_number: '',
@@ -8,10 +9,10 @@ const BLANK = {
   next_action: '', next_action_date: '', extension_used: false, notes: '', portal_date: '', portal_status: 'Not Tracked', change_ticket: '', archived: false,
 };
 
-export function RecordDrawer({ id, app, onClose }) {
+export function RecordDrawer({ id, app, onClose, tab: startTab }) {
   const [data, setData] = useState(null);
   const [form, setForm] = useState(id ? null : { ...BLANK });
-  const [tab, setTab] = useState('details');
+  const [tab, setTab] = useState(startTab || 'details');
   const [busy, setBusy] = useState(false);
   const tax = app.info.taxonomy;
 
@@ -64,6 +65,10 @@ export function RecordDrawer({ id, app, onClose }) {
       ${data.coverage.kind === 'gap' ? `Coverage gap: ${data.coverage.days} days between the current expiry and the replacement taking effect.` : `Replacement overlaps the current approval by ${data.coverage.days} days, so there is no gap.`}</div>` : null}
     ${id ? html`<div class="tabs">${[['details', 'Details'], ['approvals', `Approvals (${data.approvals.length})`], ['documents', `LOAs (${data.documents.length})`], ['history', 'History']].map(([k, l]) => html`<button class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${l}</button>`)}</div>` : null}
 
+    ${tab === 'details' && data && data.documents.length ? html`<div class="loa-strip">
+      <${Icon} name="file" /><span class="grow"><b>Latest LOA</b> <a href="#" class="dev" onClick=${(e) => { e.preventDefault(); openDoc(data.documents[0]); }}>${data.documents[0].filename}</a>
+        <span class="faint small"> · added ${fmtWhen(data.documents[0].uploaded_at)}${data.documents.length > 1 ? html` · <a href="#" onClick=${(e) => { e.preventDefault(); setTab('documents'); }}>all ${data.documents.length} LOAs</a>` : null}</span></span>
+      <${DocButtons} d=${data.documents[0]} /></div>` : null}
     ${tab === 'details' ? html`
       <div class="section-title">Certification</div>
       <div class="grid3">
@@ -98,14 +103,16 @@ export function RecordDrawer({ id, app, onClose }) {
     ${tab === 'approvals' ? html`${data.approvals.length ? html`<div class="timeline-ap">${data.approvals.map((a) => html`<div class=${`it ${a.role}`}>
         <div class="row wrap"><b>${a.approval_number || 'Approval'}</b><span class=${`pill ${a.role === 'current' ? 'good' : a.role === 'replacement' ? 'info' : ''}`}>${a.role === 'superseded' ? 'History' : a.role}</span>
           ${a.role === 'replacement' ? html`<button class="btn sm" onClick=${() => activate(a.id)}>Make current now</button>` : null}</div>
-        <div class="small muted">Issued ${fmtDate(a.issue_date) || '—'} · expires ${fmtDate(a.expiry_date) || '—'}${a.filename ? ` · ${a.filename}` : ''}</div></div>`)}</div>`
+        <div class="small muted">Issued ${fmtDate(a.issue_date) || '—'} · expires ${fmtDate(a.expiry_date) || '—'}${a.filename ? html` · <a href="#" onClick=${(e) => { e.preventDefault(); openDoc({ id: a.document_id }); }} title="Open this LOA">${a.filename}</a>` : ''}</div></div>`)}</div>`
       : html`<p class="muted">No approvals recorded yet. Drop the LOA in the inbox to add one.</p>`}
       <p class="muted small mt">A replacement that is not yet effective becomes current automatically in the plan; use "Make current now" to switch early.</p>` : null}
 
-    ${tab === 'documents' ? html`${data.documents.length ? html`<table class="t compact"><thead><tr><th>File</th><th>Added</th><th class="num">Pages</th><th></th></tr></thead><tbody>
-        ${data.documents.map((d) => html`<tr><td class="dev">${d.filename}</td><td class="small">${fmtWhen(d.uploaded_at)}</td><td class="num">${d.page_count}</td>
-          <td class="nowrap">${isDesktop ? html`<button class="btn sm ghost" onClick=${() => native('openDocument', { id: d.id }).catch(toastError)}>Open</button>` : null}
-          <button class="btn sm ghost" onClick=${() => unlink(d.id)} title="Remove the link to this record (the file stays archived)">Unlink</button></td></tr>`)}</tbody></table>`
+    ${tab === 'documents' ? html`${data.documents.length ? html`<table class="t compact"><thead><tr><th>LOA</th><th>Added</th><th class="num">Pages</th><th></th></tr></thead><tbody>
+        ${data.documents.map((d) => html`<tr><td class="dev">${d.missing ? d.filename : html`<a href="#" onClick=${(e) => { e.preventDefault(); openDoc(d); }} title="Open">${d.filename}</a>`}</td>
+          <td class="small nowrap">${fmtWhen(d.uploaded_at)}</td><td class="num">${d.page_count}</td>
+          <td class="nowrap"><span class="row"><${DocButtons} d=${d} />
+          <button class="btn sm ghost" onClick=${() => unlink(d.id)} title="Remove the link to this record (the file stays archived)">Unlink</button></span></td></tr>`)}</tbody></table>
+        <p class="muted small mt">LOAs are archived in the data folder, so they open even if the original file was moved or deleted.</p>`
       : html`<p class="muted">No LOA linked yet. Drop the letter in the inbox and approve it to attach it here.</p>`}` : null}
 
     ${tab === 'history' ? html`${data.audit.length ? html`<table class="t compact"><thead><tr><th>When</th><th>Change</th><th>By / source</th></tr></thead><tbody>

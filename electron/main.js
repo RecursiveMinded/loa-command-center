@@ -6,6 +6,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell, Notification, Tray, Menu, na
 const fs = require('fs');
 const path = require('path');
 const { AppApi, PUBLIC_METHODS } = require('../src/core/api');
+const updates = require('./updater');
 
 const APP_NAME = 'LOA Command Center';
 app.setName(APP_NAME);
@@ -143,6 +144,7 @@ function createTray() {
     { label: 'Open LOA Command Center', click: () => showWindow() },
     { label: 'Show action plan', click: () => showWindow('plan') },
     { label: 'Send digest now', click: () => sendDigest(true) },
+    { label: 'Check for updates', click: () => checkUpdatesNow() },
     { type: 'separator' },
     { label: 'Quit', click: () => { quitting = true; app.quit(); } },
   ]));
@@ -231,6 +233,21 @@ function registerIpc() {
           if (err) throw new Error(err);
           return true;
         }
+        case 'saveDocument': {
+          const p = api.documentPath(a.id);
+          if (!p) throw new Error('The archived file is missing');
+          const name = (a.name || path.basename(p)).replace(/[\\/:*?"<>|]/g, '_');
+          const r = await dialog.showSaveDialog(win, { defaultPath: name, filters: [{ name: 'LOA', extensions: [path.extname(p).slice(1) || 'pdf'] }] });
+          if (r.canceled || !r.filePath) return null;
+          fs.copyFileSync(p, r.filePath);
+          return r.filePath;
+        }
+        case 'showDocument': {
+          const p = api.documentPath(a.id);
+          if (!p) throw new Error('The archived file is missing');
+          shell.showItemInFolder(p);
+          return true;
+        }
         case 'openPath': { await shell.openPath(a.path); return true; }
         case 'showItem': { shell.showItemInFolder(a.path); return true; }
         case 'openExternal': { openExternal(a.url); return true; }
@@ -250,6 +267,9 @@ function registerIpc() {
           app.exit(0);
           return target;
         }
+        case 'updateStatus': return updates.getStatus();
+        case 'checkForUpdates': return await updates.check();
+        case 'installUpdate': { const ok = updates.install(); if (ok) quitting = true; return ok; }
         case 'relaunch': { app.relaunch(); quitting = true; app.exit(0); return true; }
         default: throw new Error(`Unknown native op ${op}`);
       }
@@ -308,6 +328,30 @@ function applyOsSettings() {
   } catch (e) { logError(e); }
 }
 
+/** Manual check from the tray: always say what happened. */
+async function checkUpdatesNow() {
+  const st = await updates.check({ manual: true });
+  if (st.state === 'unsupported') notify('Updates', 'The portable version does not update itself. Use the installer to get automatic updates.');
+  else if (st.state === 'current') notify('You have the latest version', `LOA Command Center ${st.current} is up to date.`);
+  else if (st.state === 'downloading') notify(`Downloading version ${st.version}`, 'You will be told when it is ready to install.');
+  else if (st.state === 'error') notify('Could not check for updates', st.message);
+}
+
+function startUpdates() {
+  let told = null;
+  updates.init({
+    enabled: () => api.getSettings().autoUpdate !== false,
+    log: logError,
+    changed: (st) => {
+      if (win) win.webContents.send('update', st);
+      if (st.state === 'ready' && told !== st.version) {
+        told = st.version;
+        notify(`Update ready: version ${st.version}`, 'Restart LOA Command Center to install it. It also installs the next time you quit.', 'settings');
+      }
+    },
+  });
+}
+
 // --------------------------------------------------------------- lifecycle
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -329,6 +373,7 @@ if (!app.requestSingleInstanceLock()) {
     createTray();
     applyOsSettings();
     startScheduler();
+    startUpdates();
   });
   app.on('before-quit', () => { quitting = true; try { api && api.db.close(); } catch (_) { /* closing */ } });
   app.on('window-all-closed', () => { /* stay in tray */ });
