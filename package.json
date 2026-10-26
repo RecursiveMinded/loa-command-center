@@ -1,0 +1,79 @@
+{
+  "name": "loa-command-center",
+  "productName": "LOA Command Center",
+  "version": "1.0.0",
+  "description": "Track Letters of Approval and payment terminal certifications: drop in LOAs, get a renewal action plan, reports and reminders.",
+  "author": "LOA Command Center",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "electron/main.js",
+  "scripts": {
+    "build:ui": "node scripts/build-ui.js",
+    "start": "npm run build:ui && electron .",
+    "dev:web": "npm run build:ui && node dev/server.js",
+    "test": "node --test \"test/*.test.js\"",
+    "test:ui": "npm run build:ui && node test/ui/smoke.js",
+    "icons": "python3 scripts/make-icons.py",
+    "dist": "npm run build:ui && electron-builder --win --x64"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "sql.js": "^1.15.2"
+  },
+  "devDependencies": {
+    "@tesseract.js-data/eng": "^1.0.0",
+    "electron": "^37.10.3",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "htm": "^3.1.1",
+    "pdfjs-dist": "^4.10.38",
+    "preact": "^10.29.8",
+    "tesseract.js": "^7.0.0"
+  },
+  "build": {
+    "appId": "com.loacommandcenter.app",
+    "productName": "LOA Command Center",
+    "copyright": "Copyright © 2026",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**",
+      "src/core/**",
+      "dist/ui/**",
+      "package.json",
+      "!**/*.map"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "LOA Command Center",
+      "artifactName": "LOA-Command-Center-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "LOA-Command-Center-Portable-${version}.${ext}"
+    },
+    "compression": "maximum"
+  }
+}
