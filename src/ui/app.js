@@ -13,7 +13,7 @@ import { Settings } from './views/settings.js';
 import { RecordDrawer } from './views/record.js';
 import { Assistant } from './views/assistant.js';
 import { selfTest } from './selftest.js';
-import { useUpdate, installUpdate } from './update.js';
+import { useUpdate, installUpdate, checkForUpdates } from './update.js';
 
 window.__loaSelfTest = selfTest;
 
@@ -123,7 +123,10 @@ function App() {
         ${k === 'plan' && counts.critical ? html`<span class="count red">${counts.critical}</span>` : null}</button>`)}
       <div class="spacer"></div>
       <button class="nav" onClick=${() => setAi(true)}><${Icon} name="spark" />Ask AI</button>
-      <div class="foot">${boot.settings.companyName ? html`${boot.settings.companyName}<br />` : null}Version ${boot.info.version} · offline</div>
+      <div class="foot">${boot.settings.companyName ? html`${boot.settings.companyName}<br />` : null}Version ${boot.info.version} · offline
+        ${update && update.state !== 'unsupported' ? html`<br /><button class="linkbtn" disabled=${['checking', 'downloading'].includes(update.state)}
+          onClick=${() => checkForUpdates().then((st) => toast(st.state === 'current' ? 'You have the latest version' : st.state === 'error' ? st.message : st.state === 'ready' ? `Version ${st.version} is ready to install` : `Downloading version ${st.version}…`, st.state === 'error' ? 'err' : 'ok')).catch(toastError)}>
+          ${update.state === 'checking' ? 'Checking…' : update.state === 'downloading' ? `Downloading ${update.version || 'update'}…` : 'Check for updates'}</button>` : null}</div>
     </nav>
     <main class="main">
       <header class="topbar">

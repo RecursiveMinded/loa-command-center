@@ -1,6 +1,6 @@
 'use strict';
-// Automatic updates for the installed app. New versions are published to a
-// public releases repository (see "publish" in package.json); the app checks
+// Automatic updates for the installed app. New versions are published as
+// GitHub releases (see "publish" in package.json); the app checks
 // at start-up and every 12 hours, downloads in the background, and installs
 // when the user restarts (or on the next quit).
 
@@ -50,6 +50,8 @@ async function check() {
   if (!updater) return status;
   if (['checking', 'downloading', 'ready'].includes(status.state)) return status;
   try { await updater.checkForUpdates(); } catch (_) { /* reported through the error event */ }
+  // Resolve once the check has settled into a result.
+  for (let i = 0; i < 100 && status.state === 'checking'; i++) await new Promise((r) => setTimeout(r, 100));
   return status;
 }
 

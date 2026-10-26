@@ -345,3 +345,5 @@ kbd { font-family: inherit; font-size: 11px; border: 1px solid var(--line-2); bo
 .drop .btn svg { width: 16px; height: 16px; color: inherit; }
 table.t td .faint.small { white-space: nowrap; }
 .update-bar { display: flex; align-items: center; gap: 12px; margin: 12px 26px 0; }
+.linkbtn { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; }
+.linkbtn:disabled { text-decoration: none; cursor: default; opacity: .8; }

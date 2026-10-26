@@ -43,7 +43,7 @@ Data lives in `%LOCALAPPDATA%\LOA Command Center` (database, archived LOAs, back
 
 ### Publishing updates
 
-Updates are served from a public repository next to this one, named `<this repo>-releases` (set in `build.publish` in `package.json`); the source stays private. One-time setup: create that public repository with a README, create a fine-grained token with **Contents: read and write** on it only, and save it as the Actions secret `RELEASES_TOKEN` in this repository. After that, every push to `main` with a new `version` in `package.json` publishes that version there, and installed apps pick it up.
+Installed apps update from this repository's GitHub releases (`build.publish` in `package.json`), so the repository must be public for them to download. Every push to `main` with a new `version` in `package.json` builds, smoke-tests and publishes release `v<version>` with the installer, the portable exe and `latest.yml`; nothing else to do. A version that is already released is skipped.
 
 ## Develop
 

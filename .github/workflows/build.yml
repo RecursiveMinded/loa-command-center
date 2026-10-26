@@ -34,11 +34,6 @@ jobs:
   windows:
     needs: test
     runs-on: windows-latest
-    env:
-      # Optional: a token for the public <repo>-releases repository. With it,
-      # each new version merged to main is published there and installed
-      # apps update themselves.
-      RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -73,25 +68,27 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_tag || github.ref_name }}
-          files: release/*.exe
+          files: |
+            release/*.exe
+            release/*.blockmap
+            release/latest.yml
       - name: Is this version already published for auto-update?
         id: pub
-        if: github.ref == 'refs/heads/main' && env.RELEASES_TOKEN != ''
+        if: github.ref == 'refs/heads/main'
         shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
           "version=$v" >> $env:GITHUB_OUTPUT
-          gh api "repos/${{ github.repository }}-releases/releases/tags/v$v" --silent 2>$null
+          gh api "repos/${{ github.repository }}/releases/tags/v$v" --silent 2>$null
           if ($LASTEXITCODE -eq 0) { "exists=true" >> $env:GITHUB_OUTPUT; "v$v is already published" } else { "exists=false" >> $env:GITHUB_OUTPUT; "v$v is new" }
           $global:LASTEXITCODE = 0
       - name: Publish the update
         if: steps.pub.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
         with:
-          repository: ${{ github.repository }}-releases
-          token: ${{ secrets.RELEASES_TOKEN }}
+          target_commitish: ${{ github.sha }}
           tag_name: v${{ steps.pub.outputs.version }}
           name: LOA Command Center v${{ steps.pub.outputs.version }}
           body: Installed copies update themselves. For a new install, download the Setup exe.

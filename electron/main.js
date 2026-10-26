@@ -144,6 +144,7 @@ function createTray() {
     { label: 'Open LOA Command Center', click: () => showWindow() },
     { label: 'Show action plan', click: () => showWindow('plan') },
     { label: 'Send digest now', click: () => sendDigest(true) },
+    { label: 'Check for updates', click: () => checkUpdatesNow() },
     { type: 'separator' },
     { label: 'Quit', click: () => { quitting = true; app.quit(); } },
   ]));
@@ -310,6 +311,15 @@ function applyOsSettings() {
       app.setLoginItemSettings({ openAtLogin: !!s.startWithWindows, args: ['--hidden'] });
     }
   } catch (e) { logError(e); }
+}
+
+/** Manual check from the tray: always say what happened. */
+async function checkUpdatesNow() {
+  const st = await updates.check({ manual: true });
+  if (st.state === 'unsupported') notify('Updates', 'The portable version does not update itself. Use the installer to get automatic updates.');
+  else if (st.state === 'current') notify('You have the latest version', `LOA Command Center ${st.current} is up to date.`);
+  else if (st.state === 'downloading') notify(`Downloading version ${st.version}`, 'You will be told when it is ready to install.');
+  else if (st.state === 'error') notify('Could not check for updates', st.message);
 }
 
 function startUpdates() {
