@@ -353,3 +353,7 @@ table.t td .faint.small { white-space: nowrap; }
 .linktag { cursor: pointer; border: 0; display: inline-flex; align-items: center; gap: 4px; font: inherit; }
 .linktag svg { width: 12px; height: 12px; }
 .linktag:hover { filter: brightness(.95); text-decoration: underline; }
+.tagrow { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.utag { font-size: 11px; line-height: 16px; padding: 0 6px; border-radius: 9px; background: var(--brand-soft); color: var(--text); cursor: pointer; white-space: nowrap; }
+.utag:hover { text-decoration: underline; }
+.recent-bar { margin-bottom: 14px; gap: 10px; }

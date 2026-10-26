@@ -357,6 +357,7 @@ class Intake {
   approveAllSafe({ actor } = {}) {
     const threshold = this.store.getSettings().autoApproveConfidence || 90;
     let items = 0, changes = 0;
+    const recordIds = new Set();
     for (const it of this.store.listInbox({ status: 'pending' })) {
       if (!it.proposals.length) continue;
       const allSafe = it.proposals.every((p) => isSafe(p, it.parsed, threshold));
@@ -364,8 +365,9 @@ class Intake {
       const res = this.apply(it.id, it.proposals.map((_, i) => ({ index: i })), { actor });
       items++;
       changes += res.length;
+      for (const r of res) if (r.record_id) recordIds.add(r.record_id);
     }
-    return { items, changes };
+    return { items, changes, recordIds: [...recordIds] };
   }
 }
 

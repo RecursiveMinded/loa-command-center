@@ -3,6 +3,7 @@ import { html, Icon, fmtDate, fmtWhen, plural, useLoad, Spinner, toast, toastErr
 import { call } from '../api.js';
 import { subscribe, addFiles, clearFinished, filesFromDrop } from '../queue.js';
 import { DocButtons, openDoc } from '../docs.js';
+import { addRecent, recentIds, clearRecent, onRecent } from '../recent.js';
 
 const val = (f) => (f && typeof f === 'object' ? f.value : f) || '';
 const ACTION = {
@@ -36,6 +37,8 @@ export function Inbox({ app, params }) {
   const [q, setQ] = useState({ items: [], running: false });
   const [over, setOver] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [recent, setRecent] = useState(recentIds);
+  useEffect(() => onRecent(setRecent), []);
   useEffect(() => subscribe(setQ), []);
   const threshold = app.settings.autoApproveConfidence || 90;
   const pendingList = tab === 'pending' ? items || [] : [];
@@ -53,6 +56,7 @@ export function Inbox({ app, params }) {
     setBusy(true);
     try {
       const r = await call('approveAllSafe');
+      addRecent(r.recordIds);
       toast(r.items ? `Approved ${plural(r.items, 'letter')} (${plural(r.changes, 'change')})` : 'No safe letters to approve', r.items ? 'ok' : '');
       app.refresh();
     } catch (e) { toastError(e); } finally { setBusy(false); }
@@ -74,6 +78,10 @@ export function Inbox({ app, params }) {
         <div style=${pendingList.length ? '' : 'margin-top:14px;display:flex;justify-content:center'}><${FilePickers} onFiles=${onFiles} compact=${!!pendingList.length} /></div>
       </div>
     </div>
+
+    ${recent.length ? html`<div class="callout good row recent-bar"><${Icon} name="check" /><span class="grow"><b>${plural(recent.length, 'record')}</b> created or updated from LOAs. Set their platform, bundle, tags or owner in one go.</span>
+      <button class="btn sm primary" onClick=${() => app.go('register', { filter: { ids: recent, idsLabel: 'from LOA review' }, select: true })}><${Icon} name="edit" /> Bulk edit these</button>
+      <button class="btn sm ghost" onClick=${clearRecent} title="Start a new batch">Clear</button></div>` : null}
 
     ${q.items.length ? html`<div class="card queue"><div class="hd"><h3>${working.length ? html`<span class="row"><${Spinner} /> Reading ${plural(working.length, 'file')}…</span>` : `Finished ${plural(done.length, 'file')}`}</h3>
         ${done.length && !working.length ? html`<button class="btn sm ghost" onClick=${clearFinished}>Clear</button>` : null}</div>
@@ -107,6 +115,7 @@ function Review({ it, app, threshold, readOnly, onDone }) {
     setBusy(true);
     try {
       const res = await call('applyInbox', it.id, decisions);
+      addRecent(res.map((x) => x.record_id));
       toast(`Applied: ${summarize(res)}`, 'ok');
       onDone();
     } catch (e) { toastError(e); } finally { setBusy(false); }

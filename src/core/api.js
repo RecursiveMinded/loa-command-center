@@ -99,7 +99,9 @@ class AppApi {
 
   deleteRecord(id) { return this.store.deleteRecord(id); }
 
-  bulkUpdate(ids, patch) { return { changed: this.store.bulkUpdate(ids, patch, { source: 'manual' }) }; }
+  bulkUpdate(ids, patch, tags = null) { return this.store.bulkUpdate(ids, patch || {}, { source: 'manual' }, tags); }
+
+  listTags() { return this.store.allTags(); }
 
   /** Make a replacement approval the current one (audited). */
   activateReplacement(approvalId) {
@@ -419,7 +421,7 @@ class AppApi {
 // Methods the UI may call. Anything else is rejected by the IPC/HTTP bridges.
 const PUBLIC_METHODS = [
   'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'bulkUpdate',
-  'activateReplacement', 'listAliases', 'setAlias', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
+  'activateReplacement', 'listTags', 'listAliases', 'setAlias', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
   'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'approveAllSafe', 'rematch', 'listDocuments',
   'documentText', 'unlinkDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',

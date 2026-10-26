@@ -151,7 +151,7 @@ const EXPORT_COLS = [
   ['Disposition', 'disposition', 22], ['Owner', 'owner', 16], ['Customer', 'customer', 16], ['Market', 'market', 14],
   ['Next action', 'next_action', 28], ['Next action date', 'next_action_date', 14], ['Restricted', 'restricted', 10],
   ['LOAs on file', 'doc_count', 10], ['Published date', 'portal_date', 14], ['Portal status', 'portal_status', 16],
-  ['Change ticket', 'change_ticket', 14], ['Notes', 'notes', 40],
+  ['Change ticket', 'change_ticket', 14], ['Tags', 'tags', 24], ['Notes', 'notes', 40],
 ];
 
 async function exportExcel({ records, analysis, asOf = todayIso() }) {

@@ -10,7 +10,7 @@ const RECORD_FIELDS = [
   'vendor', 'platform', 'bundle', 'device', 'family', 'category', 'scheme', 'kernel_version',
   'approval_number', 'issue_date', 'expiry_date', 'expiry_basis', 'restricted', 'stage',
   'disposition', 'owner', 'customer', 'market', 'next_action', 'next_action_date',
-  'extension_used', 'notes', 'portal_date', 'portal_status', 'change_ticket', 'archived',
+  'extension_used', 'notes', 'portal_date', 'portal_status', 'change_ticket', 'tags', 'archived',
   'source', 'verified_at', 'verified_by',
 ];
 const BOOL_FIELDS = new Set(['restricted', 'extension_used', 'archived']);
@@ -157,16 +157,15 @@ class Store {
       if (a !== b) changed.push([f, cur[f], p[f]]);
     }
     if (!changed.length) return [];
+    const merged = { ...cur, ...Object.fromEntries(changed.map((c) => [c[0], c[2]])) };
+    const rkey = this.recordKey(merged);
+    if (rkey !== cur.rkey && this.db.get('SELECT id FROM records WHERE rkey=? AND id<>?', [rkey, id])) {
+      throw new Error(`Another record already has ${merged.device} / ${merged.category} / ${merged.scheme}${merged.platform ? ` on ${merged.platform}` : ''}`);
+    }
     this.db.tx(() => {
       const sets = changed.map(([f]) => `${f}=?`).join(', ');
       this.db.run(`UPDATE records SET ${sets}, updated_at=? WHERE id=?`, [...changed.map((c) => c[2]), nowIso(), id]);
-      const merged = { ...cur, ...Object.fromEntries(changed.map((c) => [c[0], c[2]])) };
-      const rkey = this.recordKey(merged);
-      if (rkey !== cur.rkey) {
-        const clash = this.db.get('SELECT id FROM records WHERE rkey=? AND id<>?', [rkey, id]);
-        if (clash) throw new Error('Another record already has this device, category and brand');
-        this.db.run('UPDATE records SET rkey=? WHERE id=?', [rkey, id]);
-      }
+      if (rkey !== cur.rkey) this.db.run('UPDATE records SET rkey=? WHERE id=?', [rkey, id]);
       for (const [f, a, b] of changed) this.audit(id, 'update', f, a, b, source, actor);
     });
     return changed.map((c) => c[0]);
@@ -182,8 +181,45 @@ class Store {
     return true;
   }
 
-  bulkUpdate(ids, patch, opts) {
-    return this.db.tx(() => ids.map((id) => this.updateRecord(id, patch, opts)).filter((c) => c.length).length);
+  /**
+   * Apply one change to many records in a single write. A record that would
+   * clash with another (same device, type and brand on that platform) is
+   * skipped and reported instead of failing the whole batch.
+   * tags: { add: [...], remove: [...] } edits each record's tag list.
+   */
+  bulkUpdate(ids, patch = {}, opts = {}, tags = null) {
+    const out = { changed: 0, skipped: [] };
+    this.db.tx(() => {
+      for (const id of ids) {
+        const p = { ...patch };
+        if (tags) {
+          const cur = this.db.get('SELECT tags FROM records WHERE id=?', [id]);
+          if (!cur) continue;
+          const drop = new Set(splitTags(tags.remove).map((t) => t.toLowerCase()));
+          p.tags = joinTags(splitTags([...splitTags(cur.tags).filter((t) => !drop.has(t.toLowerCase())), ...splitTags(tags.add)]));
+        }
+        try {
+          if (this.updateRecord(id, p, opts).length) out.changed++;
+        } catch (e) {
+          const r = this.db.get('SELECT device, scheme, category FROM records WHERE id=?', [id]);
+          out.skipped.push({ id, label: r ? `${r.device} · ${r.scheme} ${r.category}` : id, reason: e.message });
+        }
+      }
+    });
+    return out;
+  }
+
+  allTags() {
+    const counts = new Map();
+    for (const r of this.db.all("SELECT tags FROM records WHERE tags <> '' AND archived = 0")) {
+      for (const t of splitTags(r.tags)) {
+        const k = t.toLowerCase();
+        const e = counts.get(k) || { tag: t, count: 0 };
+        e.count++;
+        counts.set(k, e);
+      }
+    }
+    return [...counts.values()].sort((a, b) => a.tag.localeCompare(b.tag));
   }
 
   // ---------------------------------------------------------------- approvals
@@ -320,14 +356,27 @@ function sanitize(data) {
     else if (v == null) v = /date|_at$/.test(f) ? null : '';
     else v = typeof v === 'string' ? v.trim() : v;
     if (/(_date|_at)$/.test(f) && v === '') v = null;
+    if (f === 'tags') v = joinTags(splitTags(v));
     out[f] = v;
   }
   return out;
 }
+
+/** Tags are stored as one comma-separated string; duplicates differ only by case. */
+function splitTags(v) {
+  const out = [];
+  const seen = new Set();
+  for (const t of (Array.isArray(v) ? v : String(v || '').split(/[,;]/))) {
+    const s = String(t).trim().replace(/\s+/g, ' ');
+    if (s && !seen.has(s.toLowerCase())) { seen.add(s.toLowerCase()); out.push(s); }
+  }
+  return out;
+}
+function joinTags(list) { return list.join(', '); }
 
 function fixRow(r) {
   for (const f of BOOL_FIELDS) r[f] = !!r[f];
   return r;
 }
 
-module.exports = { Store, RECORD_FIELDS, DEFAULT_SETTINGS, nowIso };
+module.exports = { Store, RECORD_FIELDS, DEFAULT_SETTINGS, nowIso, splitTags };
