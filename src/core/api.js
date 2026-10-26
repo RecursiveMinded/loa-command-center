@@ -82,7 +82,7 @@ class AppApi {
     return {
       record: this.decorate(r),
       approvals,
-      documents: this.store.documentsFor(id),
+      documents: this.store.documentsFor(id).map(({ stored_path: p, ...d }) => ({ ...d, missing: !p || !fs.existsSync(p) })),
       audit: this.store.auditLog({ recordId: id, limit: 200 }),
       coverage: replacement ? coverage(r.expiry_date || (current && current.expiry_date), replacement.issue_date) : null,
     };
@@ -202,6 +202,14 @@ class AppApi {
   }
 
   documentText(id) { return this.store.documentText(id); }
+
+  /** The archived LOA itself, for viewing or saving a copy outside the desktop app. */
+  documentFile(id) {
+    const p = this.documentPath(id);
+    if (!p) throw new Error('The archived file is missing');
+    const d = this.store.getDocument(id);
+    return { name: d.filename, bytes: fs.readFileSync(p) };
+  }
 
   unlinkDocument(documentId, recordId) { this.store.unlinkDocument(documentId, recordId); return this.getRecord(recordId); }
 
@@ -412,7 +420,7 @@ class AppApi {
 const PUBLIC_METHODS = [
   'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'bulkUpdate',
   'activateReplacement', 'listAliases', 'setAlias', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
-  'ingestDocument', 'listInbox', 'applyInbox', 'rejectInbox', 'approveAllSafe', 'rematch', 'listDocuments',
+  'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'approveAllSafe', 'rematch', 'listDocuments',
   'documentText', 'unlinkDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
   'aiDraftEmail', 'backup', 'listBackups', 'restore', 'health',

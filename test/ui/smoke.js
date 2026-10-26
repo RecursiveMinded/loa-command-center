@@ -65,6 +65,18 @@ function pdfFromPages(pages) {
     check(/3 letters found/.test(note), `PDF read and split: ${note.replace(/\s+/g, ' ')}`);
     const cards = await p.locator('.card.review').count();
     check(cards === 3, `${cards} letters waiting for review`);
+    // Approve one letter, then reopen its LOA from the record.
+    await p.locator('.card.review').first().locator('button:has-text("Approve")').click();
+    await p.waitForFunction(() => document.querySelectorAll('.card.review').length === 2);
+    await p.click('nav >> text=Certifications');
+    await p.locator('button.linktag').first().click();
+    await p.waitForSelector('.drawer >> text=Northwind merged.pdf');
+    const [popup] = await Promise.all([p.waitForEvent('popup'), p.locator('.drawer button[title="Open the LOA"]').first().click()]);
+    check(!!popup, 'LOA opens in a new tab from the record');
+    await popup.close();
+    const [dl] = await Promise.all([p.waitForEvent('download'), p.locator('.drawer button[title="Save a copy"]').first().click()]);
+    check(dl.suggestedFilename() === 'Northwind merged.pdf', `LOA saved as a copy: ${dl.suggestedFilename()}`);
+    await p.keyboard.press('Escape');
     const st = await p.evaluate(() => window.__loaSelfTest());
     check(st.ok, `PDF reader and OCR self test ${JSON.stringify(st)}`);
     await p.click('.topbar >> text=Summary report');

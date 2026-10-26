@@ -72,6 +72,12 @@ test('dropping LOAs: proposals, review, apply, audit and dedupe', async () => {
   const detail = api.getRecord(nx200.id);
   assert.deepEqual(detail.approvals.map((a) => a.role).sort(), ['current', 'superseded']);
   assert.ok(detail.audit.some((a) => a.field === 'expiry_date' && a.old_value === '2026-06-01' && a.actor === 'Tester'));
+  assert.equal(detail.documents.length, 1);
+  assert.equal(detail.documents[0].missing, false);
+  assert.equal(detail.documents[0].stored_path, undefined, 'file paths stay in the main process');
+  const loa = api.documentFile(detail.documents[0].id);
+  assert.equal(loa.name, 'merged.pdf');
+  assert.equal(loa.bytes.toString(), 'pdf-bytes-1', 'the archived LOA can be reopened or saved');
 
   const again = api.ingestDocument({ filename: 'copy.pdf', bytes: Buffer.from('pdf-bytes-1'), pages: [L.amex] });
   assert.equal(again.status, 'duplicate');

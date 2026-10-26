@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from 'preact/hooks';
 import { html, Icon, fmtDate, fmtWhen, plural, useLoad, Spinner, toast, toastError, Modal, bytes, recLabel } from '../lib.js';
-import { call, native, isDesktop } from '../api.js';
+import { call } from '../api.js';
 import { subscribe, addFiles, clearFinished, filesFromDrop } from '../queue.js';
+import { DocButtons, openDoc } from '../docs.js';
 
 const val = (f) => (f && typeof f === 'object' ? f.value : f) || '';
 const ACTION = {
@@ -136,7 +137,7 @@ function Review({ it, app, threshold, readOnly, onDone }) {
         ${it.status !== 'pending' ? html`<span class="tag">${it.status}${it.decided_at ? ` · ${fmtWhen(it.decided_at)}` : ''}</span>` : null}</div>
       <div class="muted small mt" style="margin-top:4px"><${Icon} name="file" size="12" /> ${it.filename}${L.pageStart ? ` · page ${L.pageStart}${L.pageEnd && L.pageEnd !== L.pageStart ? `–${L.pageEnd}` : ''}` : ''}</div></div>
     <div class="row"><button class="btn sm ghost" onClick=${showText}><${Icon} name="eye" /> Text</button>
-      ${isDesktop ? html`<button class="btn sm ghost" onClick=${() => native('openDocument', { id: it.document_id }).catch(toastError)}><${Icon} name="file" /> Open PDF</button>` : null}</div></div>
+      <button class="btn sm ghost" onClick=${() => openDoc({ id: it.document_id })}><${Icon} name="file" /> Open LOA</button></div></div>
     <div class="bd">
       <div class="facts">
         <${Fact} k="Device(s)" v=${L.products.map((p) => p.value).join(', ')} ev=${L.products[0] && L.products[0].evidence} />
@@ -236,9 +237,9 @@ function Documents({ docs, app }) {
   if (!docs.length) return html`<div class="card"><div class="empty"><${Icon} name="file" /><h3>No documents yet</h3></div></div>`;
   return html`<div class="filters"><input type="search" placeholder="Filter files" value=${q} onInput=${(e) => setQ(e.target.value)} /><span class="muted small">${plural(list.length, 'file')} archived in your data folder</span></div>
     <div class="table-wrap"><table class="t"><thead><tr><th>File</th><th>Added</th><th class="num">Pages</th><th class="num">OCR</th><th class="num">Linked records</th><th class="num">To review</th><th></th></tr></thead>
-    <tbody>${list.map((d) => html`<tr key=${d.id}><td class="dev">${d.filename}</td><td class="small nowrap">${fmtWhen(d.uploaded_at)}</td><td class="num">${d.page_count}</td><td class="num">${d.ocr_pages || '–'}</td>
+    <tbody>${list.map((d) => html`<tr key=${d.id}><td class="dev"><a href="#" onClick=${(e) => { e.preventDefault(); openDoc(d); }} title="Open">${d.filename}</a></td><td class="small nowrap">${fmtWhen(d.uploaded_at)}</td><td class="num">${d.page_count}</td><td class="num">${d.ocr_pages || '–'}</td>
       <td class="num">${d.links || '–'}</td><td class="num">${d.pending || '–'}</td>
       <td class="nowrap"><button class="btn sm ghost" onClick=${async () => { try { setText({ name: d.filename, text: await call('documentText', d.id) }); } catch (e) { toastError(e); } }}>Text</button>
-      ${isDesktop ? html`<button class="btn sm ghost" onClick=${() => native('openDocument', { id: d.id }).catch(toastError)}>Open</button>` : null}</td></tr>`)}</tbody></table></div>
+      <${DocButtons} d=${d} compact /></td></tr>`)}</tbody></table></div>
     ${text ? html`<${Modal} title=${text.name} wide onClose=${() => setText(null)}><div class="excerpt" style="max-height:66vh">${text.text}</div><//>` : null}`;
 }

@@ -234,7 +234,7 @@ class Store {
   }
 
   documentsFor(recordId) {
-    return this.db.all(`SELECT d.id, d.filename, d.stored_path, d.uploaded_at, d.page_count FROM documents d
+    return this.db.all(`SELECT d.id, d.filename, d.stored_path, d.size, d.uploaded_at, d.page_count FROM documents d
       JOIN document_links l ON l.document_id = d.id WHERE l.record_id=? ORDER BY d.uploaded_at DESC`, [recordId]);
   }
 

@@ -39,6 +39,7 @@ function App() {
   const [version, setVersion] = useState(0);
   const [counts, setCounts] = useState({ inbox: 0, critical: 0 });
   const [record, setRecord] = useState(undefined); // undefined closed, null new, id open
+  const [recordTab, setRecordTab] = useState(null);
   const [report, setReport] = useState(null);
   const [ai, setAi] = useState(false);
   const [search, setSearch] = useState('');
@@ -110,7 +111,7 @@ function App() {
   const app = {
     version, refresh, refreshCounts, counts, go, info: boot.info, settings: boot.settings,
     setSettings: (s) => { setBoot({ ...boot, settings: s }); refresh(); },
-    openRecord: (id) => setRecord(id), openReport: (opts) => setReport(opts && !(opts instanceof Event) ? opts : {}),
+    openRecord: (id, tab) => { setRecordTab(tab || null); setRecord(id); }, openReport: (opts) => setReport(opts && !(opts instanceof Event) ? opts : {}),
     openAi: () => setAi(true), search, setSearch,
   };
   const View = { dashboard: Dashboard, plan: Plan, register: Register, matrix: Matrix, inbox: Inbox, reports: Reports, settings: Settings }[route.name] || Dashboard;
@@ -141,7 +142,7 @@ function App() {
         <button class="btn sm primary" onClick=${() => installUpdate().catch(toastError)}>Restart to update</button></div>` : null}
       <div class="content"><${View} app=${app} params=${route.params} key=${route.name} /></div>
     </main>
-    ${record !== undefined ? html`<${RecordDrawer} key=${record || 'new'} id=${record} app=${app} onClose=${() => setRecord(undefined)} />` : null}
+    ${record !== undefined ? html`<${RecordDrawer} key=${`${record || 'new'}-${recordTab || ''}`} id=${record} tab=${recordTab} app=${app} onClose=${() => setRecord(undefined)} />` : null}
     ${report ? html`<${ReportModal} opts=${report} onClose=${() => setReport(null)} />` : null}
     ${ai ? html`<${Assistant} app=${app} onClose=${() => setAi(false)} />` : null}
     ${dragging ? html`<div class="dropcover"><div>Drop LOAs to read them</div></div>` : null}

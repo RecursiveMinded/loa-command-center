@@ -233,6 +233,21 @@ function registerIpc() {
           if (err) throw new Error(err);
           return true;
         }
+        case 'saveDocument': {
+          const p = api.documentPath(a.id);
+          if (!p) throw new Error('The archived file is missing');
+          const name = (a.name || path.basename(p)).replace(/[\\/:*?"<>|]/g, '_');
+          const r = await dialog.showSaveDialog(win, { defaultPath: name, filters: [{ name: 'LOA', extensions: [path.extname(p).slice(1) || 'pdf'] }] });
+          if (r.canceled || !r.filePath) return null;
+          fs.copyFileSync(p, r.filePath);
+          return r.filePath;
+        }
+        case 'showDocument': {
+          const p = api.documentPath(a.id);
+          if (!p) throw new Error('The archived file is missing');
+          shell.showItemInFolder(p);
+          return true;
+        }
         case 'openPath': { await shell.openPath(a.path); return true; }
         case 'showItem': { shell.showItemInFolder(a.path); return true; }
         case 'openExternal': { openExternal(a.url); return true; }
