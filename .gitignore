@@ -1,0 +1,9 @@
+node_modules/
+dist/
+release/
+.devdata/
+*.log
+# Real LOAs and exported data never go in the repository.
+*.db
+corpus/
+data/
