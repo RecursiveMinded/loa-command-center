@@ -5,7 +5,6 @@
 const CATEGORIES = [
   'EMV L1 Contact',
   'EMV L1 Contactless',
-  'EMV L2 Contact',
   'EMV L2 Contactless',
   'PCI PTS',
   'TQM',
@@ -56,7 +55,8 @@ function normalizeCategory(s) {
   const cless = /contactless|cless|\bctls\b|\bcl\b|proximity|pcd/.test(str);
   const contact = /contact/.test(str) && !cless;
   if (l2 && cless) return 'EMV L2 Contactless';
-  if (l2 && contact) return 'EMV L2 Contact';
+  // There is no per-device L2 contact approval; contact kernel letters are filed as Other.
+  if (l2 && contact) return 'Other';
   if (l1 && cless) return 'EMV L1 Contactless';
   if (l1 && contact) return 'EMV L1 Contact';
   if (cless) return l2 ? 'EMV L2 Contactless' : 'EMV L1 Contactless';

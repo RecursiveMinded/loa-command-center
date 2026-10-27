@@ -61,7 +61,7 @@ function pdfFromPages(pages) {
     await p.click('text=Try sample data');
     await p.waitForSelector('text=Portfolio health');
     check(true, 'dashboard with sample data');
-    for (const v of ['Action plan', 'Certifications', 'Matrix', 'Reports', 'Archive', 'Settings']) {
+    for (const v of ['Action plan', 'Certifications', 'Devices', 'Matrix', 'Reports', 'Archive', 'Settings']) {
       await p.click(`nav >> text=${v}`);
       await p.waitForSelector(`h1:has-text("${v === 'Certifications' ? 'Certifications' : v}")`);
       check(true, `${v} screen`);

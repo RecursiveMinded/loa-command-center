@@ -131,7 +131,7 @@ test('approve all safe applies only confident, warning-free letters', async () =
 test('planner: renewal waves, grouped expiries, snooze and digest', async () => {
   const { api } = await fresh();
   const d = addDays(todayIso(), 100);
-  for (const dev of ['A1', 'A2', 'A3']) api.saveRecord(null, { device: dev, scheme: 'Visa', category: 'EMV L2 Contact', expiry_date: d });
+  for (const dev of ['A1', 'A2', 'A3']) api.saveRecord(null, { device: dev, scheme: 'Visa', category: 'EMV L2 Contactless', expiry_date: d });
   const past = addDays(todayIso(), -20);
   for (const dev of ['B1', 'B2', 'B3']) api.saveRecord(null, { device: dev, scheme: 'JCB', category: 'EMV L2 Contactless', expiry_date: past });
   api.saveRecord(null, { device: 'C1', scheme: 'Amex', category: 'EMV L2 Contactless', expiry_date: addDays(todayIso(), 20) });
@@ -575,10 +575,10 @@ test('platform and bundle aliases rename existing records and apply to new ones'
   // Device aliases can rename records too.
   const d = api.setAlias('NX-1', 'NX1A', { apply: false });
   assert.equal(d.changed, undefined);
-  api.store.createRecord({ device: 'NX-1', category: 'EMV L2 Contact', scheme: 'Visa' });
+  api.store.createRecord({ device: 'NX-1', category: 'EMV L2 Contactless', scheme: 'Amex' });
   const e = api.setAlias('NX-1', 'NX1A', { apply: true });
   assert.ok(e.changed >= 1);
-  assert.ok(api.listRecords().some((x) => x.device === 'NX1A' && x.scheme === 'Visa'));
+  assert.ok(api.listRecords().some((x) => x.device === 'NX1A' && x.scheme === 'Amex'));
 });
 
 test('deleting moves records to the Archive; only the Archive deletes permanently', async () => {
@@ -651,4 +651,47 @@ test('an LOA already in the app can be linked to a variant record from its LOA t
   assert.equal(r.documents.length, 1);
   assert.equal(api.checkAttach(b.id, { bytes }).linkedHere, true);
   assert.equal(api.listDocuments().length, 1);
+});
+
+test('device coverage lists the required certifications per device', async () => {
+  const { api } = await fresh();
+  const d = addDays(todayIso(), 300);
+  const mk = (device, category, scheme, extra = {}) => api.store.createRecord({ device, category, scheme, platform: 'UPP', bundle: 'Bundle 6', expiry_date: d, ...extra });
+  mk('Lane/3000', 'PCI PTS', 'PCI SSC', { kernel_version: 'v6' });
+  mk('Lane/3000', 'EMV L1 Contact', 'EMVCo');
+  mk('Lane/3000-CL1', 'EMV L1 Contactless', 'EMVCo');
+  mk('Lane/3000-CL1', 'EMV L2 Contactless', 'Visa');
+  mk('Lane/3000-CL1', 'EMV L2 Contactless', 'Mastercard');
+  const cov = api.deviceCoverage();
+  const lane = cov.rows.find((r) => r.device === 'Lane/3000');
+  const cl1 = cov.rows.find((r) => r.device === 'Lane/3000-CL1');
+  assert.equal(lane.cells.pci.status, 'ok');
+  assert.equal(lane.cells.tqm.status, 'missing');
+  assert.equal(lane.cells['l2:Visa'].status, 'none', 'a contact device needs no L2 contactless');
+  assert.equal(cl1.cells['l2:Visa'].status, 'ok');
+  assert.equal(cl1.cells['l2:Amex'].status, 'missing');
+  assert.equal(cl1.missing, 6); // TQM + Amex, Discover, UnionPay, JCB, Interac
+  api.setCoverageNA(lane.key, 'tqm', true);
+  assert.equal(api.deviceCoverage().rows.find((r) => r.device === 'Lane/3000').cells.tqm.status, 'na');
+  assert.equal(api.createMissing([{ device: 'Lane/3000-CL1', platform: 'UPP', bundle: 'Bundle 6', slot: 'l2:Amex' }]), 1);
+  assert.equal(api.deviceCoverage().rows.find((r) => r.device === 'Lane/3000-CL1').cells['l2:Amex'].status, 'nodate');
+});
+
+test('one device keeps one spelling; reader variants stay separate devices', async () => {
+  const { api } = await fresh();
+  api.store.createRecord({ device: 'Lane/3000-CL1', category: 'EMV L1 Contactless', scheme: 'EMVCo' });
+  const b = api.store.createRecord({ device: 'Lane/3000 CL1', category: 'EMV L2 Contactless', scheme: 'Visa' });
+  assert.equal(b.device, 'Lane/3000-CL1');
+  const c = api.store.createRecord({ device: 'Lane/3000 CL2', category: 'EMV L2 Contactless', scheme: 'Visa' });
+  assert.equal(c.device, 'Lane/3000 CL2', 'CL2 is a different reader');
+  // Older spelling variants are merged on upgrade, and L2 Contact records become Other.
+  api.store.db.run("UPDATE records SET device='LANE3000CL1' WHERE id=?", [b.id]);
+  api.store.db.run("INSERT INTO records(id, rkey, device, category, scheme, created_at, updated_at) VALUES('x1','k-x1','NX9','EMV L2 Contact','Visa','2026-01-01','2026-01-01')");
+  api.store.setSettings({ appVersion: '0.0.1' });
+  api.upgradeBackup(null);
+  assert.equal(api.store.getRecord(b.id).device, 'Lane/3000-CL1');
+  const x = api.store.getRecord('x1');
+  assert.equal(x.category, 'Other');
+  assert.match(x.tags, /L2 Contact/);
+  assert.ok(!api.info().taxonomy.categories.includes('EMV L2 Contact'));
 });
