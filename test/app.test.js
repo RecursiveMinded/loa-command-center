@@ -549,3 +549,34 @@ test('several records can be deleted at once', async () => {
   assert.equal(api.deleteRecords([a.id, b.id, 'missing']), 2);
   assert.deepEqual(api.listRecords().map((r) => r.device), ['NX3']);
 });
+
+test('platform and bundle aliases rename existing records and apply to new ones', async () => {
+  const { api } = await fresh();
+  const a = api.store.createRecord({ device: 'NX1', category: 'EMV L1 Contact', scheme: 'EMVCo', platform: 'upp v6', bundle: 'Bundle6' });
+  const b = api.store.createRecord({ device: 'NX2', category: 'EMV L1 Contact', scheme: 'EMVCo', platform: 'UPP V6 ' });
+  api.store.createRecord({ device: 'NX3', category: 'EMV L1 Contact', scheme: 'EMVCo', platform: 'ARC' });
+  assert.equal(api.previewAlias('platform', 'UPP v6', 'UPP').count, 2);
+  const r = api.setFieldAlias('platform', 'UPP v6', 'UPP', { apply: true });
+  assert.equal(r.changed, 2);
+  assert.equal(api.store.getRecord(a.id).platform, 'UPP');
+  assert.equal(api.store.getRecord(b.id).platform, 'UPP');
+  assert.ok(api.getRecord(a.id).audit.some((x) => x.field === 'platform' && x.source === 'alias'), 'the rename is in the history');
+  // Saved without applying, then applied later in one go.
+  api.setFieldAlias('bundle', 'bundle6', 'UPP Bundle 6');
+  assert.equal(api.store.getRecord(a.id).bundle, 'Bundle6');
+  assert.equal(api.applyAllAliases('bundle').changed, 1);
+  assert.equal(api.store.getRecord(a.id).bundle, 'UPP Bundle 6');
+  // New and imported records use the main name.
+  const c = api.store.createRecord({ device: 'NX4', category: 'EMV L1 Contact', scheme: 'EMVCo', platform: 'upp v6' });
+  assert.equal(c.platform, 'UPP');
+  assert.deepEqual(api.listFieldAliases().platform, { 'upp v6': 'UPP' });
+  api.setFieldAlias('platform', 'UPP v6', '');
+  assert.deepEqual(api.listFieldAliases().platform, {});
+  // Device aliases can rename records too.
+  const d = api.setAlias('NX-1', 'NX1A', { apply: false });
+  assert.equal(d.changed, undefined);
+  api.store.createRecord({ device: 'NX-1', category: 'EMV L2 Contact', scheme: 'Visa' });
+  const e = api.setAlias('NX-1', 'NX1A', { apply: true });
+  assert.ok(e.changed >= 1);
+  assert.ok(api.listRecords().some((x) => x.device === 'NX1A' && x.scheme === 'Visa'));
+});

@@ -156,6 +156,16 @@ function pdfFromPages(pages) {
     await p.click('.inbox-bulk button:has-text("Approve 1")');
     await p.waitForSelector('text=Approved 1 letter', { timeout: 10000 });
     check(true, 'bulk platform and approve from the LOA inbox');
+    // Platform alias renames existing records after confirming.
+    await p.click('nav >> text=Settings');
+    await p.click('text=Matching');
+    await p.fill('input[aria-label="Platform aliases: other name"]', 'gamma');
+    await p.fill('input[aria-label="Platform aliases: your name"]', 'Gamma Platform');
+    await p.waitForSelector('text=2 records use "gamma"', { timeout: 5000 });
+    p.once('dialog', (d) => d.accept());
+    await p.click('.card:has-text("Platform aliases") button:has-text("Add")');
+    await p.waitForSelector('text=2 records renamed', { timeout: 5000 });
+    check(true, 'platform alias renames existing records');
     const st = await p.evaluate(() => window.__loaSelfTest());
     check(st.ok, `PDF reader and OCR self test ${JSON.stringify(st)}`);
     await p.click('.topbar >> text=Summary report');

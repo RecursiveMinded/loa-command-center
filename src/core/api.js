@@ -136,9 +136,55 @@ class AppApi {
 
   listAliases() { return this.store.aliases(); }
 
-  setAlias(alias, device) {
+  setAlias(alias, device, { apply = false } = {}) {
     this.store.setAlias(alias, device);
-    return { rematched: this.intake.rematch() };
+    const res = { rematched: this.intake.rematch() };
+    if (apply && device) Object.assign(res, this.applyAlias('device', alias, device));
+    return res;
+  }
+
+  listFieldAliases() { return this.store.fieldAliases(); }
+
+  /** Add (or with no value remove) a platform/bundle alias; `apply` also renames existing records that use it. */
+  setFieldAlias(field, alias, value, { apply = false } = {}) {
+    this.store.setFieldAlias(field, alias, value);
+    return apply && value ? this.applyAlias(field, alias, value) : { changed: 0, skipped: [] };
+  }
+
+  /** Records whose field is written as the alias (ignoring case and spacing), or for devices names that match it. */
+  aliasMatches(field, alias, value) {
+    const { aliasKey } = require('./store');
+    const norm = this.store.norm();
+    const want = field === 'device' ? norm(alias) : aliasKey(alias);
+    if (!want) return [];
+    return this.store.listRecords().filter((r) => {
+      const cur = r[field];
+      if (!cur || cur === value) return false;
+      return field === 'device' ? norm(cur) === want : aliasKey(cur) === want;
+    });
+  }
+
+  /** How many records an alias would rename, with a few examples. */
+  previewAlias(field, alias, value) {
+    const hits = this.aliasMatches(field, alias, value);
+    return { count: hits.length, examples: hits.slice(0, 5).map((r) => `${r.device} · ${r.scheme} ${r.category}`) };
+  }
+
+  applyAlias(field, alias, value) {
+    const ids = this.aliasMatches(field, alias, value).map((r) => r.id);
+    return ids.length ? this.store.bulkUpdate(ids, { [field]: value }, { source: 'alias' }) : { changed: 0, skipped: [] };
+  }
+
+  /** Apply every saved alias of a field to existing records. */
+  applyAllAliases(field) {
+    const out = { changed: 0, skipped: [] };
+    const map = field === 'device' ? this.store.aliases() : this.store.fieldAliases()[field] || {};
+    for (const [a, v] of Object.entries(map)) {
+      const r = this.applyAlias(field, a, v);
+      out.changed += r.changed;
+      out.skipped.push(...r.skipped);
+    }
+    return out;
   }
 
   // ---------------------------------------------------- dashboard & engine
@@ -490,7 +536,7 @@ class AppApi {
 // Methods the UI may call. Anything else is rejected by the IPC/HTTP bridges.
 const PUBLIC_METHODS = [
   'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'deleteRecords', 'bulkUpdate',
-  'activateReplacement', 'listTags', 'knownDevices', 'listAliases', 'setAlias', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
+  'activateReplacement', 'listTags', 'knownDevices', 'listAliases', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
   'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
   'documentText', 'unlinkDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',

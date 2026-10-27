@@ -83,6 +83,31 @@ class Store {
     return out;
   }
 
+  /** Platform and bundle aliases: { platform: { 'upp v6': 'UPP' }, bundle: {...} } keyed by lower-cased alias. */
+  fieldAliases() {
+    const fa = this.getSettings().fieldAliases || {};
+    return { platform: fa.platform || {}, bundle: fa.bundle || {} };
+  }
+
+  setFieldAlias(field, alias, value) {
+    if (!ALIAS_FIELDS.includes(field)) throw new Error(`Aliases are for ${ALIAS_FIELDS.join(' and ')}`);
+    const k = aliasKey(alias);
+    if (!k) return this.fieldAliases();
+    const fa = this.fieldAliases();
+    const v = String(value || '').trim();
+    if (!v) delete fa[field][k];
+    else fa[field][k] = v;
+    this.setSettings({ fieldAliases: fa });
+    return fa;
+  }
+
+  /** The value a platform/bundle alias stands for (the value itself when it has none). */
+  aliasValue(field, value) {
+    if (value == null || value === '') return value;
+    const m = (this.fieldAliases()[field] || {})[aliasKey(value)];
+    return m !== undefined ? m : value;
+  }
+
   setAlias(alias, device) {
     const a = this.norm()(alias);
     if (!a) return;
@@ -121,6 +146,7 @@ class Store {
     if (!rec.device) throw new Error('Device is required');
     rec.category = normalizeCategory(rec.category || 'Other');
     rec.scheme = normalizeScheme(rec.scheme || '');
+    for (const f of ALIAS_FIELDS) if (rec[f]) rec[f] = this.aliasValue(f, rec[f]);
     rec.tags = withReaderTag(rec.tags, rec.device);
     if (!rec.tags) delete rec.tags;
     const rkey = this.recordKey(rec);
@@ -151,6 +177,7 @@ class Store {
     const p = sanitize(patch);
     if (p.category !== undefined) p.category = normalizeCategory(p.category);
     if (p.scheme !== undefined) p.scheme = normalizeScheme(p.scheme);
+    for (const f of ALIAS_FIELDS) if (p[f]) p[f] = this.aliasValue(f, p[f]);
     // A renamed device carries its reader version (CL1, CL2...) as a tag.
     if (p.device !== undefined && p.device !== cur.device) p.tags = withReaderTag(p.tags !== undefined ? p.tags : cur.tags, p.device, true);
     const changed = [];
@@ -390,6 +417,9 @@ function splitTags(v) {
 }
 function joinTags(list) { return list.join(', '); }
 
+const ALIAS_FIELDS = ['platform', 'bundle'];
+const aliasKey = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
 /** "Self/4000-CL2" -> "CL2"; '' for a device without a reader version. */
 function readerOf(device) {
   const m = String(device || '').toUpperCase().replace(/[^A-Z0-9]/g, '').match(/CL(\d)$/);
@@ -409,4 +439,4 @@ function fixRow(r) {
   return r;
 }
 
-module.exports = { Store, RECORD_FIELDS, DEFAULT_SETTINGS, nowIso, splitTags };
+module.exports = { Store, RECORD_FIELDS, DEFAULT_SETTINGS, nowIso, splitTags, aliasKey };
