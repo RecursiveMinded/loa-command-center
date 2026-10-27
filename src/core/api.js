@@ -151,19 +151,7 @@ class AppApi {
    * holds the record that covers it, or is missing / not applicable.
    */
   deviceCoverage() {
-    const s = this.store.getSettings();
-    const brands = s.requiredBrands && s.requiredBrands.length ? s.requiredBrands : DEFAULT_BRANDS;
-    const na = s.coverageNA || {};
-    const contact = [
-      { key: 'pci', label: 'PCI', group: 'Contact device', category: 'PCI PTS' },
-      { key: 'l1c', label: 'L1 Contact', group: 'Contact device', category: 'EMV L1 Contact' },
-      { key: 'tqm', label: 'TQM', group: 'Contact device', category: 'TQM' },
-    ];
-    const reader = [
-      { key: 'l1cl', label: 'L1 Contactless', group: 'Contactless reader', category: 'EMV L1 Contactless' },
-      { key: 'tqmcl', label: 'TQM', group: 'Contactless reader', category: 'TQM' },
-      ...brands.map((b) => ({ key: `l2:${b}`, label: b, group: 'L2 Contactless', category: 'EMV L2 Contactless', scheme: b })),
-    ];
+    const { contact, reader, brands, na } = this.coverageSlots();
     const n = this.store.norm();
     const devices = new Map();
     for (const r of this.listRecords()) {
@@ -198,6 +186,62 @@ class AppApi {
     return { columns: [...contact, ...reader].map(({ key, label, group }) => ({ key, label, group })), rows, missing, brands };
   }
 
+  /** The certifications a contact device and a contactless reader need. */
+  coverageSlots() {
+    const s = this.store.getSettings();
+    const brands = s.requiredBrands && s.requiredBrands.length ? s.requiredBrands : DEFAULT_BRANDS;
+    const contact = [
+      { key: 'pci', label: 'PCI', group: 'Contact device', category: 'PCI PTS' },
+      { key: 'l1c', label: 'L1 Contact', group: 'Contact device', category: 'EMV L1 Contact' },
+      { key: 'tqm', label: 'TQM', group: 'Contact device', category: 'TQM' },
+    ];
+    const reader = [
+      { key: 'l1cl', label: 'L1 Contactless', group: 'Contactless reader', category: 'EMV L1 Contactless' },
+      { key: 'tqmcl', label: 'TQM', group: 'Contactless reader', category: 'TQM' },
+      ...brands.map((b) => ({ key: `l2:${b}`, label: b, group: 'L2 Contactless', category: 'EMV L2 Contactless', scheme: b })),
+    ];
+    return { contact, reader, brands, na: s.coverageNA || {} };
+  }
+
+  /**
+   * Every certification of the physical device a record belongs to: the
+   * terminal (PCI, L1 Contact, TQM) and each contactless reader in it (L1
+   * Contactless, TQM, L2 per brand), on the record's platform and bundle.
+   */
+  deviceProfile(recordId) {
+    const rec = this.store.getRecord(recordId);
+    if (!rec) return null;
+    const { splitVariant } = require('./devices');
+    const n = this.store.norm();
+    const { contact, reader, na } = this.coverageSlots();
+    const base = splitVariant(n(rec.device)).base;
+    const all = this.listRecords().filter((r) => (r.platform || '') === (rec.platform || '') && (r.bundle || '') === (rec.bundle || '') && splitVariant(n(r.device)).base === base);
+    const byDev = new Map();
+    for (const r of all) {
+      const k = n(r.device);
+      if (!byDev.has(k)) byDev.set(k, { key: k, device: r.device, records: [] });
+      byDev.get(k).records.push(r);
+    }
+    const sum = (r) => ({ id: r.id, category: r.category, scheme: r.scheme, approval_number: r.approval_number, issue_date: r.issue_date, expiry_date: r.expiry_date,
+      kernel_version: r.kernel_version, days: r.days, health: r.health, doc_count: r.doc_count });
+    const sections = [...byDev.values()].sort((a, b) => a.key.length - b.key.length || a.key.localeCompare(b.key)).map((d) => {
+      const isReader = /CL\d+$/.test(d.key);
+      const hasCless = d.records.some((r) => /Contactless/.test(r.category));
+      const slots = isReader ? reader : hasCless ? [...contact, ...reader] : contact;
+      const used = new Set();
+      const rows = [];
+      for (const slot of slots) {
+        const hits = d.records.filter((r) => r.category === slot.category && (!slot.scheme || String(r.scheme).toLowerCase() === slot.scheme.toLowerCase()));
+        hits.forEach((r) => used.add(r.id));
+        if (hits.length) for (const r of hits) rows.push({ slot: slot.key, label: slot.scheme ? `L2 Contactless · ${slot.label}` : slot.label, status: r.expiry_date ? 'ok' : 'nodate', record: sum(r) });
+        else rows.push({ slot: slot.key, label: slot.scheme ? `L2 Contactless · ${slot.label}` : slot.label, status: (na[d.key] || []).includes(slot.key) ? 'na' : 'missing', record: null });
+      }
+      for (const r of d.records) if (!used.has(r.id)) rows.push({ slot: '', label: `${r.category}${r.scheme && r.scheme !== 'EMVCo' ? ` · ${r.scheme}` : ''}`, status: r.expiry_date ? 'ok' : 'nodate', record: sum(r) });
+      return { device: d.device, key: d.key, reader: isReader, rows };
+    });
+    return { platform: rec.platform || '', bundle: rec.bundle || '', sections };
+  }
+
   /** Mark a required certification as not applicable to a device (e.g. no contact reader), or undo that. */
   setCoverageNA(deviceKey, slotKey, value = true) {
     const na = { ...(this.store.getSettings().coverageNA || {}) };
@@ -210,15 +254,19 @@ class AppApi {
 
   /** Create empty records for missing certifications: [{ device, platform, bundle, slot }]. Returns how many were created. */
   createMissing(items) {
-    const SLOT = { pci: ['PCI PTS', 'PCI SSC'], l1c: ['EMV L1 Contact', 'EMVCo'], tqm: ['TQM', 'Mastercard TQM'], l1cl: ['EMV L1 Contactless', 'EMVCo'], tqmcl: ['TQM', 'Mastercard TQM'] };
     let n = 0;
-    for (const it of items || []) {
-      const [category, scheme] = it.slot.startsWith('l2:') ? ['EMV L2 Contactless', it.slot.slice(3)] : SLOT[it.slot] || [];
-      if (!category) continue;
-      try { this.store.createRecord({ device: it.device, platform: it.platform, bundle: it.bundle, category, scheme }, { source: 'manual', note: 'Created from device coverage' }); n++; } catch (_) { /* already exists */ }
-    }
+    for (const it of items || []) { try { if (this.createSlot(it)) n++; } catch (_) { /* already exists */ } }
     return n;
   }
+
+  /** Create the empty record for one missing certification and return its id. */
+  createSlot({ device, platform, bundle, slot }) {
+    const SLOT = { pci: ['PCI PTS', 'PCI SSC'], l1c: ['EMV L1 Contact', 'EMVCo'], tqm: ['TQM', 'Mastercard TQM'], l1cl: ['EMV L1 Contactless', 'EMVCo'], tqmcl: ['TQM', 'Mastercard TQM'] };
+    const [category, scheme] = String(slot).startsWith('l2:') ? ['EMV L2 Contactless', slot.slice(3)] : SLOT[slot] || [];
+    if (!category) return null;
+    return this.store.createRecord({ device, platform, bundle, category, scheme }, { source: 'manual', note: 'Created from device certifications' }).id;
+  }
+
 
   /** Make a replacement approval the current one (audited). */
   activateReplacement(approvalId) {
@@ -722,7 +770,7 @@ class AppApi {
 const PUBLIC_METHODS = [
   'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'deleteRecords', 'bulkUpdate',
   'listArchive', 'archiveCount', 'expiredRecords', 'archiveExpired', 'restoreArchived', 'purgeArchived',
-  'activateReplacement', 'deviceCoverage', 'setCoverageNA', 'createMissing', 'listTags', 'knownDevices', 'listAliases', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
+  'activateReplacement', 'deviceCoverage', 'deviceProfile', 'setCoverageNA', 'createMissing', 'createSlot', 'listTags', 'knownDevices', 'listAliases', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
   'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
   'documentText', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
