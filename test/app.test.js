@@ -425,3 +425,26 @@ test('website change request lists what the website gets wrong and numbers the r
   assert.ok(api.listRecords().some((r) => r.device === 'EX4000' && r.change_ticket === 'CR-004'));
   void exp; void pci;
 });
+
+test('a cert database export is mapped by its own columns and joins tracker records', async () => {
+  const { api } = await fresh();
+  await api.importTracker({ filename: 'tracker.csv', bytes: Buffer.from(CSV) });
+  const db = [
+    'No.,Product family,Technology,Contact and Contactless configuration,Product Ref.,Category,Certification Type,Approval Category,Certification body,Spec Version,LoA Reference,LoA Status,Software ID,Expiration date',
+    '1,NX200,T3,,TRK7,L2,L2 Cless,L2 Contactless American Express,American Express,v4,42.NEW,Valid,SW1,2029-01-31',
+    '2,Flex/3500,T3,CL1,TRK8,L2,L2 Cless,L2 Contactless Discover,Discover,v1,D-77,Valid,SW2,2028-05-05',
+    '3,ZX900,Android,,,L1,L1 Contact,L1 Contact EMVCo,EMVCo,4.3,1234 5678,Valid,SW3,2030-02-02',
+    '4,ZX100,Android,,,L1,L1 Contact,L1 Contact EMVCo,EMVCo,4.3,999,Expired,SW4,2020-02-02',
+  ].join('\n');
+  const r = await api.importTracker({ filename: 'CertDB.csv', bytes: Buffer.from(db) });
+  assert.equal(r.sheets[0].mapping.device, 'Product family');
+  assert.equal(r.updated, 2, 'NX200 and Flex/3500-CL1 are the tracker records');
+  assert.equal(r.added, 1, 'ZX900 is new; the expired ZX100 is skipped');
+  const recs = api.listRecords();
+  const nx = recs.find((x) => x.device === 'NX200');
+  assert.equal(nx.expiry_date, '2029-01-31');
+  assert.equal(nx.approval_number, '42.NEW');
+  assert.equal(nx.platform, 'Alpha', 'platform is not taken from "Software ID"');
+  assert.equal(recs.find((x) => x.device === 'Flex/3500-CL1').approval_number, 'D-77');
+  assert.equal(recs.find((x) => x.device === 'ZX900').category, 'EMV L1 Contact');
+});
