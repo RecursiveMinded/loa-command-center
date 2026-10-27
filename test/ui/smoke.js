@@ -131,6 +131,15 @@ function pdfFromPages(pages) {
     await p.selectOption('select[aria-label="All hardware (CL)"]', 'CL1');
     const devs = await p.$$eval('table.t tbody .dev', (els) => els.map((e) => e.textContent));
     check(devs.length > 0 && devs.every((d) => /CL1/.test(d)), `hardware (CL) filter: ${devs.length} CL1 records`);
+    // Kernel version filter.
+    await p.selectOption('select[aria-label="All hardware (CL)"]', '');
+    const kopts = await p.$$eval('select[aria-label="All kernel versions"] option', (os) => os.map((o) => o.value).filter((v) => v && v !== '(none)'));
+    if (kopts.length) {
+      await p.selectOption('select[aria-label="All kernel versions"]', kopts[0]);
+      const kn = await p.$$eval('table.t tbody tr', (els) => els.length);
+      check(kn > 0, `kernel version filter: ${kn} records on ${kopts[0]}`);
+      await p.selectOption('select[aria-label="All kernel versions"]', '');
+    } else check(false, 'kernel version filter has values');
     // Bulk delete with confirmation.
     const before = await p.$$eval('table.t tbody tr', (els) => els.length);
     await p.locator('table.t tbody tr input[type=checkbox]').first().check();
@@ -139,7 +148,7 @@ function pdfFromPages(pages) {
     await p.waitForSelector('text=Deleted 1 record', { timeout: 5000 });
     const after = await p.$$eval('table.t tbody tr', (els) => els.length);
     check(after === before - 1, `bulk delete removes the selected record (${before} -> ${after})`);
-    await p.click('button:has-text("Clear filters")');
+    if (await p.locator('button:has-text("Clear filters")').count()) await p.click('button:has-text("Clear filters")');
     await p.click('nav >> text=LOA inbox');
     const [ch4] = await Promise.all([p.waitForEvent('filechooser'), p.click('text=Choose files')]);
     await ch4.setFiles(named);

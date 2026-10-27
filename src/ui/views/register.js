@@ -13,7 +13,7 @@ export const DUE = [
   { value: 'missing', label: 'No expiry date', test: (d) => d == null },
 ];
 
-const EMPTY = { scheme: '', category: '', platform: '', bundle: '', hw: '', tag: '', changed: '', window: '', health: '', stage: '', owner: '', disposition: '', portal: '', archived: false, month: '', ids: null, idsLabel: '' };
+const EMPTY = { scheme: '', category: '', platform: '', bundle: '', kernel: '', hw: '', tag: '', changed: '', window: '', health: '', stage: '', owner: '', disposition: '', portal: '', archived: false, month: '', ids: null, idsLabel: '' };
 
 export const CHANGED = [{ value: 'today', label: 'Changed today', days: 0 }, { value: 'week', label: 'Changed in 7 days', days: 7 }, { value: 'month', label: 'Changed in 30 days', days: 30 }];
 
@@ -43,6 +43,7 @@ export function applyFilter(records, f, q) {
     if (f.category && r.category !== f.category) return false;
     if (f.platform && (r.platform || '(none)') !== f.platform) return false;
     if (f.bundle && (r.bundle || '(none)') !== f.bundle) return false;
+    if (f.kernel && (r.kernel_version || '(none)') !== f.kernel) return false;
     if (f.hw && (hwOf(r) || NO_HW) !== f.hw) return false;
     if (f.tag && !(f.tag === '(none)' ? !tagList(r).length : tagList(r).some((t) => t.toLowerCase() === f.tag.toLowerCase()))) return false;
     if (f.changed) {
@@ -69,6 +70,7 @@ export function filterLabel(f, q) {
   const parts = [];
   if (f.ids) parts.push(`${f.ids.length} selected records`);
   for (const k of ['scheme', 'category', 'platform', 'bundle', 'stage', 'owner', 'disposition', 'portal']) if (f[k]) parts.push(f[k]);
+  if (f.kernel) parts.push(`Kernel: ${f.kernel}`);
   if (f.hw) parts.push(`Hardware: ${f.hw}`);
   if (f.tag) parts.push(`Tag: ${f.tag}`);
   if (f.changed) parts.push(CHANGED.find((x) => x.value === f.changed).label);
@@ -147,6 +149,7 @@ export function Register({ app, params }) {
       <${Select} value=${f.category} onChange=${(v) => setF({ ...f, category: v })} placeholder="All approval types" options=${tax.categories.filter((c) => live.some((r) => r.category === c))} />
       <${Select} value=${f.platform} onChange=${(v) => setF({ ...f, platform: v })} placeholder="All platforms" options=${opt('platform', '(none)')} />
       <${Select} value=${f.bundle} onChange=${(v) => setF({ ...f, bundle: v })} placeholder="All bundles" options=${opt('bundle', '(none)')} />
+      <${Select} value=${f.kernel} onChange=${(v) => setF({ ...f, kernel: v })} placeholder="All kernel versions" options=${opt('kernel_version', '(none)')} />
       ${hws.length || f.hw ? html`<${Select} value=${f.hw} onChange=${(v) => setF({ ...f, hw: v })} placeholder="All hardware (CL)" options=${[...hws, NO_HW]} />` : null}
       ${tags.length || f.tag ? html`<${Select} value=${f.tag} onChange=${(v) => setF({ ...f, tag: v })} placeholder="All tags" options=${[...tags, '(none)']} />` : null}
       <${Select} value=${f.changed} onChange=${(v) => setF({ ...f, changed: v })} placeholder="Changed: any time" options=${CHANGED} />
