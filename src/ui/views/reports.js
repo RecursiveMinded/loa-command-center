@@ -30,7 +30,7 @@ export function ReportModal({ opts, onClose }) {
 export function Reports({ app, params }) {
   const [tab, setTab] = useState((params && params.tab) || 'summary');
   useEffect(() => { if (params && params.tab) setTab(params.tab); }, [params]);
-  const tabs = [['summary', 'Summary report'], ['portal', 'Portal changes'], ['digest', 'Digest'], ['exports', 'Exports'], ['audit', 'Audit log'], ['imports', 'Imports']];
+  const tabs = [['summary', 'Summary report'], ['portal', 'Website change request'], ['digest', 'Digest'], ['exports', 'Exports'], ['audit', 'Audit log'], ['imports', 'Imports']];
   return html`
     <div class="page-head"><div><h1>Reports</h1><p>Share status with your team, keep the published portal in sync, and see every change.</p></div></div>
     <div class="tabs">${tabs.map(([k, l]) => html`<button class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${l}</button>`)}</div>
@@ -44,27 +44,49 @@ export function Reports({ app, params }) {
 
 function PortalChanges({ app }) {
   const [rows, reload] = useLoad(() => call('portalChanges'), [app.version]);
+  const [busy, setBusy] = useState(false);
   if (!rows) return html`<${Spinner} />`;
-  const text = () => ['Platform\tBundle\tDevice\tApproval type\tBrand\tPublished\tCorrect expiry\tApproval no.', ...rows.map((r) => [r.platform, r.bundle, r.device, r.category, r.scheme, r.published, r.verified, r.approval].join('\t'))].join('\n');
+  const cols = ['Change ID', 'Platform', 'Website Section', 'Device / Model', 'Level', 'Card Brand / Type', 'Action', 'Current Website Value', 'Requested New Value', 'Restricted?', 'Web Status', 'Additional Comment'];
+  const text = () => [cols.join('\t'), ...rows.map((r) => [r.ticket, r.platform, r.section, r.device, r.level, r.brand, r.action, r.published, r.requested, r.restricted, r.status, r.comment].join('\t'))].join('\n');
   const copy = async () => { try { await navigator.clipboard.writeText(text()); toast('Copied. Paste into your change request or spreadsheet.', 'ok'); } catch (e) { toastError(e); } };
-  const mark = async (status) => {
+  const download = async (markRequested) => {
+    setBusy(true);
     try {
-      const recs = (await call('listRecords')).filter((r) => rows.some((x) => x.device === r.device && x.scheme === r.scheme && x.category === r.category && x.platform === r.platform && x.bundle === r.bundle));
-      await call('bulkUpdate', recs.map((r) => r.id), { portal_status: status, ...(status === 'Published' ? {} : {}) });
-      toast(`Marked ${plural(recs.length, 'row')} as ${status}`, 'ok');
+      const b = await call('exportChangeRequest', { markRequested });
+      await saveAs(`Website_Change_Request_${todayStamp()}.xlsx`, b, [{ name: 'Excel', extensions: ['xlsx'] }]);
+      if (markRequested) { toast(`Change IDs assigned; ${plural(rows.length, 'row')} marked as requested`, 'ok'); reload(); app.refresh(); }
+    } catch (e) { toastError(e); } finally { setBusy(false); }
+  };
+  const published = async () => {
+    try {
+      const ids = rows.filter((r) => r.portalStatus === 'Change Requested' && r.action !== 'Review').map((r) => r.id);
+      if (!ids.length) return toast('Nothing is marked as requested yet');
+      const recs = await call('listRecords');
+      for (const id of ids) {
+        const rec = recs.find((x) => x.id === id);
+        const row = rows.find((x) => x.id === id);
+        await call('saveRecord', id, { portal_status: 'Published', portal_date: row.action === 'Update date' || row.action === 'Add date' ? rec.expiry_date : rec.portal_date });
+      }
+      toast(`Marked ${plural(ids.length, 'row')} as published`, 'ok');
       reload(); app.refresh();
     } catch (e) { toastError(e); }
   };
   return html`<div>
-    <p class="muted">Rows where the published portal date differs from the verified LOA date, or that are flagged "Change Needed". Import the portal page in compare mode (Settings → Data) to refresh the published dates.</p>
-    ${!rows.length ? html`<div class="card"><div class="empty"><${Icon} name="check" /><h3>Portal is in sync</h3><div>No published dates differ from your verified dates.</div></div></div>` : html`
-    <div class="row" style="margin-bottom:10px"><b>${plural(rows.length, 'change')}</b><span class="grow"></span>
-      <button class="btn" onClick=${copy}>Copy as table</button><button class="btn" onClick=${() => mark('Change Requested')}>Mark all requested</button></div>
-    <div class="table-wrap"><table class="t"><thead><tr><th>Device</th><th>Platform</th><th>Brand</th><th>Approval type</th><th>Published</th><th>Correct expiry</th><th>Approval no.</th><th>Status</th></tr></thead>
-      <tbody>${rows.map((r) => html`<tr><td class="dev">${r.device}</td><td class="small">${[r.platform, r.bundle].filter(Boolean).join(' · ')}</td><td>${r.scheme}</td><td>${r.category}</td>
-        <td class="nowrap"><s class="faint">${fmtDate(r.published) || '—'}</s></td><td class="nowrap"><b>${fmtDate(r.verified) || '—'}</b></td><td class="small">${r.approval}</td><td class="small">${r.status}</td></tr>`)}</tbody></table></div>`}
+    <p class="muted">What your website shows versus your verified LOAs, in the format engineering gets. Expired dates, changed dates, and rows flagged "Change Needed" are listed. Import the portal page in compare mode (Settings → Data) to refresh what the website shows.</p>
+    ${!rows.length ? html`<div class="card"><div class="empty"><${Icon} name="check" /><h3>Website is in sync</h3><div>No published dates differ from your verified dates.</div></div></div>` : html`
+    <div class="row wrap" style="margin-bottom:10px"><b>${plural(rows.length, 'change')}</b><span class="grow"></span>
+      <button class="btn primary" disabled=${busy} onClick=${() => download(true)} title="Assign change IDs (CR-001…) and mark the rows as requested"><${Icon} name="download" /> Create change request</button>
+      <button class="btn" disabled=${busy} onClick=${() => download(false)}>Preview in Excel</button>
+      <button class="btn" onClick=${copy}>Copy as table</button>
+      <button class="btn ghost" onClick=${published} title="After engineering updates the website">Mark requested rows published</button></div>
+    <div class="table-wrap"><table class="t"><thead><tr><th>ID</th><th>Platform</th><th>Section</th><th>Device</th><th>Brand / type</th><th>Action</th><th>Website now</th><th>Requested</th><th>Status</th></tr></thead>
+      <tbody>${rows.map((r) => html`<tr><td class="small nowrap">${r.ticket || '—'}</td><td class="small">${r.platform}</td><td class="small">${r.section}</td><td class="dev"><a onClick=${() => app.openRecord(r.id)}>${r.device}</a></td><td>${r.brand}</td>
+        <td class="small nowrap"><span class=${`pill ${r.action === 'Update date' ? 'info' : r.action === 'Add date' ? 'good' : 'warning'}`}>${r.action}</span></td>
+        <td class="nowrap"><s class="faint">${/^\d{4}-/.test(r.published) ? fmtDate(r.published) : r.published}</s></td><td class="nowrap"><b>${/^\d{4}-/.test(r.requested) ? fmtDate(r.requested) : r.requested}</b></td><td class="small">${r.status}</td></tr>`)}</tbody></table></div>`}
   </div>`;
 }
+
+function todayStamp() { return new Date().toISOString().slice(0, 10); }
 
 function Digest({ app }) {
   const [dg] = useLoad(() => call('digest'), [app.version]);

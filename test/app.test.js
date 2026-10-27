@@ -388,3 +388,40 @@ test('a file dropped again before approval is read again, replacing its review c
   assert.ok(items.every((i) => i.parsed.scheme === 'Mastercard'));
   assert.equal(api.listDocuments().length, 1);
 });
+
+test('website change request lists what the website gets wrong and numbers the requests', async () => {
+  const { api } = await fresh();
+  const today = todayIso();
+  const mk = (o) => api.saveRecord(null, { platform: 'UPP', category: 'EMV L2 Contactless', scheme: 'Visa', ...o });
+  const upd = mk({ device: 'DX4000', expiry_date: addDays(today, 900), portal_date: addDays(today, 100) });
+  const exp = mk({ device: 'Lane/7000-CL1', category: 'EMV L1 Contactless', scheme: 'EMVCo', expiry_date: addDays(today, -30), portal_date: addDays(today, -30) });
+  const pci = mk({ device: 'Lane/3000', category: 'PCI PTS', scheme: 'PCI SSC', kernel_version: 'PCI v5', expiry_date: addDays(today, -5), portal_date: addDays(today, -5) });
+  mk({ device: 'Self/3000', expiry_date: addDays(today, 400), portal_date: addDays(today, 400) });
+  const rows = api.portalChanges();
+  assert.equal(rows.length, 3, 'the row in sync is left out');
+  const by = Object.fromEntries(rows.map((r) => [r.device, r]));
+  assert.equal(by.DX4000.action, 'Update date');
+  assert.equal(by.DX4000.section, 'EMV Contactless L2');
+  assert.equal(by.DX4000.brand, 'Visa');
+  assert.equal(by['Lane/7000-CL1'].action, 'Replace expired date');
+  assert.equal(by['Lane/7000-CL1'].brand, 'EMV Contactless');
+  assert.equal(by['Lane/7000-CL1'].level, 'Level 1');
+  assert.equal(by['Lane/3000'].action, 'Remove row');
+  assert.equal(by['Lane/3000'].level, 'PCI v5');
+  assert.match(by['Lane/3000'].comment, /Lane\/3000 PCI v5$/);
+
+  const book = await api.exportChangeRequest({ markRequested: true });
+  const ExcelJS = require('exceljs');
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(book);
+  assert.deepEqual(wb.worksheets.map((w) => w.name), ['Master Change Request (All)', 'UPP']);
+  assert.equal(wb.worksheets[0].getRow(1).getCell(7).value, 'Action');
+  const ids = api.listRecords().map((r) => r.change_ticket).filter(Boolean).sort();
+  assert.deepEqual(ids, ['CR-001', 'CR-002', 'CR-003']);
+  assert.equal(api.getRecord(upd.record.id).record.portal_status, 'Change Requested');
+  // A later request continues the numbering.
+  mk({ device: 'EX4000', expiry_date: addDays(today, 700), portal_date: addDays(today, 10) });
+  await api.exportChangeRequest({ markRequested: true });
+  assert.ok(api.listRecords().some((r) => r.device === 'EX4000' && r.change_ticket === 'CR-004'));
+  void exp; void pci;
+});

@@ -281,7 +281,7 @@ class AppApi {
       const report = { added: 0, updated: 0, unchanged: 0, conflicts: [], notFound: [], total: candidates.length, context: parsed.ctx };
       const work = () => {
         for (const c of candidates) {
-          const cur = this.store.findByKey(c);
+          const cur = this.store.findByKey(c) || this.findLoose(c);
           if (!cur) { report.notFound.push(`${c.device} · ${c.scheme} ${c.category}`); continue; }
           if (cur.portal_date === c.portal_date) { report.unchanged++; continue; }
           report.updated++;
@@ -299,6 +299,27 @@ class AppApi {
     candidates = candidates.map((c) => ({ ...c, portal_status: 'In Sync' }));
     const report = mergeRecords(this.store, candidates, { filename, dryRun, kind: 'portal' });
     return { ...report, context: parsed.ctx };
+  }
+
+  /**
+   * The record a published row refers to when platform/bundle are spelled
+   * differently (or missing) on the page: same device, type and brand, and for
+   * PCI the version or, failing that, the latest approval.
+   */
+  findLoose(c) {
+    const n = this.store.norm();
+    const cat = taxonomy.normalizeCategory(c.category), sch = taxonomy.normalizeScheme(c.scheme).toLowerCase();
+    let hits = this.store.listRecords().filter((r) => !r.archived && n(r.device) === n(c.device) && r.category === cat && String(r.scheme).toLowerCase() === sch);
+    if (hits.length > 1 && c.platform) {
+      const same = hits.filter((r) => n(r.platform) === n(c.platform));
+      if (same.length) hits = same;
+    }
+    if (hits.length > 1 && cat === 'PCI PTS' && c.kernel_version) {
+      const v = hits.filter((r) => n(r.kernel_version) === n(c.kernel_version));
+      if (v.length) hits = v;
+    }
+    if (hits.length > 1) hits = [...hits].sort((a, b) => String(b.expiry_date || '').localeCompare(String(a.expiry_date || ''))).slice(0, 1);
+    return hits[0] || null;
   }
 
   loadSampleData() {
@@ -339,6 +360,27 @@ class AppApi {
   }
 
   portalChanges() { return reports.portalChanges(this.store.listRecords()); }
+
+  /**
+   * The website change request workbook. With `markRequested`, rows get a
+   * change ID (CR-001…) and the status "Change Requested", so the next request
+   * continues the numbering and the sent rows can be tracked until published.
+   */
+  async exportChangeRequest({ ids, markRequested = false } = {}) {
+    let rows = this.portalChanges();
+    if (ids && ids.length) { const set = new Set(ids); rows = rows.filter((r) => set.has(r.id)); }
+    if (markRequested) {
+      let n = Math.max(0, ...this.store.listRecords().map((r) => +(String(r.change_ticket || '').match(/^CR-(\d+)$/) || [0, 0])[1]));
+      this.store.db.tx(() => {
+        for (const r of rows) {
+          if (!r.ticket) r.ticket = `CR-${String(++n).padStart(3, '0')}`;
+          r.status = 'Requested';
+          this.store.updateRecord(r.id, { change_ticket: r.ticket, portal_status: 'Change Requested' }, { source: 'change request' });
+        }
+      });
+    }
+    return reports.exportChangeRequest(rows);
+  }
 
   listImports() { return this.store.imports(); }
 
@@ -446,7 +488,7 @@ const PUBLIC_METHODS = [
   'activateReplacement', 'listTags', 'knownDevices', 'listAliases', 'setAlias', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
   'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'listDocuments',
   'documentText', 'unlinkDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
-  'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
+  'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
   'aiDraftEmail', 'backup', 'listBackups', 'restore', 'health',
 ];
 
