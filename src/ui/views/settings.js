@@ -251,19 +251,72 @@ function ImportPortal({ app }) {
 function Matching({ s, save, app }) {
   const [words, setWords] = useState((s.noiseWords || []).join(', '));
   const [aliases, reload] = useLoad(() => call('listAliases'), [app.version]);
-  const [a, setA] = useState(''); const [d, setD] = useState('');
-  const add = async () => {
-    if (!a.trim() || !d.trim()) return;
-    try { const r = await call('setAlias', a.trim(), d.trim()); toast(`Alias saved; ${plural(r.rematched, 'letter')} re-matched`, 'ok'); setA(''); setD(''); reload(); app.refresh(); } catch (e) { toastError(e); }
+  const [fields, reloadFields] = useLoad(() => call('listFieldAliases'), [app.version]);
+  const [recs] = useLoad(() => call('listRecords'), [app.version]);
+  const values = (k) => [...new Set((recs || []).map((r) => r[k]).filter(Boolean))].sort();
+  const done = (r, extra = '') => {
+    const parts = [`Alias saved${extra}`];
+    if (r && r.changed) parts.push(`${plural(r.changed, 'record')} renamed`);
+    if (r && r.skipped && r.skipped.length) parts.push(`${plural(r.skipped.length, 'record')} skipped (would duplicate another)`);
+    toast(parts.join('; '), 'ok');
+    reload(); reloadFields(); app.refresh();
   };
   return html`<div class="cards">
     <div class="card pad"><h3>Words to ignore in device names</h3><p class="muted small">Brand and marketing words that letters add to device names (for example a product line name). They are ignored when matching letters to devices.</p>
       <textarea rows="3" style="width:100%" class="mt" value=${words} onInput=${(e) => setWords(e.target.value)}></textarea>
       <button class="btn primary mt" onClick=${() => save({ noiseWords: words.split(/[,\n]/).map((w) => w.trim()).filter(Boolean) }, 'Saved; pending letters re-matched')}>Save</button></div>
-    <div class="card pad"><h3>Device aliases</h3><p class="muted small">When a letter calls a device by another name, map it to your device name. Pending letters are re-matched straight away.</p>
-      <div class="row mt"><input type="text" placeholder="Name in the letter" value=${a} onInput=${(e) => setA(e.target.value)} /><span>→</span>
-        <input type="text" placeholder="Your device name" value=${d} onInput=${(e) => setD(e.target.value)} /><button class="btn primary" onClick=${add}>Add</button></div>
-      ${aliases && Object.keys(aliases).length ? html`<table class="t compact mt"><tbody>${Object.entries(aliases).map(([k, v]) => html`<tr><td class="mono">${k}</td><td>→ <b>${v}</b></td>
-        <td style="text-align:right"><button class="btn sm ghost" onClick=${async () => { await call('setAlias', k, ''); reload(); }}>Remove</button></td></tr>`)}</tbody></table>` : null}</div>
+    <${AliasCard} field="device" title="Device aliases" left="Name in the letter or record" right="Your device name" options=${values('device')} onApplied=${() => { reload(); app.refresh(); }}
+      help="When a letter or record calls a device by another name, map it to your device name. Pending letters are re-matched straight away."
+      list=${aliases} onSave=${async (a, v, apply) => { const r = await call('setAlias', a, v, { apply }); done(r, r.rematched ? `; ${plural(r.rematched, 'letter')} re-matched` : ''); }}
+      onRemove=${async (k) => { await call('setAlias', k, ''); reload(); }} />
+    <${AliasCard} field="platform" title="Platform aliases" left="Other spelling, e.g. UPP v6" right="Platform, e.g. UPP" options=${values('platform')} onApplied=${() => { reloadFields(); app.refresh(); }}
+      help="Different spellings of one platform. New and imported records use your name, and existing records can be renamed."
+      list=${fields && fields.platform} onSave=${async (a, v, apply) => done(await call('setFieldAlias', 'platform', a, v, { apply }))}
+      onRemove=${async (k) => { await call('setFieldAlias', 'platform', k, ''); reloadFields(); }} />
+    <${AliasCard} field="bundle" title="Bundle aliases" left="Other spelling, e.g. Bundle6" right="Bundle, e.g. UPP Bundle 6" options=${values('bundle')} onApplied=${() => { reloadFields(); app.refresh(); }}
+      help="Different spellings of one kernel bundle. New and imported records use your name, and existing records can be renamed."
+      list=${fields && fields.bundle} onSave=${async (a, v, apply) => done(await call('setFieldAlias', 'bundle', a, v, { apply }))}
+      onRemove=${async (k) => { await call('setFieldAlias', 'bundle', k, ''); reloadFields(); }} />
+  </div>`;
+}
+
+/** One alias list: add "other spelling -> your name", optionally renaming the records that use the other spelling. */
+function AliasCard({ field, title, help, left, right, options, list, onSave, onRemove, onApplied }) {
+  const [a, setA] = useState(''); const [v, setV] = useState('');
+  const [apply, setApply] = useState(true);
+  const [preview, setPreview] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!a.trim()) { setPreview(null); return undefined; }
+    const t = setTimeout(() => { call('previewAlias', field, a.trim(), v.trim()).then(setPreview).catch(() => setPreview(null)); }, 250);
+    return () => clearTimeout(t);
+  }, [a, v, field]);
+  const add = async () => {
+    if (!a.trim() || !v.trim()) return toast('Type both names first');
+    if (apply && preview && preview.count && !confirm(`Rename ${field} on ${plural(preview.count, 'record')} from "${a.trim()}" to "${v.trim()}"? Each change is recorded in the record's history.`)) return;
+    setBusy(true);
+    try { await onSave(a.trim(), v.trim(), apply); setA(''); setV(''); setPreview(null); } catch (e) { toastError(e); } finally { setBusy(false); }
+  };
+  const applyAll = async () => {
+    setBusy(true);
+    try {
+      const r = await call('applyAllAliases', field);
+      toast(`${plural(r.changed, 'record')} renamed${r.skipped.length ? `; ${plural(r.skipped.length, 'record')} skipped (would duplicate another)` : ''}`, 'ok');
+      onApplied();
+    } catch (e) { toastError(e); } finally { setBusy(false); }
+  };
+  const entries = list ? Object.entries(list) : [];
+  const dl = `alias-${field}`;
+  return html`<div class="card pad"><h3>${title}</h3><p class="muted small">${help}</p>
+    <div class="row wrap mt"><input type="text" list=${dl} placeholder=${left} value=${a} onInput=${(e) => setA(e.target.value)} aria-label=${`${title}: other name`} /><span>→</span>
+      <input type="text" list=${dl} placeholder=${right} value=${v} onInput=${(e) => setV(e.target.value)} aria-label=${`${title}: your name`} onKeyDown=${(e) => { if (e.key === 'Enter') add(); }} />
+      <button class="btn primary" disabled=${busy} onClick=${add}>Add</button></div>
+    <datalist id=${dl}>${(options || []).map((o) => html`<option value=${o} />`)}</datalist>
+    ${a.trim() ? html`<label class="check mt small"><input type="checkbox" checked=${apply} onChange=${() => setApply(!apply)} />
+      Also rename existing records${preview ? `: ${preview.count ? `${plural(preview.count, 'record')} ${preview.count === 1 ? 'uses' : 'use'} "${a.trim()}"` : 'none use it yet'}` : ''}</label>
+      ${preview && preview.count ? html`<div class="faint small">${preview.examples.join(' · ')}${preview.count > preview.examples.length ? ' …' : ''}</div>` : null}` : null}
+    ${entries.length ? html`<table class="t compact mt"><tbody>${entries.map(([k, val]) => html`<tr><td class="mono">${k}</td><td>→ <b>${val}</b></td>
+      <td style="text-align:right"><button class="btn sm ghost" onClick=${() => onRemove(k)}>Remove</button></td></tr>`)}</tbody></table>
+      <button class="btn sm mt" disabled=${busy} onClick=${applyAll} title="Rename every existing record that still uses one of these spellings">Apply all to existing records</button>` : null}
   </div>`;
 }
