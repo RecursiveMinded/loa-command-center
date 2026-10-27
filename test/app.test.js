@@ -374,3 +374,17 @@ test('a new record takes its platform from the same device or its family in the 
   assert.equal(s4.record.bundle, 'Bundle 6');
   assert.equal(s8.record.platform, 'UPP', 'family Self/... is all UPP');
 });
+
+test('a file dropped again before approval is read again, replacing its review cards', async () => {
+  const { api } = await fresh();
+  const first = api.ingestDocument({ filename: 'Self4000CL2_MC.pdf', bytes: Buffer.from('same'), pages: ['Masterc ard garbled text without much in it at all, really nothing'] });
+  assert.equal(first.status, 'ok');
+  const again = api.ingestDocument({ filename: 'Self4000CL2_MC.pdf', bytes: Buffer.from('same'), pages: [L.mastercard] });
+  assert.equal(again.status, 'ok');
+  assert.equal(again.reread, true);
+  assert.equal(again.documentId, first.documentId);
+  const items = api.listInbox('pending').filter((i) => i.document_id === first.documentId);
+  assert.equal(items.length, again.pending, 'old cards replaced');
+  assert.ok(items.every((i) => i.parsed.scheme === 'Mastercard'));
+  assert.equal(api.listDocuments().length, 1);
+});

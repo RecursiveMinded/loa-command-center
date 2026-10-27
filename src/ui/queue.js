@@ -74,7 +74,7 @@ export function onQueueIdle(fn) { doneListeners.add(fn); return () => doneListen
 function describe(res, ex) {
   if (res.status === 'duplicate') return `Already imported as ${res.duplicateOf}`;
   if (res.status === 'unreadable') return res.message || 'No readable text';
-  const parts = [`${res.letters} letter${res.letters === 1 ? '' : 's'} found`];
+  const parts = [`${res.reread ? 'Read again: ' : ''}${res.letters} letter${res.letters === 1 ? '' : 's'} found`];
   if (res.pending) parts.push(`${res.pending} to review`);
   if (res.info) parts.push(`${res.info} informational`);
   if (ex.ocrPages) parts.push(`${ex.ocrPages} page${ex.ocrPages === 1 ? '' : 's'} scanned with OCR`);

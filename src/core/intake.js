@@ -313,7 +313,10 @@ class Intake {
     const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes || []);
     const hash = sha256(buf.length ? buf : Buffer.from((pages || []).join('\n')));
     const existing = this.store.findDocumentByHash(hash);
-    if (existing) {
+    // A file dropped again before any of its letters was approved is read
+    // again (a newer version may read it better); otherwise it is a duplicate.
+    const decided = existing && this.store.db.get("SELECT COUNT(*) AS n FROM inbox WHERE document_id=? AND status='applied'", [existing.id]).n;
+    if (existing && decided) {
       return { filename, status: 'duplicate', duplicateOf: existing.filename, documentId: existing.id, letters: 0 };
     }
     const text = (pages || []).join('\n\f\n');
@@ -324,12 +327,19 @@ class Intake {
     const ctx = this.context();
     const records = this.store.listRecords();
     fromFilename(letters, filename, records, ctx.norm);
-    const stored = buf.length && this.archiveDir ? archiveFile(this.archiveDir, filename, buf) : null;
+    const stored = existing ? existing.stored_path : buf.length && this.archiveDir ? archiveFile(this.archiveDir, filename, buf) : null;
 
     return this.store.db.tx(() => {
-      const documentId = this.store.addDocument({
-        sha256: hash, filename, stored_path: stored, size: buf.length, page_count: pages.length, ocr_pages: ocrPages, text,
-      });
+      let documentId;
+      if (existing) {
+        documentId = existing.id;
+        this.store.db.run("DELETE FROM inbox WHERE document_id=? AND status IN ('pending','rejected','info')", [documentId]);
+        this.store.db.run('UPDATE documents SET text=?, page_count=?, ocr_pages=? WHERE id=?', [text, pages.length, ocrPages, documentId]);
+      } else {
+        documentId = this.store.addDocument({
+          sha256: hash, filename, stored_path: stored, size: buf.length, page_count: pages.length, ocr_pages: ocrPages, text,
+        });
+      }
       let pending = 0, info = 0;
       const items = [];
       for (const letter of letters) {
@@ -339,7 +349,7 @@ class Intake {
         const id = this.store.addInbox({ document_id: documentId, letter_index: letter.index, parsed: letter, proposals, status });
         items.push(id);
       }
-      return { filename, status: 'ok', documentId, letters: letters.length, pending, info, items, ocrPages };
+      return { filename, status: 'ok', documentId, letters: letters.length, pending, info, items, ocrPages, reread: !!existing };
     });
   }
 
