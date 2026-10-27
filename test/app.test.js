@@ -291,3 +291,40 @@ test('records can be created from a letter when the ones it covers do not exist 
   assert.equal(api.getRecord(res2[0].record_id).record.expiry_date, '2030-01-31');
   assert.ok(!api.listInbox('pending').some((i) => i.id === blind.id));
 });
+
+test('device and approval type are read from the file name when the letter does not say', async () => {
+  const { deviceFromFilename, categoryFromFilename } = require('../src/core/devices');
+  assert.deepEqual(deviceFromFilename('Self4000CL2_EmvL1Cless.pdf'), { value: 'Self/4000 CL2', known: false });
+  assert.deepEqual(deviceFromFilename('Self4000CL2_EmvL1Cless.pdf', ['Self/4000', 'Self/4000-CL2']), { value: 'Self/4000-CL2', known: true });
+  assert.equal(deviceFromFilename('AXIUM DX8000 - L2.pdf').value, 'DX8000');
+  assert.equal(deviceFromFilename('Northwind merged.pdf'), null);
+  assert.equal(categoryFromFilename('Self4000CL2_EmvL1Cless.pdf'), 'EMV L1 Contactless');
+  assert.equal(categoryFromFilename('Move5000_L2_CTLS.pdf'), 'EMV L2 Contactless');
+  assert.equal(categoryFromFilename('Self4000CL2_Disc.pdf'), '');
+
+  const { api } = await fresh();
+  api.loadSampleData();
+  const blindText = L.discover.replace('Product: Flex/3XXX CL1 ', '');
+  api.ingestDocument({ filename: 'P400CL1_Discover_L2.pdf', bytes: Buffer.from('a'), pages: [blindText] });
+  const it = api.listInbox('pending').find((i) => i.filename === 'P400CL1_Discover_L2.pdf');
+  assert.equal(it.parsed.products[0].value, 'P400-CL1');
+  assert.ok(it.parsed.warnings.some((w) => /file name/.test(w)));
+  assert.ok(it.proposals.some((p) => p.record_id && p.device === 'P400-CL1'), 'matched the existing record');
+
+  // Letters read by an older version get the fallback on re-match.
+  const parsed = { ...it.parsed, products: [] };
+  api.store.setInbox(it.id, { parsed, proposals: [] });
+  api.rematch();
+  const again = api.listInbox('pending').find((i) => i.id === it.id);
+  assert.equal(again.parsed.products[0].value, 'P400-CL1');
+  assert.ok(again.proposals.length > 0);
+
+  // Letterhead text read as the device loses to the file name.
+  api.ingestDocument({ filename: 'T100CL1_Discover.pdf', bytes: Buffer.from('b'), pages: [blindText.replace('Discover', 'Discover Global Network')] });
+  const junk = api.listInbox('pending').find((i) => i.filename === 'T100CL1_Discover.pdf');
+  assert.equal(junk.parsed.products[0].value, 'T100-CL1');
+  assert.ok(junk.parsed.warnings.some((w) => /not a device you track/.test(w)));
+
+  const known = api.knownDevices();
+  assert.ok(known.some((d) => d.device === 'P400-CL1' && d.records >= 2 && d.schemes.includes('Discover')));
+});

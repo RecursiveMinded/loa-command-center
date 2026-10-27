@@ -112,7 +112,50 @@ function splitProducts(line) {
     .filter((p) => /\d/.test(p));
 }
 
+/**
+ * Find the device a file name refers to, e.g. "Self4000CL2_EmvL1Cless.pdf"
+ * or "SELF-4000 CL2 Discover.pdf". A device already in the register wins
+ * (longest match), otherwise the leading model code is turned into a name.
+ * Returns { value, known } or null.
+ */
+function deviceFromFilename(filename, knownDevices = [], norm = defaultNorm) {
+  const base = String(filename || '').replace(/^.*[\\/]/, '').replace(/\.[A-Za-z0-9]{2,5}$/, '');
+  const key = compact(base);
+  if (!key) return null;
+  let best = null;
+  for (const d of knownDevices) {
+    const k = norm(d);
+    if (k.length < 4 || !/\d/.test(k) || !key.startsWith(k)) continue;
+    // "SELF4000" must not claim "SELF4000CL2..." when the file names a reader version.
+    const rest = key.slice(k.length);
+    if (!splitVariant(k).variant && /^CL\d/.test(rest)) continue;
+    if (!best || k.length > best.k.length) best = { k, value: d };
+  }
+  if (best) return { value: best.value, known: true };
+  const bare = base.replace(new RegExp(`\\b(${DEFAULT_NOISE_WORDS.join('|')})\\b[\\s_\\-]*`, 'gi'), '');
+  const m = bare.match(/^\s*([A-Za-z]{2,12})[\s_\-/]*(\d{3,5}[A-Za-z]?)(?:[\s_\-]*(CL\s*\d))?(?![A-Za-z0-9])|^\s*([A-Za-z]{2,12})[\s_\-/]*(\d{3,5})(CL\d)/i);
+  if (!m) return null;
+  const fam = m[1] || m[4], num = m[2] || m[5], cl = (m[3] || m[6] || '').replace(/\s+/g, '').toUpperCase();
+  // Short codes are written joined ("DX8000"), family names with a slash ("Self/4000").
+  const short = fam.length <= 3;
+  const word = short ? fam.toUpperCase() : fam[0].toUpperCase() + fam.slice(1).toLowerCase();
+  // Follow the register's own spelling for the reader version ("-CL2" or " CL2").
+  const sep = (knownDevices.find((d) => /\dCL\d/i.test(compact(d)) && /\d[\s\-_]?CL\d/i.test(d)) || 'x0 CL1').match(/\d([\s\-_]?)CL\d/i)[1];
+  return { value: `${word}${short ? '' : '/'}${num.toUpperCase()}${cl ? sep + cl : ''}`, known: false };
+}
+
+/** Approval type hinted at in a file name ("EmvL1Cless", "L2_CTLS"), or ''. */
+function categoryFromFilename(filename) {
+  // Drop reader versions first: the "CL2" in "Self4000CL2" is not "L2".
+  const k = compact(filename).replace(/CL\d/g, '');
+  const l1 = /L1|LEVEL1/.test(k), l2 = /L2|LEVEL2/.test(k);
+  const cless = /CLESS|CTLS|CONTACTLESS|CTL(?!S?CNT)/.test(k), contact = /CONTACT(?!LESS)|CNT/.test(k);
+  if (!(l1 || l2) || !(cless || contact)) return '';
+  return `EMV ${l2 ? 'L2' : 'L1'} ${cless ? 'Contactless' : 'Contact'}`;
+}
+
 module.exports = {
+  deviceFromFilename, categoryFromFilename,
   DEFAULT_NOISE_WORDS, compact, makeNormalizer, defaultNorm, splitVariant,
   baseDisplayName, variantOf, deviceScore, splitProducts, wildcardRegex,
 };

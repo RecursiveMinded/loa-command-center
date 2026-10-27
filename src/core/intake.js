@@ -7,7 +7,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { parseDocument } = require('./loa-parser');
-const { deviceScore, wildcardRegex, splitVariant } = require('./devices');
+const { deviceScore, wildcardRegex, splitVariant, deviceFromFilename, categoryFromFilename } = require('./devices');
 const { todayIso, daysBetween } = require('./dates');
 const { coverage } = require('./lifecycle');
 
@@ -137,6 +137,36 @@ function letterRecord(letter, device, prod = {}) {
   };
 }
 
+/**
+ * Files are often named after the device and approval type
+ * ("Self4000CL2_EmvL1Cless.pdf"). When a file holds a single letter and the
+ * text does not name the device, take it from the file name instead.
+ */
+function fromFilename(letters, filename, records, norm) {
+  const approvals = letters.filter((l) => !l.informational);
+  if (approvals.length !== 1) return;
+  const L = approvals[0];
+  const known = [...new Set(records.map((r) => r.device))];
+  const dev = deviceFromFilename(filename, known, norm);
+  // Text that names no device you track and does not look like a model code
+  // ("1 Main Street" from a letterhead) loses to a file name that does.
+  const isKnown = (v) => known.some((d) => deviceScore(v, d, norm) > 0);
+  const modelLike = (v) => /[A-Za-z]{1,12}[\s/\-_]?\d{3,5}/.test(v);
+  const weakText = L.products.length && !L.products.some((p) => isKnown(p.value) || modelLike(p.value));
+  if (dev && (!L.products.length || weakText)) {
+    const was = L.products.map((p) => p.value).join(', ');
+    L.products = [{ value: dev.value, evidence: `From the file name "${filename}"`, confidence: 0.6, source: 'filename' }];
+    L.warnings = L.warnings.filter((w) => w !== 'No device/product name found');
+    L.warnings.push(dev.known ? `Device taken from the file name (matches ${dev.value} in your register)` : 'Device taken from the file name; check it before approving');
+    if (was) L.warnings.push(`The letter text suggested "${was}", which is not a device you track`);
+    else L.confidence = Math.min(100, L.confidence + 15);
+  }
+  if (!L.category || L.category === 'Other') {
+    const cat = categoryFromFilename(filename);
+    if (cat) { L.category = cat; L.warnings.push(`Approval type taken from the file name (${cat})`); }
+  }
+}
+
 function sameScheme(a, b) {
   return String(a || '').toLowerCase() === String(b || '').toLowerCase();
 }
@@ -245,6 +275,7 @@ class Intake {
     const letters = parseDocument(pages);
     const ctx = this.context();
     const records = this.store.listRecords();
+    fromFilename(letters, filename, records, ctx.norm);
     const stored = buf.length && this.archiveDir ? archiveFile(this.archiveDir, filename, buf) : null;
 
     return this.store.db.tx(() => {
@@ -269,9 +300,19 @@ class Intake {
     const ctx = this.context();
     const records = this.store.listRecords();
     let n = 0;
+    const all = this.store.listInbox();
+    const lettersIn = (docId) => all.filter((x) => x.document_id === docId && x.status !== 'info').length;
     this.store.db.tx(() => {
-      for (const it of this.store.listInbox({ status: 'pending' })) {
-        this.store.setInbox(it.id, { proposals: buildProposals(it.parsed, records, ctx) });
+      for (const it of all.filter((x) => x.status === 'pending')) {
+        const patch = {};
+        // Letters read before the file-name fallback existed get it now.
+        if (!it.parsed.informational && lettersIn(it.document_id) === 1 && !it.parsed.products.some((p) => p.source === 'filename')) {
+          const before = JSON.stringify(it.parsed.products);
+          fromFilename([it.parsed], it.filename, records, ctx.norm);
+          if (JSON.stringify(it.parsed.products) !== before) patch.parsed = it.parsed;
+        }
+        patch.proposals = buildProposals(it.parsed, records, ctx);
+        this.store.setInbox(it.id, patch);
         n++;
       }
     });

@@ -103,6 +103,19 @@ class AppApi {
 
   listTags() { return this.store.allTags(); }
 
+  /** Every device name in the register, archived ones included, with how many records use it. */
+  knownDevices() {
+    const by = new Map();
+    for (const r of this.store.listRecords()) {
+      const k = this.store.norm()(r.device);
+      const e = by.get(k) || { device: r.device, records: 0, archived: 0, schemes: new Set() };
+      e.records++; if (r.archived) e.archived++; e.schemes.add(r.scheme);
+      by.set(k, e);
+    }
+    return [...by.values()].map((e) => ({ ...e, schemes: [...e.schemes].filter(Boolean).sort() }))
+      .sort((a, b) => a.device.localeCompare(b.device, undefined, { numeric: true }));
+  }
+
   /** Make a replacement approval the current one (audited). */
   activateReplacement(approvalId) {
     const a = this.db.get('SELECT * FROM approvals WHERE id=?', [approvalId]);
@@ -362,6 +375,8 @@ class AppApi {
       fs.writeFileSync(file, before);
     }
     this.store.setSettings({ appVersion: VERSION });
+    // A new version may read letters better; refresh what is waiting for review.
+    if (this.store.listInbox({ status: 'pending' }).length) this.intake.rematch();
     return file;
   }
 
@@ -422,7 +437,7 @@ class AppApi {
 // Methods the UI may call. Anything else is rejected by the IPC/HTTP bridges.
 const PUBLIC_METHODS = [
   'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'bulkUpdate',
-  'activateReplacement', 'listTags', 'listAliases', 'setAlias', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
+  'activateReplacement', 'listTags', 'knownDevices', 'listAliases', 'setAlias', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
   'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'approveAllSafe', 'rematch', 'listDocuments',
   'documentText', 'unlinkDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
