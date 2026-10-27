@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS records (
@@ -123,6 +123,21 @@ CREATE TABLE IF NOT EXISTS imports (
 CREATE TABLE IF NOT EXISTS aliases (
   alias TEXT PRIMARY KEY,
   device TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS archive (
+  id TEXT PRIMARY KEY,
+  device TEXT DEFAULT '',
+  category TEXT DEFAULT '',
+  scheme TEXT DEFAULT '',
+  platform TEXT DEFAULT '',
+  bundle TEXT DEFAULT '',
+  approval_number TEXT DEFAULT '',
+  expiry_date TEXT,
+  data TEXT NOT NULL,
+  search TEXT DEFAULT '',
+  reason TEXT DEFAULT '',
+  archived_at TEXT NOT NULL,
+  archived_by TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS notifications (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

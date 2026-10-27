@@ -242,7 +242,7 @@ test('bulk edit sets platform and tags, and skips clashing records', async () =>
 });
 
 test('a version 1 database gains the tags column on open', async () => {
-  const { Database } = require('../src/core/db');
+  const { Database, SCHEMA_VERSION } = require('../src/core/db');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'loa-mig-'));
   const file = path.join(dir, 'loa.db');
   const db = await Database.open(file);
@@ -254,7 +254,7 @@ test('a version 1 database gains the tags column on open', async () => {
   db.close();
   const again = await Database.open(file);
   assert.ok(again.all('PRAGMA table_info(records)').some((c) => c.name === 'tags'));
-  assert.equal(again.get("SELECT value FROM settings WHERE key='schema_version'").value, '2');
+  assert.equal(again.get("SELECT value FROM settings WHERE key='schema_version'").value, String(SCHEMA_VERSION));
   again.close();
 });
 
@@ -579,4 +579,55 @@ test('platform and bundle aliases rename existing records and apply to new ones'
   const e = api.setAlias('NX-1', 'NX1A', { apply: true });
   assert.ok(e.changed >= 1);
   assert.ok(api.listRecords().some((x) => x.device === 'NX1A' && x.scheme === 'Visa'));
+});
+
+test('deleting moves records to the Archive; only the Archive deletes permanently', async () => {
+  const { api } = await fresh();
+  const old = addDays(todayIso(), -10);
+  const a = api.store.createRecord({ device: 'Move5000-CL3', category: 'EMV L2 Contactless', scheme: 'JCB', platform: 'UPP', approval_number: 'JCB-123', expiry_date: old, notes: 'renewal pending lab' });
+  const b = api.store.createRecord({ device: 'NX2', category: 'EMV L1 Contact', scheme: 'EMVCo', expiry_date: addDays(todayIso(), 200) });
+  const c = api.store.createRecord({ device: 'NX3', category: 'EMV L1 Contact', scheme: 'EMVCo', expiry_date: addDays(todayIso(), -1) });
+  assert.equal(api.deleteRecord(b.id), true);
+  assert.deepEqual(api.listRecords().map((r) => r.device).sort(), ['Move5000-CL3', 'NX3']);
+  assert.equal(api.archiveCount(), 1);
+  // Search matches any field, every word.
+  assert.equal(api.listArchive('nx2 emvco').length, 1);
+  assert.equal(api.listArchive('nx2 jcb').length, 0);
+  // Expired records move in one step.
+  assert.deepEqual(api.expiredRecords().map((r) => r.device).sort(), ['Move5000-CL3', 'NX3']);
+  assert.equal(api.archiveExpired(), 2);
+  assert.equal(api.listRecords().length, 0);
+  const hit = api.listArchive('lab pending');
+  assert.equal(hit.length, 1);
+  assert.equal(hit[0].device, 'Move5000-CL3');
+  assert.equal(hit[0].reason, 'Expired');
+  assert.equal(hit[0].approvals[0].approval_number, 'JCB-123');
+  assert.equal(api.listArchive('JCB-123').length, 1);
+  assert.ok(api.knownDevices().some((d) => d.device === 'Move5000-CL3' && d.archived === 1), 'archived device names are still suggested');
+  // Restore puts the record back with its approvals and history.
+  const r = api.restoreArchived([a.id]);
+  assert.equal(r.restored, 1);
+  const back = api.getRecord(a.id);
+  assert.equal(back.record.approval_number, 'JCB-123');
+  assert.equal(back.approvals[0].approval_number, 'JCB-123');
+  assert.ok(back.audit.some((x) => x.action === 'restore'));
+  assert.equal(api.store.listRecords()[0].tags, 'CL3');
+  // A clash with a current record keeps the archived one where it is.
+  api.store.createRecord({ device: 'NX3', category: 'EMV L1 Contact', scheme: 'EMVCo' });
+  assert.equal(api.restoreArchived([c.id]).skipped.length, 1);
+  // Permanent delete.
+  assert.equal(api.purgeArchived([c.id, b.id]), 2);
+  assert.equal(api.archiveCount(), 0);
+});
+
+test('records hidden with the old Archived flag move to the Archive on upgrade', async () => {
+  const { api } = await fresh();
+  const a = api.store.createRecord({ device: 'NX1', category: 'EMV L1 Contact', scheme: 'EMVCo', archived: true });
+  api.store.createRecord({ device: 'NX2', category: 'EMV L1 Contact', scheme: 'EMVCo' });
+  api.store.setSettings({ appVersion: '0.0.1' });
+  api.upgradeBackup(null);
+  assert.deepEqual(api.listRecords().map((r) => r.device), ['NX2']);
+  assert.equal(api.listArchive('nx1')[0].id, a.id);
+  assert.equal(api.bulkUpdate([api.listRecords()[0].id], { archived: true }).changed, 1);
+  assert.equal(api.archiveCount(), 2);
 });

@@ -61,7 +61,7 @@ function pdfFromPages(pages) {
     await p.click('text=Try sample data');
     await p.waitForSelector('text=Portfolio health');
     check(true, 'dashboard with sample data');
-    for (const v of ['Action plan', 'Certifications', 'Matrix', 'Reports', 'Settings']) {
+    for (const v of ['Action plan', 'Certifications', 'Matrix', 'Reports', 'Archive', 'Settings']) {
       await p.click(`nav >> text=${v}`);
       await p.waitForSelector(`h1:has-text("${v === 'Certifications' ? 'Certifications' : v}")`);
       check(true, `${v} screen`);
@@ -140,15 +140,35 @@ function pdfFromPages(pages) {
       check(kn > 0, `kernel version filter: ${kn} records on ${kopts[0]}`);
       await p.selectOption('select[aria-label="All kernel versions"]', '');
     } else check(false, 'kernel version filter has values');
-    // Bulk delete with confirmation.
+    // Bulk delete with confirmation moves the record to the Archive.
     const before = await p.$$eval('table.t tbody tr', (els) => els.length);
+    const gone = await p.locator('table.t tbody tr .dev').first().innerText();
     await p.locator('table.t tbody tr input[type=checkbox]').first().check();
     p.once('dialog', (d) => d.accept());
     await p.click('.bulkbar button:has-text("Delete 1")');
-    await p.waitForSelector('text=Deleted 1 record', { timeout: 5000 });
+    await p.waitForSelector('text=Moved 1 record to the Archive', { timeout: 5000 });
     const after = await p.$$eval('table.t tbody tr', (els) => els.length);
     check(after === before - 1, `bulk delete removes the selected record (${before} -> ${after})`);
     if (await p.locator('button:has-text("Clear filters")').count()) await p.click('button:has-text("Clear filters")');
+    await p.click('nav >> text=Archive');
+    await p.fill('#archive-search', gone.trim());
+    await p.waitForSelector(`table.t tbody tr .dev:has-text("${gone.trim()}")`, { timeout: 5000 });
+    check(true, `deleted record is searchable in the Archive (${gone.trim()})`);
+    await p.locator('table.t tbody tr input[type=checkbox]').first().check();
+    await p.click('.bulkbar button:has-text("Restore")');
+    await p.waitForSelector('text=Restored 1 record', { timeout: 5000 });
+    p.once('dialog', (d) => d.accept());
+    await p.click('button:has-text("Move expired records here")');
+    await p.waitForSelector('text=/Moved \\d+ records? to the Archive|No records in the register/', { timeout: 5000 });
+    await p.fill('#archive-search', '');
+    const archived = await p.$$eval('table.t tbody tr', (els) => els.length);
+    if (archived) {
+      await p.locator('table.t tbody tr input[type=checkbox]').first().check();
+      p.once('dialog', (d) => d.accept());
+      await p.click('.bulkbar button:has-text("Delete permanently")');
+      await p.waitForSelector('text=Deleted 1 record permanently', { timeout: 5000 });
+    }
+    check(true, `restore, move expired (${archived} archived) and permanent delete`);
     await p.click('nav >> text=LOA inbox');
     const [ch4] = await Promise.all([p.waitForEvent('filechooser'), p.click('text=Choose files')]);
     await ch4.setFiles(named);
