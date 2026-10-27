@@ -540,3 +540,12 @@ test('records carry their hardware version (CL1, CL2...) as a tag', async () => 
   assert.equal(r.changed, 1);
   assert.equal(api.store.getRecord(b.id).tags, 'Retail, CL1');
 });
+
+test('several records can be deleted at once', async () => {
+  const { api } = await fresh();
+  const a = api.store.createRecord({ device: 'NX1', category: 'EMV L1 Contact', scheme: 'EMVCo' });
+  const b = api.store.createRecord({ device: 'NX2', category: 'EMV L1 Contact', scheme: 'EMVCo' });
+  api.store.createRecord({ device: 'NX3', category: 'EMV L1 Contact', scheme: 'EMVCo' });
+  assert.equal(api.deleteRecords([a.id, b.id, 'missing']), 2);
+  assert.deepEqual(api.listRecords().map((r) => r.device), ['NX3']);
+});

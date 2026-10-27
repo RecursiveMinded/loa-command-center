@@ -98,6 +98,8 @@ class AppApi {
   }
 
   deleteRecord(id) { return this.store.deleteRecord(id); }
+  /** Delete several records; each deletion is written to the audit log. Returns how many were deleted. */
+  deleteRecords(ids) { return (ids || []).filter((id) => this.store.deleteRecord(id)).length; }
 
   bulkUpdate(ids, patch, tags = null) { return this.store.bulkUpdate(ids, patch || {}, { source: 'manual' }, tags); }
 
@@ -487,7 +489,7 @@ class AppApi {
 
 // Methods the UI may call. Anything else is rejected by the IPC/HTTP bridges.
 const PUBLIC_METHODS = [
-  'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'bulkUpdate',
+  'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'deleteRecords', 'bulkUpdate',
   'activateReplacement', 'listTags', 'knownDevices', 'listAliases', 'setAlias', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
   'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
   'documentText', 'unlinkDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',

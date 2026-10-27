@@ -127,6 +127,10 @@ export function Register({ app, params }) {
   const label = () => (sel.size ? `${sel.size} selected records` : filterLabel(f, q));
   const exportX = async () => { try { const b = await call('exportExcel', { ids: ids() }); await saveAs('Certifications.xlsx', b, [{ name: 'Excel', extensions: ['xlsx'] }]); } catch (e) { toastError(e); } };
   const exportC = async () => { try { const t = await call('exportCsv', { ids: ids() }); await saveAs('Certifications.csv', t, [{ name: 'CSV', extensions: ['csv'] }]); } catch (e) { toastError(e); } };
+  const delOne = async (r) => {
+    if (!confirm(`Delete ${r.device} · ${r.scheme} ${r.category}? Its history is removed (a daily backup is kept). Archiving hides it instead.`)) return;
+    try { await call('deleteRecord', r.id); toast('Deleted', 'ok'); const s = new Set(sel); s.delete(r.id); setSel(s); reload(); app.refresh(); } catch (e) { toastError(e); }
+  };
   const draft = async () => { try { setEmail(await call('aiDraftEmail', [...sel], { purpose: 'renewal status' })); } catch (e) { toastError(e); } };
 
   return html`
@@ -160,7 +164,7 @@ export function Register({ app, params }) {
     ${!list.length ? html`<div class="card"><div class="empty"><${Icon} name="search" /><h3>No records match</h3><div>Try clearing a filter.</div></div></div>` : html`
     <div class="table-wrap" style="max-height:calc(100vh - 300px)"><table class="t">
       <thead><tr><th class="chk"><input type="checkbox" aria-label="Select all" checked=${allOn} onChange=${toggleAll} /></th>
-        ${COLS.map(([k, l]) => html`<th class="sort" onClick=${() => setSort({ key: k, dir: sort.key === k ? -sort.dir : 1 })}>${l}${sort.key === k ? (sort.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`)}</tr></thead>
+        ${COLS.map(([k, l]) => html`<th class="sort" onClick=${() => setSort({ key: k, dir: sort.key === k ? -sort.dir : 1 })}>${l}${sort.key === k ? (sort.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`)}<th></th></tr></thead>
       <tbody>${list.slice(0, limit).map((r) => html`<tr key=${r.id} class=${`click ${sel.has(r.id) ? 'sel' : ''}`} onClick=${() => app.openRecord(r.id)}>
         <td class="chk" onClick=${(e) => e.stopPropagation()}><input type="checkbox" aria-label="Select" checked=${sel.has(r.id)} onChange=${() => toggle(r.id)} /></td>
         <td><div class="dev">${r.device}${r.archived ? html` <span class="tag">Archived</span>` : null}</div><div class="faint small">${[r.platform, r.bundle, r.kernel_version].filter(Boolean).join(' · ')}</div>
@@ -174,6 +178,7 @@ export function Register({ app, params }) {
         <td class="small ellipsis" style="max-width:200px" title=${r.next_action}>${r.next_action}${r.next_action_date ? html` <span class="faint">${fmtDate(r.next_action_date)}</span>` : null}</td>
         <td class="num">${r.doc_count ? html`<button class="tag linktag" title="View the LOAs for this record" onClick=${(e) => { e.stopPropagation(); app.openRecord(r.id, 'documents'); }}><${Icon} name="file" /> ${r.doc_count}</button>` : html`<span class="faint">—</span>`}</td>
         <td class="small nowrap">${r.portal_status === 'Not Tracked' ? html`<span class="faint">—</span>` : r.portal_status}</td>
+        <td class="row-del"><button class="iconbtn" title=${`Delete ${r.device} · ${r.scheme} ${r.category}`} aria-label="Delete record" onClick=${(e) => { e.stopPropagation(); delOne(r); }}><${Icon} name="trash" /></button></td>
       </tr>`)}</tbody></table>
       ${list.length > limit ? html`<div class="row" style="justify-content:center;padding:12px"><button class="btn" onClick=${() => setLimit(limit + 500)}>Show more (${list.length - limit} hidden)</button></div>` : null}
     </div>`}
@@ -208,6 +213,15 @@ function BulkBar({ ids, tax, values, onDone, onClear, onEmail }) {
       onDone();
     } catch (e) { toastError(e); }
   };
+  const remove = async () => {
+    if (!confirm(`Delete ${plural(ids.length, 'record')}? Their history is removed (a daily backup is kept). Use Set > Archive to hide them instead.`)) return;
+    try {
+      const n = await call('deleteRecords', ids);
+      toast(`Deleted ${plural(n, 'record')}`, 'ok');
+      onClear();
+      onDone();
+    } catch (e) { toastError(e); }
+  };
   const list = values[field] ? values[field].filter(Boolean) : null;
   const input = field === 'hw' ? html`<${Select} value=${value} onChange=${setValue} placeholder="None (contact)" options=${['CL1', 'CL2', 'CL3', 'CL4']} />`
     : field === 'stage' ? html`<${Select} value=${value} onChange=${setValue} placeholder="(automatic)" options=${tax.stages} />`
@@ -223,6 +237,7 @@ function BulkBar({ ids, tax, values, onDone, onClear, onEmail }) {
     ${input}${list ? html`<datalist id="bulk-values">${list.map((o) => html`<option value=${o} />`)}</datalist>` : null}
     <button class="btn primary" onClick=${apply}>Apply</button><span class="grow"></span>
     <button class="btn" onClick=${onEmail}><${Icon} name="mail" /> Draft email</button>
+    <button class="btn danger" onClick=${remove} title="Delete the selected records"><${Icon} name="trash" /> Delete ${ids.length}</button>
     <button class="btn" onClick=${onClear}>Clear selection</button></div>`;
 }
 
