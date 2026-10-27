@@ -134,14 +134,72 @@ ${portal.length ? `<h2>Published values to update (${portal.length})</h2>${table
 }
 
 /** Records whose published value differs from the verified one (the portal "delta" list). */
-function portalChanges(records) {
-  return records
-    .filter((r) => !r.archived && (r.portal_status === 'Change Needed' || (r.portal_date && r.expiry_date && r.portal_date !== r.expiry_date)))
-    .map((r) => ({
-      platform: r.platform, bundle: r.bundle, device: r.device, category: r.category, scheme: r.scheme,
-      published: r.portal_date || '', verified: r.expiry_date || '', approval: r.approval_number || '',
-      status: r.portal_status, ticket: r.change_ticket || '',
-    }));
+/**
+ * Website change requests: rows where what is published differs from the
+ * verified LOA, in the shape engineering expects (section, level, brand,
+ * action, current and requested value).
+ */
+function portalChanges(records, asOf = todayIso()) {
+  const out = [];
+  for (const r of records) {
+    if (r.archived || ['Change Requested', 'Published'].includes(r.portal_status) && r.portal_date === r.expiry_date) continue;
+    const expired = r.expiry_date && r.expiry_date < asOf;
+    const published = r.portal_date || '';
+    let action = '', requested = r.expiry_date || '';
+    if (expired && (published || r.portal_status === 'Change Needed')) {
+      if (published && published === r.expiry_date && published >= asOf) continue;
+      action = /PCI/i.test(r.category) ? 'Remove row' : 'Replace expired date';
+      requested = action === 'Remove row' ? 'Remove from website' : 'No current LoA / waiver required';
+    } else if (published && r.expiry_date && published !== r.expiry_date) {
+      action = 'Update date';
+    } else if (!published && r.expiry_date && r.portal_status === 'Change Needed') {
+      action = 'Add date';
+    } else if (r.portal_status === 'Change Needed') {
+      action = 'Review';
+    } else continue;
+    const pci = /PCI/i.test(r.category);
+    const level = /L1/.test(r.category) ? 'Level 1' : /L2/.test(r.category) ? 'Level 2' : pci ? (/^PCI/i.test(r.kernel_version || '') ? r.kernel_version : `PCI ${r.kernel_version || ''}`.trim()) : r.category;
+    const cless = /Contactless/i.test(r.category);
+    const section = pci ? 'PCI' : /^EMV L[12]/.test(r.category) ? `EMV ${cless ? 'Contactless' : 'Contact'} ${r.category.match(/L[12]/)[0]}` : r.category;
+    const brand = /L1/.test(r.category) ? `EMV ${cless ? 'Contactless' : 'Contact'}` : pci ? 'PCI' : r.scheme;
+    const d = r.expiry_date ? r.expiry_date.split('-') : null;
+    const when = d ? `${+d[1]}-${+d[2]}-${d[0]} ` : '';
+    const comment = pci ? `${when}${r.device} ${level}` : `${when}${r.device} (${level.replace('Level ', 'L')}) ${cless ? 'Cless' : 'Contact'}${/L2/.test(r.category) ? ` ${r.scheme}` : ''}`;
+    out.push({
+      id: r.id, platform: r.platform || '', bundle: r.bundle || '', device: r.device, category: r.category, scheme: r.scheme,
+      section, level, brand, action, published: published || 'Blank', requested, verified: r.expiry_date || '',
+      restricted: r.restricted ? 'Yes' : expired ? 'expired' : 'No', approval: r.approval_number || '',
+      status: r.portal_status === 'Change Requested' ? 'Requested' : 'Not Started', portalStatus: r.portal_status || '',
+      ticket: r.change_ticket || '', comment,
+    });
+  }
+  const order = { 'Remove row': 0, 'Replace expired date': 1, 'Update date': 2, 'Add date': 3, Review: 4 };
+  return out.sort((a, b) => (a.platform || '').localeCompare(b.platform || '') || order[a.action] - order[b.action] || a.device.localeCompare(b.device, undefined, { numeric: true }));
+}
+
+const CR_COLS = [
+  ['Change ID', 'ticket', 10], ['Platform', 'platform', 10], ['Website Section', 'section', 20], ['Device / Model', 'device', 18],
+  ['Level', 'level', 10], ['Card Brand / Type', 'brand', 18], ['Action', 'action', 22], ['Current Website Value', 'published', 20],
+  ['Requested New Value', 'requested', 30], ['Restricted?', 'restricted', 11], ['Web Status', 'status', 12], ['Additional Comment', 'comment', 44],
+];
+
+/** The change request workbook: one master sheet plus one per platform. */
+async function exportChangeRequest(rows, { title = 'Website Change Request' } = {}) {
+  const ExcelJS = require('exceljs');
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'LOA Command Center';
+  wb.created = new Date();
+  const sheet = (name, list) => {
+    const ws = wb.addWorksheet(name.slice(0, 31), { views: [{ state: 'frozen', ySplit: 1 }] });
+    ws.columns = CR_COLS.map(([header, key, width]) => ({ header, key, width }));
+    for (const r of list) ws.addRow(r);
+    ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF142F4C' } };
+    ws.autoFilter = { from: 'A1', to: { row: 1, column: CR_COLS.length } };
+  };
+  sheet(`Master ${title.includes('Change') ? 'Change Request' : title} (All)`, rows);
+  for (const p of [...new Set(rows.map((r) => r.platform || 'No platform'))].sort()) sheet(p, rows.filter((r) => (r.platform || 'No platform') === p));
+  return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
 const EXPORT_COLS = [
@@ -234,4 +292,4 @@ function digestEmail(dg, analysis, { settings = {} } = {}) {
   return lines.join('\n');
 }
 
-module.exports = { summaryReport, exportExcel, exportCsv, portalChanges, digestEmail, timelineSvg, esc };
+module.exports = { summaryReport, exportExcel, exportCsv, portalChanges, exportChangeRequest, digestEmail, timelineSvg, esc };

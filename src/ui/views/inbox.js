@@ -24,7 +24,7 @@ export function FilePickers({ onFiles, compact }) {
   const files = useRef(), folder = useRef();
   const pick = (e) => { onFiles([...e.target.files]); e.target.value = ''; };
   return html`<span class="row">
-    <input ref=${files} type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp,.txt" class="hidden" onChange=${pick} />
+    <input ref=${files} type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp,.txt,.xlsx,.xlsm,.csv" class="hidden" onChange=${pick} />
     <input ref=${folder} type="file" webkitdirectory class="hidden" onChange=${pick} />
     <button class=${`btn ${compact ? '' : 'primary'}`} onClick=${() => files.current.click()}><${Icon} name="upload" /> Choose files</button>
     <button class="btn" onClick=${() => folder.current.click()}><${Icon} name="folder" /> Choose folder</button></span>`;
@@ -38,15 +38,23 @@ export function Inbox({ app, params }) {
   const [over, setOver] = useState(false);
   const [busy, setBusy] = useState(false);
   const [recent, setRecent] = useState(recentIds);
+  const [sel, setSel] = useState(() => new Set());
+  const [find, setFind] = useState('');
   useEffect(() => onRecent(setRecent), []);
   useEffect(() => subscribe(setQ), []);
   const threshold = app.settings.autoApproveConfidence || 90;
   const pendingList = tab === 'pending' ? items || [] : [];
+  const shown = (items || []).filter((it) => !find || cardText(it).includes(find.toLowerCase()));
+  const toggleSel = (id) => setSel((s0) => { const s1 = new Set(s0); if (s1.has(id)) s1.delete(id); else s1.add(id); return s1; });
   const safeCount = pendingList.filter((it) => it.proposals.length && it.proposals.every((p) => isSafe(p, it.parsed, threshold))).length;
 
+  const [sheets, setSheets] = useState([]);
   const onFiles = (files) => {
-    const n = addFiles(files);
-    if (!n) toast('No PDF or image files found');
+    // Spreadsheets dropped here are trackers to import, not letters to read.
+    const xl = files.filter((f) => /\.(xlsx|xlsm|csv)$/i.test(f.name));
+    if (xl.length) setSheets((q0) => [...q0, ...xl]);
+    const n = addFiles(files.filter((f) => !xl.includes(f)));
+    if (!n && !xl.length) toast('No PDF, image or spreadsheet files found');
   };
   const drop = async (e) => {
     e.preventDefault(); setOver(false);
@@ -74,7 +82,7 @@ export function Inbox({ app, params }) {
       style=${pendingList.length ? 'padding:16px' : ''}>
       <div class=${pendingList.length ? 'row between' : ''}>
         <div class=${pendingList.length ? 'row' : ''}><${Icon} name="upload" />
-          <div style=${pendingList.length ? 'text-align:left' : ''}><h3>Drop LOAs or a whole folder here</h3><div class="muted small">PDF, scanned PDF, PNG, JPG or TIFF · merged PDFs are split into letters · duplicates are skipped</div></div></div>
+          <div style=${pendingList.length ? 'text-align:left' : ''}><h3>Drop LOAs or a whole folder here</h3><div class="muted small">PDF, scanned PDF, PNG, JPG or TIFF · merged PDFs are split into letters · duplicates are skipped · Excel/CSV trackers are imported</div></div></div>
         <div style=${pendingList.length ? '' : 'margin-top:14px;display:flex;justify-content:center'}><${FilePickers} onFiles=${onFiles} compact=${!!pendingList.length} /></div>
       </div>
     </div>
@@ -96,7 +104,10 @@ export function Inbox({ app, params }) {
     ${tab === 'documents' ? html`<${Documents} docs=${docs} app=${app} reload=${reloadDocs} />`
       : !items ? html`<div class="row"><${Spinner} /> Loading…</div>`
         : !items.length ? html`<div class="card"><div class="empty"><${Icon} name="inbox" /><h3>${tab === 'pending' ? 'Nothing to review' : 'Nothing here yet'}</h3><div>${tab === 'pending' ? 'Drop LOAs above to get started.' : ''}</div></div></div>`
-          : items.map((it) => html`<${Review} key=${`${it.id}:${proposalSig(it)}`} it=${it} app=${app} threshold=${threshold} readOnly=${tab !== 'pending'} onDone=${() => { reload(); app.refresh(); }} />`)}`;
+          : html`${tab === 'pending' ? html`<${BulkBar} items=${shown} all=${items} sel=${sel} setSel=${setSel} find=${find} setFind=${setFind} app=${app} onDone=${() => { reload(); app.refresh(); }} />` : null}
+            ${shown.map((it) => html`<${Review} key=${`${it.id}:${proposalSig(it)}:${JSON.stringify(it.parsed.recordDefaults || {})}`} it=${it} app=${app} threshold=${threshold} readOnly=${tab !== 'pending'}
+              selected=${sel.has(it.id)} onSelect=${tab === 'pending' ? () => toggleSel(it.id) : null} onDone=${() => { reload(); app.refresh(); }} />`)}`}
+    ${sheets.length ? html`<${SheetImport} file=${sheets[0]} app=${app} onClose=${() => setSheets((q0) => q0.slice(1))} />` : null}`;
 }
 
 /** Changes when matching or the AI rebuilds a letter's proposals, so its card starts fresh. */
@@ -104,8 +115,111 @@ function proposalSig(it) {
   return it.proposals.map((p) => `${p.action}:${p.record_id || p.device || ''}`).join('|');
 }
 
-function Review({ it, app, threshold, readOnly, onDone }) {
+/** What a card can be found by: file name, devices, brand, type, platform. */
+function cardText(it) {
   const L = it.parsed;
+  return [it.filename, L.scheme, L.category, ...(L.products || []).map((p) => p.value), ...(it.proposals || []).map((p) => `${p.device} ${p.platform || ''}`),
+    (L.recordDefaults || {}).platform, (L.recordDefaults || {}).bundle].filter(Boolean).join(' ').toLowerCase();
+}
+
+/**
+ * Work on many letters at once: pick them (or filter and select all), set
+ * the platform/bundle for the records they create, then approve or reject.
+ */
+function BulkBar({ items, all, sel, setSel, find, setFind, app, onDone }) {
+  const [platform, setPlatform] = useState('');
+  const [bundle, setBundle] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [opts] = useLoad(() => call('listRecords').then((rs) => ({
+    platforms: [...new Set(rs.map((r) => r.platform).filter(Boolean))].sort(),
+    bundles: [...new Set(rs.map((r) => r.bundle).filter(Boolean))].sort(),
+  })), []);
+  const ids = [...sel].filter((id) => all.some((it) => it.id === id));
+  const allShown = items.length && items.every((it) => sel.has(it.id));
+  const run = async (fn) => { setBusy(true); try { await fn(); } catch (e) { toastError(e); } finally { setBusy(false); } };
+  const setFields = () => run(async () => {
+    const f = {};
+    if (platform.trim()) f.platform = platform.trim();
+    if (bundle.trim()) f.bundle = bundle.trim();
+    if (!Object.keys(f).length) return toast('Type a platform or bundle first');
+    const n = await call('setInboxDefaults', ids, f);
+    toast(`Set ${Object.entries(f).map(([k, v]) => `${k} ${v}`).join(', ')} on ${plural(n, 'letter')}`, 'ok');
+    onDone();
+  });
+  const approve = () => run(async () => {
+    const r = await call('approveInboxMany', ids);
+    addRecent(r.recordIds);
+    const left = r.skipped.length ? ` ${plural(r.skipped.length, 'letter')} still need you: ${r.skipped.slice(0, 3).map((x) => `${x.filename} (${x.reason})`).join('; ')}${r.skipped.length > 3 ? '…' : ''}` : '';
+    toast(`Approved ${plural(r.applied, 'letter')} (${plural(r.changes, 'change')}).${left}`, r.applied ? 'ok' : '');
+    setSel(new Set(r.skipped.map((x) => x.id)));
+    onDone();
+  });
+  const reject = () => run(async () => {
+    if (!confirm(`Reject ${plural(ids.length, 'letter')}? No records will change.`)) return;
+    const n = await call('rejectInboxMany', ids);
+    toast(`Rejected ${plural(n, 'letter')}`);
+    setSel(new Set());
+    onDone();
+  });
+  return html`<div class="card pad inbox-bulk">
+    <div class="row wrap">
+      <label class="check"><input type="checkbox" checked=${allShown} onChange=${() => setSel(allShown ? new Set() : new Set([...sel, ...items.map((it) => it.id)]))} aria-label="Select all shown" />
+        ${allShown ? 'Clear selection' : `Select all ${items.length}${find ? ' shown' : ''}`}</label>
+      <input type="search" placeholder="Find letters: file name, device, brand, platform" value=${find} onInput=${(e) => setFind(e.target.value)} class="grow" aria-label="Find letters" />
+      <b class="small nowrap">${ids.length} selected</b>
+    </div>
+    ${ids.length ? html`<div class="row wrap mt">
+      <input type="text" list="inbox-platforms" placeholder="Platform, e.g. UPP" value=${platform} onInput=${(e) => setPlatform(e.target.value)} aria-label="Platform for selected" style="width:170px" />
+      <input type="text" list="inbox-bundles" placeholder="Bundle (optional)" value=${bundle} onInput=${(e) => setBundle(e.target.value)} aria-label="Bundle for selected" style="width:170px" />
+      <button class="btn" disabled=${busy} onClick=${setFields}>Set on ${ids.length}</button>
+      <span class="grow"></span>
+      <button class="btn primary" disabled=${busy} onClick=${approve} title="Apply each letter's suggested changes. Letters that need a choice stay here."><${Icon} name="check" /> Approve ${ids.length}</button>
+      <button class="btn" disabled=${busy} onClick=${reject}>Reject ${ids.length}</button>
+      ${busy ? html`<${Spinner} />` : null}
+      <datalist id="inbox-platforms">${((opts && opts.platforms) || []).map((v) => html`<option value=${v} />`)}</datalist>
+      <datalist id="inbox-bundles">${((opts && opts.bundles) || []).map((v) => html`<option value=${v} />`)}</datalist>
+    </div>
+    <div class="faint small mt">The platform and bundle go on the records these letters create, and fill them on matched records that have none.</div>` : null}
+  </div>`;
+}
+
+/** Import a tracker spreadsheet dropped into the inbox, after a preview. */
+function SheetImport({ file, app, onClose }) {
+  const [preview, setPreview] = useState(null);
+  const [bytesIn, setBytes] = useState(null);
+  const [busy, setBusy] = useState(true);
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const b = new Uint8Array(await file.arrayBuffer());
+        const pv = await call('importTracker', { filename: file.name, bytes: b, dryRun: true });
+        if (live) { setBytes(b); setPreview(pv); }
+      } catch (e) { toastError(e); onClose(); } finally { if (live) setBusy(false); }
+    })();
+    return () => { live = false; };
+  }, [file]);
+  const apply = async () => {
+    setBusy(true);
+    try {
+      const r = await call('importTracker', { filename: file.name, bytes: bytesIn, dryRun: false });
+      toast(`Imported ${file.name}: ${r.added} new, ${r.updated} updated`, 'ok');
+      app.refresh();
+      onClose();
+    } catch (e) { toastError(e); } finally { setBusy(false); }
+  };
+  return html`<${Modal} title=${`Import ${file.name}`} onClose=${onClose}>
+    <p class="muted small">Spreadsheets are imported as records (a tracker), not read as letters. Re-importing is safe: your manual edits and newer dates are never overwritten.</p>
+    ${!preview ? html`<div class="row"><${Spinner} /> Reading the spreadsheet…</div>` : html`
+      <div class="callout"><b>${plural(preview.added, 'new record')}, ${plural(preview.updated, 'update')}</b>${preview.skipped ? html` · <span class="muted">${plural(preview.skipped, 'row')} skipped</span>` : null}
+        ${(preview.sheets || []).filter((sh) => sh.rows).map((sh) => html`<div class="small muted mt">${sh.sheet}: ${plural(sh.rows, 'row')}, columns ${Object.entries(sh.mapping || {}).map(([k, v]) => `${v} → ${k}`).join(', ')}</div>`)}</div>
+      <div class="row mt"><button class="btn primary" disabled=${busy} onClick=${apply}>Import</button><button class="btn" onClick=${onClose}>Cancel</button>${busy ? html`<${Spinner} />` : null}</div>`}
+  <//>`;
+}
+
+function Review({ it, app, threshold, readOnly, selected, onSelect, onDone }) {
+  const L = it.parsed;
+  const defaults = L.recordDefaults || {};
   const [checked, setChecked] = useState(() => it.proposals.map((p) => p.action !== 'unmatched' && !(p.warnings || []).some((w) => /Confirm it covers/.test(w))));
   const [edits, setEdits] = useState(() => it.proposals.map(() => ({})));
   const [picks, setPicks] = useState(() => it.proposals.map(() => []));
@@ -147,11 +261,13 @@ function Review({ it, app, threshold, readOnly, onDone }) {
   const missing = !val(L.expiryDate) || !L.products.length;
   const confCls = L.confidence >= 85 ? 'good' : L.confidence >= 60 ? 'warning' : 'expired';
 
-  return html`<div class="card review"><div class="hd"><div class="grow">
+  return html`<div class=${`card review ${selected ? 'picked' : ''}`}><div class="hd">
+    ${onSelect ? html`<input type="checkbox" class="pick" checked=${!!selected} onChange=${onSelect} aria-label="Select this letter" />` : null}<div class="grow">
       <div class="row wrap"><h3>${letterTitle(L)}</h3>
         <span class="pill brand">${L.scheme || 'Unknown brand'}</span><span class="tag">${L.category}</span>
         <span class=${`pill ${confCls}`} title="How sure the reader is about the extracted values">${L.confidence}% confident</span>
         ${safe && !readOnly ? html`<span class="pill good"><${Icon} name="shield" size="12" /> Safe to auto-approve</span>` : null}
+        ${defaults.platform || defaults.bundle ? html`<span class="pill info" title="Platform/bundle for the records this letter creates">${[defaults.platform, defaults.bundle].filter(Boolean).join(' · ')}</span>` : null}
         ${it.status !== 'pending' ? html`<span class="tag">${it.status}${it.decided_at ? ` · ${fmtWhen(it.decided_at)}` : ''}</span>` : null}</div>
       <div class="muted small mt" style="margin-top:4px"><${Icon} name="file" size="12" /> ${it.filename}${L.pageStart ? ` · page ${L.pageStart}${L.pageEnd && L.pageEnd !== L.pageStart ? `–${L.pageEnd}` : ''}` : ''}</div></div>
     <div class="row"><button class="btn sm ghost" onClick=${showText}><${Icon} name="eye" /> Text</button>
@@ -170,7 +286,7 @@ function Review({ it, app, threshold, readOnly, onDone }) {
       ${!it.proposals.length && !L.informational ? html`<div class="callout warn mt">No matching records for this letter's brand and approval type. Create the record below, import your tracker first, or add a device alias in Settings and press Re-match.</div>` : null}
       ${!it.proposals.length && !L.informational && !readOnly ? html`<${NewRecords} title="Create records from this letter" L=${L} names=${fresh.devices} edits=${fresh.edits} withFields
         onNames=${(devices) => setFresh({ ...fresh, devices })} onEdits=${(e) => setFresh({ ...fresh, edits: { ...fresh.edits, ...e } })} />` : null}
-      ${it.proposals.map((p, i) => html`<${Proposal} key=${i} p=${p} on=${!!checked[i]} readOnly=${readOnly} edits=${edits[i] || {}} editing=${editing === i} picks=${picks[i] || []} creates=${creates[i] || []} L=${L} app=${app}
+      ${it.proposals.map((p, i) => html`<${Proposal} key=${i} p=${{ ...p, defaults }} on=${!!checked[i]} readOnly=${readOnly} edits=${edits[i] || {}} editing=${editing === i} picks=${picks[i] || []} creates=${creates[i] || []} L=${L} app=${app}
         onToggle=${() => setChecked(checked.map((c, j) => (j === i ? !c : c)))} onEdit=${() => setEditing(editing === i ? -1 : i)}
         onEdits=${(e) => setEdits(edits.map((x, j) => (j === i ? { ...x, ...e } : x)))}
         onPicks=${(ids) => { setPicks(picks.map((x, j) => (j === i ? ids : x))); setChecked(checked.map((c, j) => (j === i ? ids.length + (creates[i] || []).length > 0 : c))); }}
@@ -201,7 +317,7 @@ function Proposal({ p, on, readOnly, edits, editing, picks, creates, L, app, onT
   const changes = Object.entries(p.changes || {});
   const editable = ['update', 'replacement', 'create'].includes(p.action);
   const fields = p.action === 'create' ? ['device', 'platform', 'bundle', 'approval_number', 'issue_date', 'expiry_date'] : ['approval_number', 'issue_date', 'expiry_date'];
-  const base = p.action === 'create' ? p.record : p.action === 'replacement' ? p.replacement : Object.fromEntries(changes.map(([k, v]) => [k, v.to]));
+  const base = p.action === 'create' ? { ...p.record, ...Object.fromEntries(Object.entries(p.defaults || {}).filter(([, v]) => v)) } : p.action === 'replacement' ? p.replacement : Object.fromEntries(changes.map(([k, v]) => [k, v.to]));
   return html`<div class=${`prop ${on ? '' : 'off'}`}>
     <div>${readOnly ? null : html`<input type="checkbox" checked=${on} onChange=${onToggle} aria-label="Include this change" />`}</div>
     <div>
@@ -213,7 +329,7 @@ function Proposal({ p, on, readOnly, edits, editing, picks, creates, L, app, onT
       ${p.note ? html`<div class="small muted mt" style="margin-top:4px">${p.note}</div>` : null}
       ${changes.length ? html`<div class="chg">${changes.map(([k, v]) => html`<div>${FIELD[k] || k}: ${v.from !== '' && v.from != null ? html`<s>${fmt(k, v.from)}</s> → ` : ''}<b>${fmt(k, edits[k] != null ? edits[k] : v.to)}</b></div>`)}</div>` : null}
       ${p.action === 'replacement' ? html`<div class="chg">New approval ${p.replacement.approval_number || ''}: effective <b>${fmtDate(edits.issue_date || p.replacement.issue_date)}</b>, expires <b>${fmtDate(edits.expiry_date || p.replacement.expiry_date)}</b>. The current approval stays in force until then.</div>` : null}
-      ${p.action === 'create' ? html`<div class="chg">Creates <b>${edits.device || p.record.device}</b> · ${p.scheme} ${p.category}${(edits.expiry_date || p.record.expiry_date) ? html`, expires <b>${fmtDate(edits.expiry_date || p.record.expiry_date)}</b>` : ''}${edits.platform || edits.bundle ? ` · ${[edits.platform, edits.bundle].filter(Boolean).join(' · ')}` : ''}</div>` : null}
+      ${p.action === 'create' ? html`<div class="chg">Creates <b>${edits.device || p.record.device}</b> · ${p.scheme} ${p.category}${(edits.expiry_date || p.record.expiry_date) ? html`, expires <b>${fmtDate(edits.expiry_date || p.record.expiry_date)}</b>` : ''}${(() => { const pl = [edits.platform || p.defaults.platform || p.record.platform, edits.bundle || p.defaults.bundle || p.record.bundle].filter(Boolean); return pl.length ? ` · ${pl.join(' · ')}` : ''; })()}</div>` : null}
       ${(p.warnings || []).map((w) => html`<div class="warnline"><${Icon} name="warn" />${w}</div>`)}
       ${editing ? html`<div class="grid3 mt">${fields.map((k) => html`<label class="field">${{ device: 'Device', platform: 'Platform', bundle: 'Bundle' }[k] || FIELD[k]}
         <input type=${k.endsWith('_date') ? 'date' : 'text'} value=${edits[k] != null ? edits[k] : (base && base[k]) || ''} onInput=${(e) => onEdits({ [k]: e.target.value })} /></label>`)}</div>

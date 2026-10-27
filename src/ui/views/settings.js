@@ -240,7 +240,7 @@ function ImportPortal({ app }) {
     <p class="muted small">Load the certification tables from your developer portal or kernel bundle page. Save the page from your browser as "Web page, single file" (.mhtml) or HTML for the most accurate result; a PDF printout also works.</p>
     <div class="seg mt"><button class=${mode === 'records' ? 'on' : ''} onClick=${() => { setMode('records'); setPreview(null); }}>Create and update records</button>
       <button class=${mode === 'compare' ? 'on' : ''} onClick=${() => { setMode('compare'); setPreview(null); }}>Compare published dates only</button></div>
-    <p class="faint small mt">${mode === 'compare' ? 'Records are not changed; the published date is stored so the Portal changes report shows what needs updating on the website.' : 'New devices are added; existing dates are only replaced by later ones.'}</p>
+    <p class="faint small mt">${mode === 'compare' ? 'Records are not changed; the published date is stored so the Website change request report shows what needs updating on the website.' : 'New devices are added; existing dates are only replaced by later ones.'}</p>
     <input ref=${input} type="file" accept=".html,.htm,.mhtml,.mht,.pdf,.txt" class="hidden" onChange=${pick} />
     <div class="row mt"><button class="btn primary" disabled=${busy} onClick=${() => input.current.click()}><${Icon} name="globe" /> Choose page</button>${busy ? html`<${Spinner} />` : null}</div>
     ${preview ? html`<div class="callout mt"><b>Preview of ${payload.filename}</b> · ${plural(preview.total, 'row')} found<${ImportReport} r=${preview} />

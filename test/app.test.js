@@ -294,13 +294,17 @@ test('records can be created from a letter when the ones it covers do not exist 
 
 test('device and approval type are read from the file name when the letter does not say', async () => {
   const { deviceFromFilename, categoryFromFilename } = require('../src/core/devices');
-  assert.deepEqual(deviceFromFilename('Self4000CL2_EmvL1Cless.pdf'), { value: 'Self/4000 CL2', known: false });
+  assert.deepEqual(deviceFromFilename('Self4000CL2_EmvL1Cless.pdf'), { value: 'Self/4000-CL2', known: false });
   assert.deepEqual(deviceFromFilename('Self4000CL2_EmvL1Cless.pdf', ['Self/4000', 'Self/4000-CL2']), { value: 'Self/4000-CL2', known: true });
   assert.equal(deviceFromFilename('AXIUM DX8000 - L2.pdf').value, 'DX8000');
   assert.equal(deviceFromFilename('Northwind merged.pdf'), null);
   assert.equal(categoryFromFilename('Self4000CL2_EmvL1Cless.pdf'), 'EMV L1 Contactless');
   assert.equal(categoryFromFilename('Move5000_L2_CTLS.pdf'), 'EMV L2 Contactless');
   assert.equal(categoryFromFilename('Self4000CL2_Disc.pdf'), '');
+  const { schemeFromFilename } = require('../src/core/devices');
+  assert.equal(schemeFromFilename('Self4000CL2_MC_100100_0501.pdf'), 'Mastercard');
+  assert.equal(schemeFromFilename('Lane3000CL1_Disc_040602.pdf'), 'Discover');
+  assert.equal(schemeFromFilename('Self4000CL2_EmvL1Cless.pdf'), '');
 
   const { api } = await fresh();
   api.loadSampleData();
@@ -327,4 +331,120 @@ test('device and approval type are read from the file name when the letter does 
 
   const known = api.knownDevices();
   assert.ok(known.some((d) => d.device === 'P400-CL1' && d.records >= 2 && d.schemes.includes('Discover')));
+});
+
+test('inbox letters can be given a platform, approved and rejected in bulk', async () => {
+  const { api } = await fresh();
+  await api.importTracker({ filename: 'tracker.csv', bytes: Buffer.from(CSV) });
+  api.ingestDocument({ filename: 'merged.pdf', bytes: Buffer.from('m'), pages: [L.amex, L.emvco, L.mastercard] });
+  api.ingestDocument({ filename: 'family.pdf', bytes: Buffer.from('f'), pages: [L.discover.replace('Flex/3XXX', 'Zeta/7XXX')] });
+  const pending = api.listInbox('pending');
+  const ids = pending.map((i) => i.id);
+  assert.equal(api.setInboxDefaults(ids, { platform: 'UPP' }), ids.length);
+  assert.ok(api.listInbox('pending').every((i) => i.parsed.recordDefaults.platform === 'UPP'));
+
+  const r = api.approveInboxMany(ids);
+  assert.equal(r.applied, ids.length - 1, 'every letter but the family one');
+  assert.equal(r.skipped.length, 1);
+  assert.match(r.skipped[0].reason, /choose the records/);
+  const recs = api.listRecords();
+  for (const id of r.recordIds) {
+    const rec = recs.find((x) => x.id === id);
+    assert.equal(rec.platform, rec.device === 'NX100' ? 'Alpha' : rec.platform, 'a matched record keeps its own platform');
+  }
+  const created = recs.filter((x) => x.source === 'loa' && !CSV.includes(x.device));
+  assert.ok(created.every((x) => x.platform === 'UPP'), 'records created by the letters get the bulk platform');
+
+  assert.equal(api.rejectInboxMany(r.skipped.map((x) => x.id)), 1);
+  assert.equal(api.listInbox('pending').length, 0);
+});
+
+test('a new record takes its platform from the same device or its family in the register', async () => {
+  const { api } = await fresh();
+  const mk = (device, scheme, platform, bundle) => api.saveRecord(null, { device, category: 'EMV L2 Contactless', scheme, platform, bundle, expiry_date: '2027-01-01' });
+  mk('Self/4000-CL2', 'Visa', 'UPP', 'Bundle 6');
+  mk('Self/5000-CL2', 'Visa', 'UPP', '');
+  mk('DX8000', 'Visa', 'ARC', '');
+  api.ingestDocument({ filename: 'a.pdf', bytes: Buffer.from('a'), pages: [L.mastercard.replace(/NX\d00/g, 'Self/4000-CL2')] });
+  api.ingestDocument({ filename: 'b.pdf', bytes: Buffer.from('b'), pages: [L.mastercard.replace(/NX\d00/g, 'Self/8000-CL1')] });
+  const props = api.listInbox('pending').flatMap((i) => i.proposals).filter((p) => p.action === 'create');
+  const s4 = props.find((p) => p.device === 'Self/4000-CL2');
+  const s8 = props.find((p) => p.device === 'Self/8000-CL1');
+  assert.equal(s4.record.platform, 'UPP');
+  assert.equal(s4.record.bundle, 'Bundle 6');
+  assert.equal(s8.record.platform, 'UPP', 'family Self/... is all UPP');
+});
+
+test('a file dropped again before approval is read again, replacing its review cards', async () => {
+  const { api } = await fresh();
+  const first = api.ingestDocument({ filename: 'Self4000CL2_MC.pdf', bytes: Buffer.from('same'), pages: ['Masterc ard garbled text without much in it at all, really nothing'] });
+  assert.equal(first.status, 'ok');
+  const again = api.ingestDocument({ filename: 'Self4000CL2_MC.pdf', bytes: Buffer.from('same'), pages: [L.mastercard] });
+  assert.equal(again.status, 'ok');
+  assert.equal(again.reread, true);
+  assert.equal(again.documentId, first.documentId);
+  const items = api.listInbox('pending').filter((i) => i.document_id === first.documentId);
+  assert.equal(items.length, again.pending, 'old cards replaced');
+  assert.ok(items.every((i) => i.parsed.scheme === 'Mastercard'));
+  assert.equal(api.listDocuments().length, 1);
+});
+
+test('website change request lists what the website gets wrong and numbers the requests', async () => {
+  const { api } = await fresh();
+  const today = todayIso();
+  const mk = (o) => api.saveRecord(null, { platform: 'UPP', category: 'EMV L2 Contactless', scheme: 'Visa', ...o });
+  const upd = mk({ device: 'DX4000', expiry_date: addDays(today, 900), portal_date: addDays(today, 100) });
+  const exp = mk({ device: 'Lane/7000-CL1', category: 'EMV L1 Contactless', scheme: 'EMVCo', expiry_date: addDays(today, -30), portal_date: addDays(today, -30) });
+  const pci = mk({ device: 'Lane/3000', category: 'PCI PTS', scheme: 'PCI SSC', kernel_version: 'PCI v5', expiry_date: addDays(today, -5), portal_date: addDays(today, -5) });
+  mk({ device: 'Self/3000', expiry_date: addDays(today, 400), portal_date: addDays(today, 400) });
+  const rows = api.portalChanges();
+  assert.equal(rows.length, 3, 'the row in sync is left out');
+  const by = Object.fromEntries(rows.map((r) => [r.device, r]));
+  assert.equal(by.DX4000.action, 'Update date');
+  assert.equal(by.DX4000.section, 'EMV Contactless L2');
+  assert.equal(by.DX4000.brand, 'Visa');
+  assert.equal(by['Lane/7000-CL1'].action, 'Replace expired date');
+  assert.equal(by['Lane/7000-CL1'].brand, 'EMV Contactless');
+  assert.equal(by['Lane/7000-CL1'].level, 'Level 1');
+  assert.equal(by['Lane/3000'].action, 'Remove row');
+  assert.equal(by['Lane/3000'].level, 'PCI v5');
+  assert.match(by['Lane/3000'].comment, /Lane\/3000 PCI v5$/);
+
+  const book = await api.exportChangeRequest({ markRequested: true });
+  const ExcelJS = require('exceljs');
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(book);
+  assert.deepEqual(wb.worksheets.map((w) => w.name), ['Master Change Request (All)', 'UPP']);
+  assert.equal(wb.worksheets[0].getRow(1).getCell(7).value, 'Action');
+  const ids = api.listRecords().map((r) => r.change_ticket).filter(Boolean).sort();
+  assert.deepEqual(ids, ['CR-001', 'CR-002', 'CR-003']);
+  assert.equal(api.getRecord(upd.record.id).record.portal_status, 'Change Requested');
+  // A later request continues the numbering.
+  mk({ device: 'EX4000', expiry_date: addDays(today, 700), portal_date: addDays(today, 10) });
+  await api.exportChangeRequest({ markRequested: true });
+  assert.ok(api.listRecords().some((r) => r.device === 'EX4000' && r.change_ticket === 'CR-004'));
+  void exp; void pci;
+});
+
+test('a cert database export is mapped by its own columns and joins tracker records', async () => {
+  const { api } = await fresh();
+  await api.importTracker({ filename: 'tracker.csv', bytes: Buffer.from(CSV) });
+  const db = [
+    'No.,Product family,Technology,Contact and Contactless configuration,Product Ref.,Category,Certification Type,Approval Category,Certification body,Spec Version,LoA Reference,LoA Status,Software ID,Expiration date',
+    '1,NX200,T3,,TRK7,L2,L2 Cless,L2 Contactless American Express,American Express,v4,42.NEW,Valid,SW1,2029-01-31',
+    '2,Flex/3500,T3,CL1,TRK8,L2,L2 Cless,L2 Contactless Discover,Discover,v1,D-77,Valid,SW2,2028-05-05',
+    '3,ZX900,Android,,,L1,L1 Contact,L1 Contact EMVCo,EMVCo,4.3,1234 5678,Valid,SW3,2030-02-02',
+    '4,ZX100,Android,,,L1,L1 Contact,L1 Contact EMVCo,EMVCo,4.3,999,Expired,SW4,2020-02-02',
+  ].join('\n');
+  const r = await api.importTracker({ filename: 'CertDB.csv', bytes: Buffer.from(db) });
+  assert.equal(r.sheets[0].mapping.device, 'Product family');
+  assert.equal(r.updated, 2, 'NX200 and Flex/3500-CL1 are the tracker records');
+  assert.equal(r.added, 1, 'ZX900 is new; the expired ZX100 is skipped');
+  const recs = api.listRecords();
+  const nx = recs.find((x) => x.device === 'NX200');
+  assert.equal(nx.expiry_date, '2029-01-31');
+  assert.equal(nx.approval_number, '42.NEW');
+  assert.equal(nx.platform, 'Alpha', 'platform is not taken from "Software ID"');
+  assert.equal(recs.find((x) => x.device === 'Flex/3500-CL1').approval_number, 'D-77');
+  assert.equal(recs.find((x) => x.device === 'ZX900').category, 'EMV L1 Contact');
 });

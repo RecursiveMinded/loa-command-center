@@ -62,7 +62,10 @@ function lineText(row) {
   for (const it of row.items) {
     if (end != null) {
       const gap = it.x - end;
-      out += gap > row.h * 1.5 ? '   ' : gap > row.h * 0.15 || !/\s$/.test(out) ? ' ' : '';
+      // Pieces of one word often arrive as separate items with no gap
+      // ("Masterc" + "ard"); only a real gap becomes a space.
+      if (gap > row.h * 1.5) out += '   ';
+      else if (gap > row.h * 0.15 && !/\s$/.test(out) && !/^\s/.test(it.str)) out += ' ';
     }
     out += it.str;
     end = it.x + it.w;

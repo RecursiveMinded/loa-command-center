@@ -7,7 +7,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { parseDocument } = require('./loa-parser');
-const { deviceScore, wildcardRegex, splitVariant, deviceFromFilename, categoryFromFilename } = require('./devices');
+const { deviceScore, wildcardRegex, splitVariant, deviceFromFilename, categoryFromFilename, schemeFromFilename } = require('./devices');
 const { todayIso, daysBetween } = require('./dates');
 const { coverage } = require('./lifecycle');
 
@@ -85,18 +85,21 @@ function buildProposals(letter, records, { norm, aliases = {}, noiseWords = [], 
       // Statements that list many products (e.g. a TQM statement) mention
       // devices outside this portfolio; do not offer to create those.
       if (letter.products.length >= 4) continue;
+      if (letter.category === 'TQM' && prod.source !== 'filename') continue;
       if (isFamily) {
         proposals.push({ action: 'unmatched', device: prod.value, category: letter.category, scheme: letter.scheme, score: 0, changes: {}, warnings: [`"${prod.value}" names a device family. Choose the records it covers.`] });
         continue;
       }
       const device = displayDevice(prod.value, noiseWords);
+      const place = inferPlace(device, records, norm);
       proposals.push({
         action: 'create',
         device,
         category: letter.category,
         scheme: letter.scheme,
         score: 0,
-        record: letterRecord(letter, device, prod),
+        record: { ...letterRecord(letter, device, prod), ...place.fields },
+        note: place.note,
         changes: {},
         warnings: pExpiry ? [] : ['No expiry date: the record will show as "Missing date"'],
       });
@@ -119,6 +122,37 @@ function buildProposals(letter, records, { norm, aliases = {}, noiseWords = [], 
     }
   }
   return dedupe(proposals);
+}
+
+/**
+ * Platform and bundle for a new record, taken from the register: the same
+ * device under another brand or type, else every device of its family
+ * ("Self/...") when they all share one platform.
+ */
+function inferPlace(device, records, norm) {
+  const key = norm(device);
+  const pickMost = (list, f) => {
+    const c = {};
+    for (const r of list) if (r[f]) c[r[f]] = (c[r[f]] || 0) + 1;
+    return Object.entries(c).sort((a, b) => b[1] - a[1])[0];
+  };
+  const same = records.filter((r) => norm(r.device) === key);
+  const base = splitVariant(key).base;
+  const sameBase = same.length ? same : records.filter((r) => splitVariant(norm(r.device)).base === base);
+  if (sameBase.length) {
+    const p = pickMost(sameBase, 'platform'), b = pickMost(sameBase, 'bundle');
+    if (p || b) {
+      return { fields: { ...(p ? { platform: p[0] } : {}), ...(b ? { bundle: b[0] } : {}) },
+        note: `${[p && p[0], b && b[0]].filter(Boolean).join(' · ')} from your other ${sameBase[0].device} records` };
+    }
+  }
+  const fam = (key.match(/^[A-Z]+/) || [''])[0];
+  if (fam.length >= 2) {
+    const kin = records.filter((r) => (norm(r.device).match(/^[A-Z]+/) || [''])[0] === fam && r.platform);
+    const plats = [...new Set(kin.map((r) => r.platform))];
+    if (kin.length >= 2 && plats.length === 1) return { fields: { platform: plats[0] }, note: `Platform ${plats[0]}, like your other ${fam[0]}${fam.slice(1).toLowerCase()} devices` };
+  }
+  return { fields: {}, note: '' };
 }
 
 /** A new record built from a letter's details, for one device it names. */
@@ -160,6 +194,20 @@ function fromFilename(letters, filename, records, norm) {
     L.warnings.push(dev.known ? `Device taken from the file name (matches ${dev.value} in your register)` : 'Device taken from the file name; check it before approving');
     if (was) L.warnings.push(`The letter text suggested "${was}", which is not a device you track`);
     else L.confidence = Math.min(100, L.confidence + 15);
+  } else if (dev && dev.known && L.products.length === 1 && [60, 80].includes(deviceScore(L.products[0].value, dev.value, norm))) {
+    // "Self/4XXX" or "Self/4000" in the text, "Self4000CL2_..." as the file name:
+    // the file was named for the exact device, so use it.
+    const was = L.products[0].value;
+    L.products = [{ value: dev.value, evidence: `From the file name "${filename}"; the letter says "${was}"`, confidence: 0.8, source: 'filename' }];
+    L.warnings.push(`The letter says "${was}"; the file name narrows it to ${dev.value}`);
+  } else if (dev && dev.known && L.products.length < 4 && !L.products.some((p) => deviceScore(p.value, dev.value, norm) > 0)) {
+    // An L1 letter "as tested in" one device often covers others; the file was named for this one.
+    L.products.push({ value: dev.value, evidence: `From the file name "${filename}"`, confidence: 0.6, source: 'filename' });
+    L.warnings.push(`The file name names ${dev.value}, the letter names ${L.products.slice(0, -1).map((p) => p.value).join(', ')}. Untick the one it does not cover.`);
+  }
+  if (!L.scheme || L.scheme === 'Other') {
+    const sch = schemeFromFilename(filename);
+    if (sch) { L.scheme = sch; L.issuer = L.issuer || sch; L.warnings.push(`Card brand taken from the file name (${sch})`); }
   }
   if (!L.category || L.category === 'Other') {
     const cat = categoryFromFilename(filename);
@@ -265,7 +313,10 @@ class Intake {
     const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes || []);
     const hash = sha256(buf.length ? buf : Buffer.from((pages || []).join('\n')));
     const existing = this.store.findDocumentByHash(hash);
-    if (existing) {
+    // A file dropped again before any of its letters was approved is read
+    // again (a newer version may read it better); otherwise it is a duplicate.
+    const decided = existing && this.store.db.get("SELECT COUNT(*) AS n FROM inbox WHERE document_id=? AND status='applied'", [existing.id]).n;
+    if (existing && decided) {
       return { filename, status: 'duplicate', duplicateOf: existing.filename, documentId: existing.id, letters: 0 };
     }
     const text = (pages || []).join('\n\f\n');
@@ -276,12 +327,19 @@ class Intake {
     const ctx = this.context();
     const records = this.store.listRecords();
     fromFilename(letters, filename, records, ctx.norm);
-    const stored = buf.length && this.archiveDir ? archiveFile(this.archiveDir, filename, buf) : null;
+    const stored = existing ? existing.stored_path : buf.length && this.archiveDir ? archiveFile(this.archiveDir, filename, buf) : null;
 
     return this.store.db.tx(() => {
-      const documentId = this.store.addDocument({
-        sha256: hash, filename, stored_path: stored, size: buf.length, page_count: pages.length, ocr_pages: ocrPages, text,
-      });
+      let documentId;
+      if (existing) {
+        documentId = existing.id;
+        this.store.db.run("DELETE FROM inbox WHERE document_id=? AND status IN ('pending','rejected','info')", [documentId]);
+        this.store.db.run('UPDATE documents SET text=?, page_count=?, ocr_pages=? WHERE id=?', [text, pages.length, ocrPages, documentId]);
+      } else {
+        documentId = this.store.addDocument({
+          sha256: hash, filename, stored_path: stored, size: buf.length, page_count: pages.length, ocr_pages: ocrPages, text,
+        });
+      }
       let pending = 0, info = 0;
       const items = [];
       for (const letter of letters) {
@@ -291,7 +349,7 @@ class Intake {
         const id = this.store.addInbox({ document_id: documentId, letter_index: letter.index, parsed: letter, proposals, status });
         items.push(id);
       }
-      return { filename, status: 'ok', documentId, letters: letters.length, pending, info, items, ocrPages };
+      return { filename, status: 'ok', documentId, letters: letters.length, pending, info, items, ocrPages, reread: !!existing };
     });
   }
 
@@ -331,6 +389,10 @@ class Intake {
     if (!item) throw new Error('Review item not found');
     if (item.status !== 'pending' && item.status !== 'info') throw new Error('This item was already decided');
     const L = item.parsed;
+    // Platform/bundle set for this letter (one by one or in bulk) apply to the records it creates.
+    const defaults = L.recordDefaults || {};
+    const records = this.store.listRecords();
+    const norm = this.store.norm();
     const results = [];
     this.store.db.tx(() => {
       for (const d of decisions) {
@@ -343,6 +405,8 @@ class Intake {
           const prod = (p && (L.products || []).find((x) => x.value === p.device)) || {};
           const rec = {
             ...letterRecord(L, device, prod),
+            ...inferPlace(device, records, norm).fields,
+            ...nonEmpty(defaults),
             ...pick(edits, ['platform', 'bundle', 'expiry_date', 'issue_date', 'approval_number']),
             source: 'loa', verified_at: new Date().toISOString(), verified_by: actor,
           };
@@ -356,7 +420,7 @@ class Intake {
         }
         if (!p) continue;
         if (p.action === 'create') {
-          const rec = { ...p.record, ...edits, source: 'loa', verified_at: new Date().toISOString(), verified_by: actor };
+          const rec = { ...p.record, ...nonEmpty(defaults), ...edits, source: 'loa', verified_at: new Date().toISOString(), verified_by: actor };
           let r = this.store.findByKey(rec);
           if (!r) r = this.store.createRecord(rec, { source: src, actor });
           this.store.linkDocument(item.document_id, r.id);
@@ -377,6 +441,8 @@ class Intake {
             if (fresh.action === 'replacement') p.replacement = fresh.replacement;
           }
           this.store.linkDocument(item.document_id, rid);
+          const fill = Object.fromEntries(Object.entries(nonEmpty(defaults)).filter(([k]) => !r[k]));
+          if (Object.keys(fill).length) this.store.updateRecord(rid, fill, { source: src, actor });
           if (action === 'update') {
             const patch = Object.fromEntries(Object.entries(changes).map(([k, v]) => [k, v.to]));
             Object.assign(patch, pick(edits, ['expiry_date', 'issue_date', 'approval_number', 'kernel_version']));
@@ -416,6 +482,63 @@ class Intake {
     return results;
   }
 
+  /** Platform/bundle for the records these letters will create; an empty value clears it. */
+  setDefaults(ids, fields) {
+    let n = 0;
+    this.store.db.tx(() => {
+      for (const id of ids) {
+        const it = this.store.getInbox(id);
+        if (!it || it.status !== 'pending') continue;
+        const d = { ...(it.parsed.recordDefaults || {}) };
+        for (const k of ['platform', 'bundle']) if (fields[k] !== undefined) d[k] = String(fields[k] || '').trim();
+        this.store.setInbox(id, { parsed: { ...it.parsed, recordDefaults: d } });
+        n++;
+      }
+    });
+    return n;
+  }
+
+  /**
+   * Approve several letters with their suggested changes, as a reviewer
+   * would by pressing Approve on each card. Letters that need a choice
+   * (a device family, or no match at all) are skipped and stay in review.
+   */
+  approveMany(ids, { actor } = {}) {
+    const recordIds = new Set();
+    const skipped = [];
+    let applied = 0, changes = 0;
+    for (const id of ids) {
+      const it = this.store.getInbox(id);
+      if (!it || it.status !== 'pending') continue;
+      const decisions = it.proposals.map((p, i) => ({ p, index: i }))
+        .filter(({ p }) => p.action !== 'unmatched' && !(p.warnings || []).some((w) => /Confirm it covers/.test(w)))
+        .map(({ index }) => ({ index }));
+      if (!decisions.length) {
+        skipped.push({ id, filename: it.filename, reason: it.proposals.length ? 'needs you to choose the records it covers' : 'no device or record to update' });
+        continue;
+      }
+      try {
+        const res = this.apply(id, decisions, { actor });
+        applied++; changes += res.length;
+        for (const r of res) if (r.record_id) recordIds.add(r.record_id);
+      } catch (e) {
+        skipped.push({ id, filename: it.filename, reason: e.message });
+      }
+    }
+    return { applied, changes, skipped, recordIds: [...recordIds] };
+  }
+
+  rejectMany(ids) {
+    let n = 0;
+    for (const id of ids) {
+      const it = this.store.getInbox(id);
+      if (!it || (it.status !== 'pending' && it.status !== 'info')) continue;
+      this.reject(id, '');
+      n++;
+    }
+    return n;
+  }
+
   reject(inboxId, note = '') {
     this.store.setInbox(inboxId, { status: 'rejected', note, decided_at: new Date().toISOString() });
   }
@@ -436,6 +559,10 @@ class Intake {
     }
     return { items, changes, recordIds: [...recordIds] };
   }
+}
+
+function nonEmpty(o) {
+  return Object.fromEntries(Object.entries(o || {}).filter(([k, v]) => ['platform', 'bundle'].includes(k) && v));
 }
 
 function pick(o, keys) {
