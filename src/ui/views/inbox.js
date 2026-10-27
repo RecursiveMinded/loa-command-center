@@ -216,7 +216,8 @@ function Proposal({ p, on, readOnly, edits, editing, picks, creates, L, app, onT
       ${p.action === 'create' ? html`<div class="chg">Creates <b>${edits.device || p.record.device}</b> · ${p.scheme} ${p.category}${(edits.expiry_date || p.record.expiry_date) ? html`, expires <b>${fmtDate(edits.expiry_date || p.record.expiry_date)}</b>` : ''}${edits.platform || edits.bundle ? ` · ${[edits.platform, edits.bundle].filter(Boolean).join(' · ')}` : ''}</div>` : null}
       ${(p.warnings || []).map((w) => html`<div class="warnline"><${Icon} name="warn" />${w}</div>`)}
       ${editing ? html`<div class="grid3 mt">${fields.map((k) => html`<label class="field">${{ device: 'Device', platform: 'Platform', bundle: 'Bundle' }[k] || FIELD[k]}
-        <input type=${k.endsWith('_date') ? 'date' : 'text'} value=${edits[k] != null ? edits[k] : (base && base[k]) || ''} onInput=${(e) => onEdits({ [k]: e.target.value })} /></label>`)}</div>` : null}
+        <input type=${k.endsWith('_date') ? 'date' : 'text'} value=${edits[k] != null ? edits[k] : (base && base[k]) || ''} onInput=${(e) => onEdits({ [k]: e.target.value })} /></label>`)}</div>
+        ${p.action === 'create' && edits.device ? html`<${KnownFor} q=${edits.device} onPick=${(d) => onEdits({ device: d })} />` : null}` : null}
       ${p.action === 'unmatched' && !readOnly ? html`<${RecordPicker} p=${p} picks=${picks} onPicks=${onPicks} />
         <${NewRecords} title=${`Or create records for ${p.device}`} L=${L} names=${creates} edits=${edits} withFields onNames=${onCreates} onEdits=${onEdits} />` : null}
     </div></div>`;
@@ -252,8 +253,9 @@ function RecordPicker({ p, picks, onPicks }) {
  */
 function NewRecords({ title, L, names, edits, withFields, onNames, onEdits }) {
   const [draft, setDraft] = useState('');
-  const add = () => {
-    const more = draft.split(/[,;\n]/).map((x) => x.trim()).filter(Boolean);
+  const known = useKnownDevices();
+  const add = (text = draft) => {
+    const more = text.split(/[,;\n]/).map((x) => x.trim()).filter(Boolean);
     if (!more.length) return;
     const seen = new Set(names.map((x) => x.toLowerCase()));
     onNames([...names, ...more.filter((x) => !seen.has(x.toLowerCase()) && seen.add(x.toLowerCase()))]);
@@ -263,13 +265,43 @@ function NewRecords({ title, L, names, edits, withFields, onNames, onEdits }) {
   return html`<div class="newrecs mt"><div class="small"><b>${title}</b> <span class="muted">· ${L.scheme || 'Unknown brand'} ${L.category}${val(L.expiryDate) ? `, expires ${fmtDate(val(L.expiryDate))}` : ''}</span></div>
     <div class="row mt"><input type="text" class="grow" placeholder="Device name, e.g. Self/5000 (separate several with commas)" value=${draft}
       onInput=${(e) => setDraft(e.target.value)} onKeyDown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }} aria-label="New device name" />
-      <button class="btn sm" onClick=${add} disabled=${!draft.trim()}><${Icon} name="plus" /> Add</button></div>
+      <button class="btn sm" onClick=${() => add()} disabled=${!draft.trim()}><${Icon} name="plus" /> Add</button></div>
+    <${DeviceSuggestions} known=${known} q=${draft.split(/[,;]/).pop()} skip=${names} onPick=${(d) => add(draft.replace(/[^,;]*$/, '') + d)} />
     ${names.length ? html`<div class="tagrow mt">${names.map((n) => html`<span class="utag">${n}<button class="linkbtn" title="Remove" onClick=${() => onNames(names.filter((x) => x !== n))}>×</button></span>`)}</div>` : null}
     ${withFields && names.length ? html`<div class="grid3 mt">
       <label class="field">Platform<input type="text" value=${edits.platform || ''} onInput=${(e) => onEdits({ platform: e.target.value })} /></label>
       <label class="field">Bundle<input type="text" value=${edits.bundle || ''} onInput=${(e) => onEdits({ bundle: e.target.value })} /></label>
       <label class="field">${FIELD.expiry_date}${needExpiry ? ' (not in letter)' : ''}<input type="date" value=${edits.expiry_date || val(L.expiryDate) || ''} onInput=${(e) => onEdits({ expiry_date: e.target.value })} /></label>
     </div>` : null}</div>`;
+}
+
+let knownCache = null;
+/** Device names already in the register (archived included), loaded once per inbox visit. */
+function useKnownDevices() {
+  const [list, setList] = useState(knownCache || []);
+  useEffect(() => {
+    let live = true;
+    call('knownDevices').then((l) => { knownCache = l; if (live) setList(l); }).catch(() => {});
+    return () => { live = false; };
+  }, []);
+  return list;
+}
+
+function KnownFor({ q, onPick }) {
+  const known = useKnownDevices();
+  return html`<${DeviceSuggestions} known=${known} q=${q} skip=${[q]} onPick=${onPick} />`;
+}
+
+/** Devices you already track that match what is being typed, so names stay consistent. */
+function DeviceSuggestions({ known, q, skip = [], onPick }) {
+  const key = String(q || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (key.length < 2) return null;
+  const taken = new Set(skip.map((x) => x.toLowerCase()));
+  const hits = known.filter((d) => !taken.has(d.device.toLowerCase()) && d.device.toUpperCase().replace(/[^A-Z0-9]/g, '').includes(key)).slice(0, 8);
+  if (!hits.length) return html`<div class="faint small mt">No device like that in your register yet; it will be added as new.</div>`;
+  return html`<div class="suggest mt"><span class="muted small">In your register:</span>${hits.map((d) => html`<button class="sugg" onClick=${() => onPick(d.device)}
+    title=${`${d.records} record${d.records === 1 ? '' : 's'}${d.archived ? `, ${d.archived} archived` : ''}${d.schemes.length ? ` · ${d.schemes.join(', ')}` : ''}`}>
+    <b>${d.device}</b><span class="faint">${d.schemes.slice(0, 3).join(', ')}${d.schemes.length > 3 ? '…' : ''}${d.archived === d.records ? ' · archived' : ''}</span></button>`)}</div>`;
 }
 
 function summarize(res) {

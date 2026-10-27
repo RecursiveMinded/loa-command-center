@@ -42,6 +42,9 @@ function pdfFromPages(pages) {
   // A family letter for devices that are not in the register yet.
   const family = path.join(tmp, 'New family.pdf');
   fs.writeFileSync(family, pdfFromPages([L.discover.replace('Flex/3XXX', 'Zeta/7XXX')]));
+  // A letter that does not name its device; the file name does.
+  const named = path.join(tmp, 'P400CL1_Discover_L2.pdf');
+  fs.writeFileSync(named, pdfFromPages([L.discover.replace('Product: Flex/3XXX CL1 ', '').replace('Discover', 'Discover Global Network')]));
   const server = spawn(process.execPath, [path.join(__dirname, '..', '..', 'dev', 'server.js'), path.join(tmp, 'data'), String(PORT)], { stdio: 'inherit', env: { ...process.env, LOA_FAKE_AI: 'Flex/3500-CL1' } });
   await new Promise((r) => setTimeout(r, 1200));
   const browser = await chromium.launch();
@@ -111,6 +114,9 @@ function pdfFromPages(pages) {
     await ch3.setFiles(family);
     await p.waitForSelector('.card.review:has-text("New family.pdf")', { timeout: 60000 });
     const famCard = p.locator('.card.review:has-text("New family.pdf")');
+    await famCard.locator('input[aria-label="New device name"]').fill('T10');
+    await famCard.locator('.sugg:has-text("T100-CL1")').waitFor({ timeout: 5000 });
+    check(true, 'device box suggests devices already in the register');
     await famCard.locator('input[aria-label="New device name"]').fill('Zeta/7100-CL1, Zeta/7200-CL1');
     await famCard.locator('button:has-text("Add")').click();
     await famCard.locator('label.field:has-text("Platform") input').fill('Gamma');
@@ -121,6 +127,12 @@ function pdfFromPages(pages) {
     await p.click('button:has-text("Clear filters")');
     await p.waitForSelector('text=Zeta/7200-CL1', { timeout: 10000 });
     check(true, 'family letter with no matching records creates them');
+    await p.click('nav >> text=LOA inbox');
+    const [ch4] = await Promise.all([p.waitForEvent('filechooser'), p.click('text=Choose files')]);
+    await ch4.setFiles(named);
+    await p.waitForSelector('.card.review:has-text("P400CL1_Discover_L2.pdf") >> text=Device taken from the file name', { timeout: 60000 });
+    const namedCard = p.locator('.card.review:has-text("P400CL1_Discover_L2.pdf")');
+    check(await namedCard.locator('.prop a:has-text("P400-CL1")').count() > 0, 'device read from the file name matches the register');
     const st = await p.evaluate(() => window.__loaSelfTest());
     check(st.ok, `PDF reader and OCR self test ${JSON.stringify(st)}`);
     await p.click('.topbar >> text=Summary report');

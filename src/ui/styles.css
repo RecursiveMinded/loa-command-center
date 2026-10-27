@@ -359,3 +359,6 @@ table.t td .faint.small { white-space: nowrap; }
 .recent-bar { margin-bottom: 14px; gap: 10px; }
 .newrecs { border: 1px dashed var(--line); border-radius: 8px; padding: 10px 12px; background: var(--panel); }
 .newrecs .utag .linkbtn { margin-left: 4px; padding: 0 2px; }
+.suggest { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.suggest .sugg { display: inline-flex; gap: 6px; align-items: baseline; border: 1px solid var(--line); background: var(--bg); color: inherit; border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+.suggest .sugg:hover { border-color: var(--brand); }
