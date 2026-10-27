@@ -127,6 +127,19 @@ function pdfFromPages(pages) {
     await p.click('button:has-text("Clear filters")');
     await p.waitForSelector('text=Zeta/7200-CL1', { timeout: 10000 });
     check(true, 'family letter with no matching records creates them');
+    // Hardware version filter: CL1 records only.
+    await p.selectOption('select[aria-label="All hardware (CL)"]', 'CL1');
+    const devs = await p.$$eval('table.t tbody .dev', (els) => els.map((e) => e.textContent));
+    check(devs.length > 0 && devs.every((d) => /CL1/.test(d)), `hardware (CL) filter: ${devs.length} CL1 records`);
+    // Bulk delete with confirmation.
+    const before = await p.$$eval('table.t tbody tr', (els) => els.length);
+    await p.locator('table.t tbody tr input[type=checkbox]').first().check();
+    p.once('dialog', (d) => d.accept());
+    await p.click('.bulkbar button:has-text("Delete 1")');
+    await p.waitForSelector('text=Deleted 1 record', { timeout: 5000 });
+    const after = await p.$$eval('table.t tbody tr', (els) => els.length);
+    check(after === before - 1, `bulk delete removes the selected record (${before} -> ${after})`);
+    await p.click('button:has-text("Clear filters")');
     await p.click('nav >> text=LOA inbox');
     const [ch4] = await Promise.all([p.waitForEvent('filechooser'), p.click('text=Choose files')]);
     await ch4.setFiles(named);

@@ -182,6 +182,7 @@ function fromFilename(letters, filename, records, norm) {
   const L = approvals[0];
   const known = [...new Set(records.map((r) => r.device))];
   const dev = deviceFromFilename(filename, known, norm);
+  if (L.category === 'TQM' && dev) return tqmFromFilename(L, dev, filename);
   // Text that names no device you track and does not look like a model code
   // ("1 Main Street" from a letterhead) loses to a file name that does.
   const isKnown = (v) => known.some((d) => deviceScore(v, d, norm) > 0);
@@ -194,6 +195,12 @@ function fromFilename(letters, filename, records, norm) {
     L.warnings.push(dev.known ? `Device taken from the file name (matches ${dev.value} in your register)` : 'Device taken from the file name; check it before approving');
     if (was) L.warnings.push(`The letter text suggested "${was}", which is not a device you track`);
     else L.confidence = Math.min(100, L.confidence + 15);
+  } else if (dev && L.products.length === 1 && /CL\d$/i.test(dev.value)
+    && L.products[0].value.toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/^AXIUM/, '') === dev.value.toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/CL\d$/, '')) {
+    // "AXIUM DX4000" in a contactless letter saved as "DX4000CL1_...": the file names the reader.
+    const was = L.products[0].value;
+    L.products = [{ value: dev.value, evidence: `From the file name "${filename}"; the letter says "${was}"`, confidence: 0.8, source: 'filename' }];
+    L.warnings.push(`The letter says "${was}"; the file name narrows it to ${dev.value}`);
   } else if (dev && dev.known && L.products.length === 1 && [60, 80].includes(deviceScore(L.products[0].value, dev.value, norm))) {
     // "Self/4XXX" or "Self/4000" in the text, "Self4000CL2_..." as the file name:
     // the file was named for the exact device, so use it.
@@ -212,6 +219,27 @@ function fromFilename(letters, filename, records, norm) {
   if (!L.category || L.category === 'Other') {
     const cat = categoryFromFilename(filename);
     if (cat) { L.category = cat; L.warnings.push(`Approval type taken from the file name (${cat})`); }
+  }
+}
+
+// A TQM statement lists many components; the file was saved for one device.
+// Take that device's row: its label, interface and expiry.
+function tqmFromFilename(L, dev, filename) {
+  const key = (v) => String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/^AXIUM/, '');
+  const base = key(dev.value).replace(/CL\d$/, '');
+  const name = filename.replace(/^.*[\\/]/, '');
+  const want = /CL\d/i.test(dev.value) || /contactless|cless|ctls|pcd/i.test(name) ? 'PCD' : /contact|ifm/i.test(name) ? 'IFM' : '';
+  const rows = L.products.filter((p) => key(p.value) === base);
+  const row = rows.find((p) => !want || (p.interface || '').includes(want)) || (want ? null : rows[0]);
+  const iface = row && row.interface ? row.interface : want === 'PCD' ? 'Contactless (PCD)' : want === 'IFM' ? 'Contact (IFM)' : undefined;
+  L.products = [{ value: dev.value, evidence: row ? row.evidence : `From the file name "${filename}"`, confidence: row ? 0.85 : 0.6, source: 'filename', label: row && row.label, expiry: row && row.expiry, interface: iface }];
+  if (row) {
+    L.approvalNumber = { value: row.label, evidence: row.evidence, confidence: 0.85 };
+    if (row.expiry) L.expiryDate = { value: row.expiry, evidence: row.evidence, confidence: 0.85 };
+    L.warnings = L.warnings.filter((w) => w !== 'No device/product name found');
+    L.warnings.push(`${dev.value} (from the file name) is listed under ${row.label}${iface ? `, ${iface}` : ''}`);
+  } else {
+    L.warnings.push(`${dev.value} (from the file name) is not listed in this TQM statement${want ? ` for the ${want === 'PCD' ? 'contactless' : 'contact'} interface` : ''}; check the label and date`);
   }
 }
 
@@ -311,12 +339,34 @@ class Intake {
    */
   ingest({ filename, bytes, pages, ocrPages = 0 }) {
     const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes || []);
-    const hash = sha256(buf.length ? buf : Buffer.from((pages || []).join('\n')));
-    const existing = this.store.findDocumentByHash(hash);
+    let hash = sha256(buf.length ? buf : Buffer.from((pages || []).join('\n')));
+    let existing = this.store.findDocumentByHash(hash);
+    // One statement saved under several device file names (a TQM statement
+    // covering many terminals) is read once per device.
+    if (existing && existing.filename !== filename) {
+      const dev = (fn) => { const d = deviceFromFilename(fn, [], this.store.norm()); return d ? d.value.toUpperCase().replace(/[^A-Z0-9]/g, '') : ''; };
+      const mine = dev(filename);
+      if (mine && mine !== dev(existing.filename)) {
+        hash = `${hash}:${mine}`;
+        existing = this.store.findDocumentByHash(hash);
+      }
+    }
     // A file dropped again before any of its letters was approved is read
     // again (a newer version may read it better); otherwise it is a duplicate.
     const decided = existing && this.store.db.get("SELECT COUNT(*) AS n FROM inbox WHERE document_id=? AND status='applied'", [existing.id]).n;
     if (existing && decided) {
+      // Some letters approved, others still waiting: read the waiting ones again.
+      const waiting = this.store.listInbox().filter((x) => x.document_id === existing.id && (x.status === 'pending' || x.status === 'info'));
+      if (waiting.length) {
+        const fresh = (pages || []).join('\n\f\n');
+        // A newer extraction replaces the stored text unless it reads much less.
+        const words = (x) => x.replace(/[^A-Za-z0-9]/g, '').length;
+        if (words(fresh) >= 40 && words(fresh) >= 0.9 * words(this.store.documentText(existing.id))) this.store.db.run('UPDATE documents SET text=?, page_count=?, ocr_pages=? WHERE id=?', [fresh, pages.length, ocrPages, existing.id]);
+        const r = this.reread(waiting.map((x) => x.id));
+        const items = r.items.map((id) => this.store.getInbox(id));
+        return { filename, status: 'ok', documentId: existing.id, letters: items.length, pending: items.filter((x) => x.status === 'pending').length,
+          info: items.filter((x) => x.status === 'info').length, items: r.items, ocrPages, reread: true };
+      }
       return { filename, status: 'duplicate', duplicateOf: existing.filename, documentId: existing.id, letters: 0 };
     }
     const text = (pages || []).join('\n\f\n');
@@ -351,6 +401,51 @@ class Intake {
       }
       return { filename, status: 'ok', documentId, letters: letters.length, pending, info, items, ocrPages, reread: !!existing };
     });
+  }
+
+  /**
+   * Read stored documents again with the current reader. Letters still
+   * waiting for review (or marked supporting) are replaced by a fresh
+   * reading; letters that were already approved are left alone and not
+   * offered again. Pass inbox item ids to limit it to their documents.
+   */
+  reread(itemIds) {
+    const all = this.store.listInbox();
+    const want = itemIds ? new Set(itemIds.map(Number)) : null;
+    const docIds = [...new Set(all.filter((x) => (x.status === 'pending' || x.status === 'info') && (!want || want.has(x.id))).map((x) => x.document_id))];
+    const ctx = this.context();
+    const records = this.store.listRecords();
+    const ap = (L) => (L.approvalNumber ? String(L.approvalNumber.value).toUpperCase().replace(/\s+/g, '') : '');
+    const devs = (L) => new Set((L.products || []).map((p) => String(p.value).toUpperCase().replace(/[^A-Z0-9]/g, '')));
+    // The same letter as one already approved: same kind and approval number,
+    // or (no number) a device in common.
+    const sameLetter = (a, b) => a.type === b.type && (ap(a) && ap(b) ? ap(a) === ap(b) : [...devs(a)].some((d) => devs(b).has(d)));
+    let letters = 0, removed = 0;
+    const items = [];
+    this.store.db.tx(() => {
+      for (const docId of docIds) {
+        const doc = this.store.getDocument(docId);
+        const text = this.store.documentText(docId);
+        if (!doc || !text) continue;
+        const mine = all.filter((x) => x.document_id === docId);
+        const done = mine.filter((x) => x.status === 'applied').map((x) => x.parsed);
+        // Platform/bundle chosen for this file's letters carry over.
+        const defaults = mine.map((x) => x.parsed.recordDefaults).find((d) => d && (d.platform || d.bundle));
+        const fresh = parseDocument(text.split('\n\f\n'));
+        fromFilename(fresh, doc.filename, records, ctx.norm);
+        const stale = mine.filter((x) => x.status === 'pending' || x.status === 'info');
+        this.store.db.run("DELETE FROM inbox WHERE document_id=? AND status IN ('pending','info')", [docId]);
+        removed += stale.length;
+        for (const L of fresh) {
+          if (done.some((d) => sameLetter(d, L))) continue;
+          if (defaults) L.recordDefaults = { ...defaults };
+          const id = this.store.addInbox({ document_id: docId, letter_index: L.index, parsed: L, proposals: buildProposals(L, records, ctx), status: L.informational ? 'info' : 'pending' });
+          items.push(id);
+          letters++;
+        }
+      }
+    });
+    return { documents: docIds.length, letters, removed, items };
   }
 
   /** Re-run matching for pending items (after records change or aliases are added). */

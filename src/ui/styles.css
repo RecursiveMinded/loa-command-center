@@ -366,3 +366,8 @@ table.t td .faint.small { white-space: nowrap; }
 .card.review .hd { align-items: flex-start; }
 .card.review .pick { margin: 6px 10px 0 0; width: 16px; height: 16px; }
 .card.review.picked { outline: 2px solid var(--brand); outline-offset: -1px; }
+.iconbtn { background: none; border: 0; padding: 4px; border-radius: 6px; color: var(--muted, #888); cursor: pointer; line-height: 0; }
+.iconbtn:hover { color: var(--danger, #c0392b); background: var(--hover, rgba(127,127,127,.12)); }
+td.row-del { width: 1%; }
+tr:not(:hover) td.row-del .iconbtn { opacity: 0; }
+tr td.row-del .iconbtn:focus-visible { opacity: 1; }

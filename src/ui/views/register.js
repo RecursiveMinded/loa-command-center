@@ -13,11 +13,19 @@ export const DUE = [
   { value: 'missing', label: 'No expiry date', test: (d) => d == null },
 ];
 
-const EMPTY = { scheme: '', category: '', platform: '', bundle: '', tag: '', changed: '', window: '', health: '', stage: '', owner: '', disposition: '', portal: '', archived: false, month: '', ids: null, idsLabel: '' };
+const EMPTY = { scheme: '', category: '', platform: '', bundle: '', hw: '', tag: '', changed: '', window: '', health: '', stage: '', owner: '', disposition: '', portal: '', archived: false, month: '', ids: null, idsLabel: '' };
 
 export const CHANGED = [{ value: 'today', label: 'Changed today', days: 0 }, { value: 'week', label: 'Changed in 7 days', days: 7 }, { value: 'month', label: 'Changed in 30 days', days: 30 }];
 
 export const tagList = (r) => String(r.tags || '').split(',').map((t) => t.trim()).filter(Boolean);
+/** Hardware (reader) version of a record: its CLn tag, else the CLn in the device name. */
+export const hwOf = (r) => {
+  const t = tagList(r).find((x) => /^CL\d$/i.test(x));
+  if (t) return t.toUpperCase();
+  const m = String(r.device || '').toUpperCase().replace(/[^A-Z0-9]/g, '').match(/CL(\d)$/);
+  return m ? `CL${m[1]}` : '';
+};
+const NO_HW = 'No CL (contact)';
 
 const COLS = [
   ['device', 'Device'], ['scheme', 'Brand'], ['category', 'Approval type'], ['approval_number', 'Approval no.'],
@@ -35,6 +43,7 @@ export function applyFilter(records, f, q) {
     if (f.category && r.category !== f.category) return false;
     if (f.platform && (r.platform || '(none)') !== f.platform) return false;
     if (f.bundle && (r.bundle || '(none)') !== f.bundle) return false;
+    if (f.hw && (hwOf(r) || NO_HW) !== f.hw) return false;
     if (f.tag && !(f.tag === '(none)' ? !tagList(r).length : tagList(r).some((t) => t.toLowerCase() === f.tag.toLowerCase()))) return false;
     if (f.changed) {
       const c = CHANGED.find((x) => x.value === f.changed);
@@ -60,6 +69,7 @@ export function filterLabel(f, q) {
   const parts = [];
   if (f.ids) parts.push(`${f.ids.length} selected records`);
   for (const k of ['scheme', 'category', 'platform', 'bundle', 'stage', 'owner', 'disposition', 'portal']) if (f[k]) parts.push(f[k]);
+  if (f.hw) parts.push(`Hardware: ${f.hw}`);
   if (f.tag) parts.push(`Tag: ${f.tag}`);
   if (f.changed) parts.push(CHANGED.find((x) => x.value === f.changed).label);
   if (f.window) parts.push(DUE.find((d) => d.value === f.window).label);
@@ -104,6 +114,7 @@ export function Register({ app, params }) {
   if (!records) return html`<div class="row"><${Spinner} /> Loading…</div>`;
   const live = records.filter((r) => !r.archived);
   const tags = unique(live.flatMap(tagList));
+  const hws = unique(live.map(hwOf).filter(Boolean));
   const opt = (key, none) => unique(live.map((r) => r[key] || none));
   const active = Object.entries(f).some(([k, v]) => (k === 'archived' ? v : v && (Array.isArray(v) ? v.length : true)));
   const healthCounts = {};
@@ -116,6 +127,10 @@ export function Register({ app, params }) {
   const label = () => (sel.size ? `${sel.size} selected records` : filterLabel(f, q));
   const exportX = async () => { try { const b = await call('exportExcel', { ids: ids() }); await saveAs('Certifications.xlsx', b, [{ name: 'Excel', extensions: ['xlsx'] }]); } catch (e) { toastError(e); } };
   const exportC = async () => { try { const t = await call('exportCsv', { ids: ids() }); await saveAs('Certifications.csv', t, [{ name: 'CSV', extensions: ['csv'] }]); } catch (e) { toastError(e); } };
+  const delOne = async (r) => {
+    if (!confirm(`Delete ${r.device} · ${r.scheme} ${r.category}? Its history is removed (a daily backup is kept). Archiving hides it instead.`)) return;
+    try { await call('deleteRecord', r.id); toast('Deleted', 'ok'); const s = new Set(sel); s.delete(r.id); setSel(s); reload(); app.refresh(); } catch (e) { toastError(e); }
+  };
   const draft = async () => { try { setEmail(await call('aiDraftEmail', [...sel], { purpose: 'renewal status' })); } catch (e) { toastError(e); } };
 
   return html`
@@ -132,6 +147,7 @@ export function Register({ app, params }) {
       <${Select} value=${f.category} onChange=${(v) => setF({ ...f, category: v })} placeholder="All approval types" options=${tax.categories.filter((c) => live.some((r) => r.category === c))} />
       <${Select} value=${f.platform} onChange=${(v) => setF({ ...f, platform: v })} placeholder="All platforms" options=${opt('platform', '(none)')} />
       <${Select} value=${f.bundle} onChange=${(v) => setF({ ...f, bundle: v })} placeholder="All bundles" options=${opt('bundle', '(none)')} />
+      ${hws.length || f.hw ? html`<${Select} value=${f.hw} onChange=${(v) => setF({ ...f, hw: v })} placeholder="All hardware (CL)" options=${[...hws, NO_HW]} />` : null}
       ${tags.length || f.tag ? html`<${Select} value=${f.tag} onChange=${(v) => setF({ ...f, tag: v })} placeholder="All tags" options=${[...tags, '(none)']} />` : null}
       <${Select} value=${f.changed} onChange=${(v) => setF({ ...f, changed: v })} placeholder="Changed: any time" options=${CHANGED} />
       <${Select} value=${f.window} onChange=${(v) => setF({ ...f, window: v, month: '' })} placeholder="Any expiry" options=${DUE} />
@@ -148,7 +164,7 @@ export function Register({ app, params }) {
     ${!list.length ? html`<div class="card"><div class="empty"><${Icon} name="search" /><h3>No records match</h3><div>Try clearing a filter.</div></div></div>` : html`
     <div class="table-wrap" style="max-height:calc(100vh - 300px)"><table class="t">
       <thead><tr><th class="chk"><input type="checkbox" aria-label="Select all" checked=${allOn} onChange=${toggleAll} /></th>
-        ${COLS.map(([k, l]) => html`<th class="sort" onClick=${() => setSort({ key: k, dir: sort.key === k ? -sort.dir : 1 })}>${l}${sort.key === k ? (sort.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`)}</tr></thead>
+        ${COLS.map(([k, l]) => html`<th class="sort" onClick=${() => setSort({ key: k, dir: sort.key === k ? -sort.dir : 1 })}>${l}${sort.key === k ? (sort.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`)}<th></th></tr></thead>
       <tbody>${list.slice(0, limit).map((r) => html`<tr key=${r.id} class=${`click ${sel.has(r.id) ? 'sel' : ''}`} onClick=${() => app.openRecord(r.id)}>
         <td class="chk" onClick=${(e) => e.stopPropagation()}><input type="checkbox" aria-label="Select" checked=${sel.has(r.id)} onChange=${() => toggle(r.id)} /></td>
         <td><div class="dev">${r.device}${r.archived ? html` <span class="tag">Archived</span>` : null}</div><div class="faint small">${[r.platform, r.bundle, r.kernel_version].filter(Boolean).join(' · ')}</div>
@@ -162,6 +178,7 @@ export function Register({ app, params }) {
         <td class="small ellipsis" style="max-width:200px" title=${r.next_action}>${r.next_action}${r.next_action_date ? html` <span class="faint">${fmtDate(r.next_action_date)}</span>` : null}</td>
         <td class="num">${r.doc_count ? html`<button class="tag linktag" title="View the LOAs for this record" onClick=${(e) => { e.stopPropagation(); app.openRecord(r.id, 'documents'); }}><${Icon} name="file" /> ${r.doc_count}</button>` : html`<span class="faint">—</span>`}</td>
         <td class="small nowrap">${r.portal_status === 'Not Tracked' ? html`<span class="faint">—</span>` : r.portal_status}</td>
+        <td class="row-del"><button class="iconbtn" title=${`Delete ${r.device} · ${r.scheme} ${r.category}`} aria-label="Delete record" onClick=${(e) => { e.stopPropagation(); delOne(r); }}><${Icon} name="trash" /></button></td>
       </tr>`)}</tbody></table>
       ${list.length > limit ? html`<div class="row" style="justify-content:center;padding:12px"><button class="btn" onClick=${() => setLimit(limit + 500)}>Show more (${list.length - limit} hidden)</button></div>` : null}
     </div>`}
@@ -171,7 +188,7 @@ export function Register({ app, params }) {
 
 const BULK_FIELDS = [
   ['platform', 'Platform'], ['bundle', 'Bundle'], ['family', 'Family / model group'], ['kernel_version', 'Kernel / version'],
-  ['tags+', 'Add tag'], ['tags-', 'Remove tag'],
+  ['hw', 'Hardware version (CL)'], ['tags+', 'Add tag'], ['tags-', 'Remove tag'],
   ['owner', 'Owner'], ['stage', 'Stage'], ['disposition', 'Disposition'], ['next_action', 'Next action'], ['next_action_date', 'Next action date'],
   ['portal_status', 'Portal status'], ['customer', 'Customer'], ['market', 'Market'], ['change_ticket', 'Change ticket'], ['archived', 'Archive'],
 ];
@@ -184,7 +201,9 @@ function BulkBar({ ids, tax, values, onDone, onClear, onEmail }) {
     if (isTag && !value.trim()) return toast('Type a tag first');
     try {
       const v = field === 'archived' ? value === 'yes' : value;
-      const tags = field === 'tags+' ? { add: v.split(',') } : field === 'tags-' ? { remove: v.split(',') } : null;
+      const CLS = ['CL1', 'CL2', 'CL3', 'CL4', 'CL5', 'CL6', 'CL7', 'CL8', 'CL9'];
+      const tags = field === 'tags+' ? { add: v.split(',') } : field === 'tags-' ? { remove: v.split(',') }
+        : field === 'hw' ? { remove: CLS, add: v ? [v] : [] } : null;
       const r = await call('bulkUpdate', ids, tags ? {} : { [field]: v }, tags);
       toast(`Updated ${plural(r.changed, 'record')}`, 'ok');
       if (r.skipped && r.skipped.length) {
@@ -194,8 +213,18 @@ function BulkBar({ ids, tax, values, onDone, onClear, onEmail }) {
       onDone();
     } catch (e) { toastError(e); }
   };
+  const remove = async () => {
+    if (!confirm(`Delete ${plural(ids.length, 'record')}? Their history is removed (a daily backup is kept). Use Set > Archive to hide them instead.`)) return;
+    try {
+      const n = await call('deleteRecords', ids);
+      toast(`Deleted ${plural(n, 'record')}`, 'ok');
+      onClear();
+      onDone();
+    } catch (e) { toastError(e); }
+  };
   const list = values[field] ? values[field].filter(Boolean) : null;
-  const input = field === 'stage' ? html`<${Select} value=${value} onChange=${setValue} placeholder="(automatic)" options=${tax.stages} />`
+  const input = field === 'hw' ? html`<${Select} value=${value} onChange=${setValue} placeholder="None (contact)" options=${['CL1', 'CL2', 'CL3', 'CL4']} />`
+    : field === 'stage' ? html`<${Select} value=${value} onChange=${setValue} placeholder="(automatic)" options=${tax.stages} />`
     : field === 'disposition' ? html`<${Select} value=${value} onChange=${setValue} placeholder="(none)" options=${tax.dispositions} />`
       : field === 'portal_status' ? html`<${Select} value=${value} onChange=${setValue} options=${tax.portalStatuses} placeholder="Choose" />`
         : field === 'archived' ? html`<${Select} value=${value} onChange=${setValue} options=${[{ value: 'yes', label: 'Archive' }, { value: 'no', label: 'Restore' }]} placeholder="Choose" />`
@@ -208,6 +237,7 @@ function BulkBar({ ids, tax, values, onDone, onClear, onEmail }) {
     ${input}${list ? html`<datalist id="bulk-values">${list.map((o) => html`<option value=${o} />`)}</datalist>` : null}
     <button class="btn primary" onClick=${apply}>Apply</button><span class="grow"></span>
     <button class="btn" onClick=${onEmail}><${Icon} name="mail" /> Draft email</button>
+    <button class="btn danger" onClick=${remove} title="Delete the selected records"><${Icon} name="trash" /> Delete ${ids.length}</button>
     <button class="btn" onClick=${onClear}>Clear selection</button></div>`;
 }
 

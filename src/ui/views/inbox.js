@@ -161,6 +161,12 @@ function BulkBar({ items, all, sel, setSel, find, setFind, app, onDone }) {
     setSel(new Set());
     onDone();
   });
+  const reread = () => run(async () => {
+    const r = await call('rereadInbox', ids);
+    toast(`Read ${plural(r.documents, 'file')} again: ${plural(r.letters, 'letter')} to review${r.removed > r.letters ? `, ${plural(r.removed - r.letters, 'leftover page')} cleared` : ''}`, 'ok');
+    setSel(new Set());
+    onDone();
+  });
   return html`<div class="card pad inbox-bulk">
     <div class="row wrap">
       <label class="check"><input type="checkbox" checked=${allShown} onChange=${() => setSel(allShown ? new Set() : new Set([...sel, ...items.map((it) => it.id)]))} aria-label="Select all shown" />
@@ -175,6 +181,7 @@ function BulkBar({ items, all, sel, setSel, find, setFind, app, onDone }) {
       <span class="grow"></span>
       <button class="btn primary" disabled=${busy} onClick=${approve} title="Apply each letter's suggested changes. Letters that need a choice stay here."><${Icon} name="check" /> Approve ${ids.length}</button>
       <button class="btn" disabled=${busy} onClick=${reject}>Reject ${ids.length}</button>
+      <button class="btn ghost" disabled=${busy} onClick=${reread} title="Read these files again with the latest reader. Letters you already approved are not offered again."><${Icon} name="refresh" /> Read again</button>
       ${busy ? html`<${Spinner} />` : null}
       <datalist id="inbox-platforms">${((opts && opts.platforms) || []).map((v) => html`<option value=${v} />`)}</datalist>
       <datalist id="inbox-bundles">${((opts && opts.bundles) || []).map((v) => html`<option value=${v} />`)}</datalist>
@@ -384,6 +391,8 @@ function NewRecords({ title, L, names, edits, withFields, onNames, onEdits }) {
       <button class="btn sm" onClick=${() => add()} disabled=${!draft.trim()}><${Icon} name="plus" /> Add</button></div>
     <${DeviceSuggestions} known=${known} q=${draft.split(/[,;]/).pop()} skip=${names} onPick=${(d) => add(draft.replace(/[^,;]*$/, '') + d)} />
     ${names.length ? html`<div class="tagrow mt">${names.map((n) => html`<span class="utag">${n}<button class="linkbtn" title="Remove" onClick=${() => onNames(names.filter((x) => x !== n))}>×</button></span>`)}</div>` : null}
+    ${!draft.trim() ? names.filter((n) => !known.some((d) => ckey(d.device) === ckey(n))).slice(0, 3).map((n) => html`<${DeviceSuggestions} known=${known} q=${n} skip=${names}
+      label=${`Use a name you already have instead of ${n}?`} onPick=${(d) => onNames(names.map((x) => (x === n ? d : x)))} />`) : null}
     ${withFields && names.length ? html`<div class="grid3 mt">
       <label class="field">Platform<input type="text" value=${edits.platform || ''} onInput=${(e) => onEdits({ platform: e.target.value })} /></label>
       <label class="field">Bundle<input type="text" value=${edits.bundle || ''} onInput=${(e) => onEdits({ bundle: e.target.value })} /></label>
@@ -408,14 +417,51 @@ function KnownFor({ q, onPick }) {
   return html`<${DeviceSuggestions} known=${known} q=${q} skip=${[q]} onPick=${onPick} />`;
 }
 
+const ckey = (x) => String(x || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+// "Move/5000-CL3" -> { fam: 'MOVE', num: '5000', cl: 'CL3' }; AXIUM is a range name, not a family.
+function devParts(x) {
+  const k = ckey(x).replace(/^AXIUM/, '');
+  const cl = (k.match(/CL\d$/) || [''])[0];
+  const body = cl ? k.slice(0, -cl.length) : k;
+  const m = body.match(/^([A-Z]*)(\d{3,5})/);
+  return { k, cl, fam: m ? m[1] : body.replace(/\d.*$/, ''), num: m ? m[2] : (body.match(/\d{3,5}/) || [''])[0] };
+}
+function editRatio(a, b) {
+  if (!a || !b) return 0;
+  const d = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = d[0]; d[0] = i;
+    for (let j = 1; j <= b.length; j++) { const t = d[j]; d[j] = Math.min(d[j] + 1, d[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1)); prev = t; }
+  }
+  return 1 - d[b.length] / Math.max(a.length, b.length);
+}
+/** How alike two device names are, 0-100: same model number and family count most, then the reader version. */
+export function deviceLikeness(q, d) {
+  const a = devParts(q), b = devParts(d);
+  if (!a.k || !b.k) return 0;
+  if (a.k === b.k) return 100;
+  let s = 0;
+  if (a.num && a.num === b.num) {
+    s = a.fam && a.fam === b.fam ? 80 : !a.fam || !b.fam ? 65 : 45;
+    if (a.cl && a.cl === b.cl) s += 10; else if (a.cl && b.cl) s -= 10; else if (!a.cl && !b.cl) s += 5;
+  } else if (b.k.includes(a.k) || a.k.includes(b.k)) s = 60;
+  else if (a.fam && a.fam === b.fam && a.num && b.num && a.num.slice(0, 2) === b.num.slice(0, 2)) s = 40;
+  else if (a.fam && a.fam === b.fam && !a.num) s = 50;
+  return Math.max(s, Math.round(editRatio(a.k, b.k) * 55));
+}
+
 /** Devices you already track that match what is being typed, so names stay consistent. */
-function DeviceSuggestions({ known, q, skip = [], onPick }) {
-  const key = String(q || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+function DeviceSuggestions({ known, q, skip = [], onPick, label = 'In your register:' }) {
+  const key = ckey(q);
   if (key.length < 2) return null;
-  const taken = new Set(skip.map((x) => x.toLowerCase()));
-  const hits = known.filter((d) => !taken.has(d.device.toLowerCase()) && d.device.toUpperCase().replace(/[^A-Z0-9]/g, '').includes(key)).slice(0, 8);
+  const taken = new Set(skip.map((x) => ckey(x)));
+  const hits = known.filter((d) => !taken.has(ckey(d.device)))
+    .map((d) => ({ d, s: deviceLikeness(q, d.device) }))
+    .filter((x) => x.s >= 40)
+    .sort((x, y) => y.s - x.s || y.d.records - x.d.records)
+    .slice(0, 8).map((x) => x.d);
   if (!hits.length) return html`<div class="faint small mt">No device like that in your register yet; it will be added as new.</div>`;
-  return html`<div class="suggest mt"><span class="muted small">In your register:</span>${hits.map((d) => html`<button class="sugg" onClick=${() => onPick(d.device)}
+  return html`<div class="suggest mt"><span class="muted small">${label}</span>${hits.map((d) => html`<button class="sugg" onClick=${() => onPick(d.device)}
     title=${`${d.records} record${d.records === 1 ? '' : 's'}${d.archived ? `, ${d.archived} archived` : ''}${d.schemes.length ? ` · ${d.schemes.join(', ')}` : ''}`}>
     <b>${d.device}</b><span class="faint">${d.schemes.slice(0, 3).join(', ')}${d.schemes.length > 3 ? '…' : ''}${d.archived === d.records ? ' · archived' : ''}</span></button>`)}</div>`;
 }
