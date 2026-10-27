@@ -98,6 +98,17 @@ function pdfFromPages(pages) {
     const [dl] = await Promise.all([p.waitForEvent('download'), p.locator('.drawer button[title="Save a copy"]').first().click()]);
     check(dl.suggestedFilename() === 'Northwind merged.pdf', `LOA saved as a copy: ${dl.suggestedFilename()}`);
     await p.keyboard.press('Escape');
+    // The same LOA added to another record offers to link the existing file.
+    if (await p.locator('.bulkbar >> text=Clear selection').count()) await p.click('.bulkbar >> text=Clear selection');
+    await p.locator('button:has-text("Clear filters")').click({ timeout: 2000 }).catch(() => {});
+    await p.locator('table.t tbody tr:not(:has(button.linktag)) .dev').first().click();
+    await p.click('.drawer >> text=/^LOAs/');
+    await p.setInputFiles('#attach-loa', pdf);
+    await p.waitForSelector('.modal >> text=Duplicate LOA', { timeout: 10000 });
+    await p.click('.modal >> text=Link the existing LOA to this record');
+    await p.waitForSelector('.drawer >> text=Northwind merged.pdf', { timeout: 5000 });
+    check(true, 'duplicate LOA added from a record is linked, not stored twice');
+    await p.keyboard.press('Escape');
     // A letter with no device found: the AI fills it in, then Dismiss still works.
     await p.click('nav >> text=LOA inbox');
     const [ch2] = await Promise.all([p.waitForEvent('filechooser'), p.click('text=Choose files')]);
@@ -124,7 +135,7 @@ function pdfFromPages(pages) {
     await famCard.locator('button:has-text("Approve 1 change")').click();
     await p.waitForSelector('text=Applied: 2 created', { timeout: 10000 });
     await p.click('nav >> text=Certifications');
-    await p.click('button:has-text("Clear filters")');
+    await p.locator('button:has-text("Clear filters")').click({ timeout: 2000 }).catch(() => {});
     await p.waitForSelector('text=Zeta/7200-CL1', { timeout: 10000 });
     check(true, 'family letter with no matching records creates them');
     // Hardware version filter: CL1 records only.
