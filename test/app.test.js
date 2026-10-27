@@ -294,13 +294,17 @@ test('records can be created from a letter when the ones it covers do not exist 
 
 test('device and approval type are read from the file name when the letter does not say', async () => {
   const { deviceFromFilename, categoryFromFilename } = require('../src/core/devices');
-  assert.deepEqual(deviceFromFilename('Self4000CL2_EmvL1Cless.pdf'), { value: 'Self/4000 CL2', known: false });
+  assert.deepEqual(deviceFromFilename('Self4000CL2_EmvL1Cless.pdf'), { value: 'Self/4000-CL2', known: false });
   assert.deepEqual(deviceFromFilename('Self4000CL2_EmvL1Cless.pdf', ['Self/4000', 'Self/4000-CL2']), { value: 'Self/4000-CL2', known: true });
   assert.equal(deviceFromFilename('AXIUM DX8000 - L2.pdf').value, 'DX8000');
   assert.equal(deviceFromFilename('Northwind merged.pdf'), null);
   assert.equal(categoryFromFilename('Self4000CL2_EmvL1Cless.pdf'), 'EMV L1 Contactless');
   assert.equal(categoryFromFilename('Move5000_L2_CTLS.pdf'), 'EMV L2 Contactless');
   assert.equal(categoryFromFilename('Self4000CL2_Disc.pdf'), '');
+  const { schemeFromFilename } = require('../src/core/devices');
+  assert.equal(schemeFromFilename('Self4000CL2_MC_100100_0501.pdf'), 'Mastercard');
+  assert.equal(schemeFromFilename('Lane3000CL1_Disc_040602.pdf'), 'Discover');
+  assert.equal(schemeFromFilename('Self4000CL2_EmvL1Cless.pdf'), '');
 
   const { api } = await fresh();
   api.loadSampleData();
@@ -327,4 +331,46 @@ test('device and approval type are read from the file name when the letter does 
 
   const known = api.knownDevices();
   assert.ok(known.some((d) => d.device === 'P400-CL1' && d.records >= 2 && d.schemes.includes('Discover')));
+});
+
+test('inbox letters can be given a platform, approved and rejected in bulk', async () => {
+  const { api } = await fresh();
+  await api.importTracker({ filename: 'tracker.csv', bytes: Buffer.from(CSV) });
+  api.ingestDocument({ filename: 'merged.pdf', bytes: Buffer.from('m'), pages: [L.amex, L.emvco, L.mastercard] });
+  api.ingestDocument({ filename: 'family.pdf', bytes: Buffer.from('f'), pages: [L.discover.replace('Flex/3XXX', 'Zeta/7XXX')] });
+  const pending = api.listInbox('pending');
+  const ids = pending.map((i) => i.id);
+  assert.equal(api.setInboxDefaults(ids, { platform: 'UPP' }), ids.length);
+  assert.ok(api.listInbox('pending').every((i) => i.parsed.recordDefaults.platform === 'UPP'));
+
+  const r = api.approveInboxMany(ids);
+  assert.equal(r.applied, ids.length - 1, 'every letter but the family one');
+  assert.equal(r.skipped.length, 1);
+  assert.match(r.skipped[0].reason, /choose the records/);
+  const recs = api.listRecords();
+  for (const id of r.recordIds) {
+    const rec = recs.find((x) => x.id === id);
+    assert.equal(rec.platform, rec.device === 'NX100' ? 'Alpha' : rec.platform, 'a matched record keeps its own platform');
+  }
+  const created = recs.filter((x) => x.source === 'loa' && !CSV.includes(x.device));
+  assert.ok(created.every((x) => x.platform === 'UPP'), 'records created by the letters get the bulk platform');
+
+  assert.equal(api.rejectInboxMany(r.skipped.map((x) => x.id)), 1);
+  assert.equal(api.listInbox('pending').length, 0);
+});
+
+test('a new record takes its platform from the same device or its family in the register', async () => {
+  const { api } = await fresh();
+  const mk = (device, scheme, platform, bundle) => api.saveRecord(null, { device, category: 'EMV L2 Contactless', scheme, platform, bundle, expiry_date: '2027-01-01' });
+  mk('Self/4000-CL2', 'Visa', 'UPP', 'Bundle 6');
+  mk('Self/5000-CL2', 'Visa', 'UPP', '');
+  mk('DX8000', 'Visa', 'ARC', '');
+  api.ingestDocument({ filename: 'a.pdf', bytes: Buffer.from('a'), pages: [L.mastercard.replace(/NX\d00/g, 'Self/4000-CL2')] });
+  api.ingestDocument({ filename: 'b.pdf', bytes: Buffer.from('b'), pages: [L.mastercard.replace(/NX\d00/g, 'Self/8000-CL1')] });
+  const props = api.listInbox('pending').flatMap((i) => i.proposals).filter((p) => p.action === 'create');
+  const s4 = props.find((p) => p.device === 'Self/4000-CL2');
+  const s8 = props.find((p) => p.device === 'Self/8000-CL1');
+  assert.equal(s4.record.platform, 'UPP');
+  assert.equal(s4.record.bundle, 'Bundle 6');
+  assert.equal(s8.record.platform, 'UPP', 'family Self/... is all UPP');
 });

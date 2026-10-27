@@ -86,7 +86,9 @@ function segmentLetters(pages) {
   if (!bounds.length) {
     return [{ text: full.replace(/\f/g, ''), pageStart: 1, pageEnd: pages.length, type: 'unknown' }];
   }
-  if (bounds[0].index > 0 && full.slice(0, bounds[0].index).trim().length > 200) {
+  // Text above the first letter on its own page(s) is a separate document; a
+  // letterhead on the same page belongs to the letter.
+  if (bounds[0].index > 0 && pageAt(bounds[0].index) > 1 && full.slice(0, bounds[0].index).trim().length > 200) {
     bounds.unshift({ index: 0, type: 'unknown' });
   } else {
     bounds[0].index = 0;
@@ -397,7 +399,7 @@ const ISSUERS = {
   unionpay: {
     issuer: 'UnionPay', scheme: 'UnionPay',
     category: (t) => (/contactless|quickpass/i.test(t) ? 'EMV L2 Contactless' : 'EMV L2 Contact'),
-    approval: (t) => grab(t, /\b(QP-\d{2,6})\b/, 0.85),
+    approval: (t) => grab(t, /\b(QP-\d{2,6})\b/, 0.85) || grab(t, /\b(CUP\d{5,10})\b/, 0.75),
     products: (t) => {
       // The certificate prints its table as values then labels; the model
       // follows the certificate number.
@@ -417,7 +419,9 @@ const ISSUERS = {
       let issue = dateAfter(t, /Issue\s+Date\s*:?/i, 25);
       const m = t.match(/(\d{4}-\d{1,2}-\d{1,2})\s+(?:On\s+behalf[^\n]*\s+)?Issue\s+Date/i);
       if (m) issue = field(parseDate(m[1]), m[0], 0.8);
-      return { issue, expiry: dateAfter(t, /Expiry\s+Date\s*:?/i, 60), basis: 'Expiry date stated in certificate' };
+      // Scanned certificates often garble the label ("Expiry 5 = / Hate - June 18, 2029").
+      const expiry = dateAfter(t, /Expiry\s+Date\s*:?/i, 60) || dateAfter(t, /Expiry\b/i, 120, 0.7);
+      return { issue, expiry, basis: expiry ? 'Expiry date stated in certificate' : '' };
     },
   },
 

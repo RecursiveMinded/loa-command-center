@@ -140,8 +140,21 @@ function deviceFromFilename(filename, knownDevices = [], norm = defaultNorm) {
   const short = fam.length <= 3;
   const word = short ? fam.toUpperCase() : fam[0].toUpperCase() + fam.slice(1).toLowerCase();
   // Follow the register's own spelling for the reader version ("-CL2" or " CL2").
-  const sep = (knownDevices.find((d) => /\dCL\d/i.test(compact(d)) && /\d[\s\-_]?CL\d/i.test(d)) || 'x0 CL1').match(/\d([\s\-_]?)CL\d/i)[1];
+  const sep = (knownDevices.find((d) => /\dCL\d/i.test(compact(d)) && /\d[\s\-_]?CL\d/i.test(d)) || 'x0-CL1').match(/\d([\s\-_]?)CL\d/i)[1];
   return { value: `${word}${short ? '' : '/'}${num.toUpperCase()}${cl ? sep + cl : ''}`, known: false };
+}
+
+const FILE_SCHEMES = [
+  [/^(MC|MASTERCARD)$/, 'Mastercard'], [/^(DISC|DISCOVER|DPAS)$/, 'Discover'], [/^(AMEX|AXP)$/, 'Amex'],
+  [/^VISA$/, 'Visa'], [/^(UPI|CUP|UNIONPAY)$/, 'UnionPay'], [/^JCB$/, 'JCB'], [/^INTERAC$/, 'Interac'], [/^EMVCO$/, 'EMVCo'],
+];
+/** Card brand named by a part of a file name ("Self4000CL2_MC_100100.pdf"), or ''. */
+function schemeFromFilename(filename) {
+  for (const part of String(filename || '').replace(/\.[A-Za-z0-9]{2,5}$/, '').split(/[\s_\-.]+/)) {
+    const k = compact(part);
+    for (const [re, name] of FILE_SCHEMES) if (re.test(k)) return name;
+  }
+  return '';
 }
 
 /** Approval type hinted at in a file name ("EmvL1Cless", "L2_CTLS"), or ''. */
@@ -155,7 +168,7 @@ function categoryFromFilename(filename) {
 }
 
 module.exports = {
-  deviceFromFilename, categoryFromFilename,
+  deviceFromFilename, categoryFromFilename, schemeFromFilename,
   DEFAULT_NOISE_WORDS, compact, makeNormalizer, defaultNorm, splitVariant,
   baseDisplayName, variantOf, deviceScore, splitProducts, wildcardRegex,
 };

@@ -205,6 +205,12 @@ class AppApi {
 
   rejectInbox(id, note) { this.intake.reject(id, note); return true; }
 
+  setInboxDefaults(ids, fields) { return this.intake.setDefaults(ids, fields); }
+
+  approveInboxMany(ids) { return this.intake.approveMany(ids, { actor: this.store.actor }); }
+
+  rejectInboxMany(ids) { return this.intake.rejectMany(ids); }
+
   approveAllSafe() { return this.intake.approveAllSafe({ actor: this.store.actor }); }
 
   rematch() { return this.intake.rematch(); }
@@ -438,7 +444,7 @@ class AppApi {
 const PUBLIC_METHODS = [
   'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'bulkUpdate',
   'activateReplacement', 'listTags', 'knownDevices', 'listAliases', 'setAlias', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
-  'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'approveAllSafe', 'rematch', 'listDocuments',
+  'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'listDocuments',
   'documentText', 'unlinkDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
   'aiDraftEmail', 'backup', 'listBackups', 'restore', 'health',

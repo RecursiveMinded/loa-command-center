@@ -133,6 +133,16 @@ function pdfFromPages(pages) {
     await p.waitForSelector('.card.review:has-text("P400CL1_Discover_L2.pdf") >> text=Device taken from the file name', { timeout: 60000 });
     const namedCard = p.locator('.card.review:has-text("P400CL1_Discover_L2.pdf")');
     check(await namedCard.locator('.prop a:has-text("P400-CL1")').count() > 0, 'device read from the file name matches the register');
+    // Bulk: find letters, set a platform on all of them, approve.
+    await p.fill('input[aria-label="Find letters"]', 'P400CL1');
+    await p.waitForFunction(() => document.querySelectorAll('.card.review').length === 1, null, { timeout: 5000 });
+    await p.check('input[aria-label="Select all shown"]');
+    await p.fill('input[aria-label="Platform for selected"]', 'Zed');
+    await p.click('.inbox-bulk button:has-text("Set on 1")');
+    await p.waitForSelector('.card.review .pill:has-text("Zed")', { timeout: 5000 });
+    await p.click('.inbox-bulk button:has-text("Approve 1")');
+    await p.waitForSelector('text=Approved 1 letter', { timeout: 10000 });
+    check(true, 'bulk platform and approve from the LOA inbox');
     const st = await p.evaluate(() => window.__loaSelfTest());
     check(st.ok, `PDF reader and OCR self test ${JSON.stringify(st)}`);
     await p.click('.topbar >> text=Summary report');
