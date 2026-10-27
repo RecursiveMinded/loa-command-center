@@ -26,6 +26,10 @@ export function RecordDrawer({ id, app, onClose, tab: startTab }) {
     } catch (e) { toastError(e); }
   };
   useEffect(() => { if (id) load(id); }, [id]);
+  // Every certification of the physical device this record belongs to.
+  const [profile, setProfile] = useState(null);
+  const loadProfile = () => call('deviceProfile', id).then(setProfile).catch(() => setProfile(null));
+  useEffect(() => { setProfile(null); if (id) loadProfile(); }, [id, app.version]);
 
   const set = (k) => (e) => setForm({ ...form, [k]: e && e.target ? (e.target.type === 'checkbox' ? e.target.checked : e.target.value) : e });
   const save = async () => {
@@ -99,12 +103,14 @@ export function RecordDrawer({ id, app, onClose, tab: startTab }) {
   return html`<${Drawer} title=${title} sub=${sub} onClose=${onClose} wide footer=${tab === 'details' ? footer : null}>
     ${data && data.coverage ? html`<div class=${`callout ${data.coverage.kind === 'gap' ? 'bad' : 'good'}`} style="margin-bottom:12px">
       ${data.coverage.kind === 'gap' ? `Coverage gap: ${data.coverage.days} days between the current expiry and the replacement taking effect.` : `Replacement overlaps the current approval by ${data.coverage.days} days, so there is no gap.`}</div>` : null}
-    ${id ? html`<div class="tabs">${[['details', 'Details'], ['approvals', `Approvals (${data.approvals.length})`], ['documents', `LOAs (${data.documents.length})`], ['history', 'History']].map(([k, l]) => html`<button class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${l}</button>`)}</div>` : null}
+    ${id ? html`<div class="tabs">${[['details', 'Details'], ['device', `All certifications${profile ? ` (${countCerts(profile)})` : ''}`], ['approvals', `Approvals (${data.approvals.length})`], ['documents', `LOAs (${data.documents.length})`], ['history', 'History']].map(([k, l]) => html`<button class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${l}</button>`)}</div>` : null}
 
     ${tab === 'details' && data && data.documents.length ? html`<div class="loa-strip">
       <${Icon} name="file" /><span class="grow"><b>Latest LOA</b> <a href="#" class="dev" onClick=${(e) => { e.preventDefault(); openDoc(data.documents[0]); }}>${data.documents[0].filename}</a>
         <span class="faint small"> · added ${fmtWhen(data.documents[0].uploaded_at)}${data.documents.length > 1 ? html` · <a href="#" onClick=${(e) => { e.preventDefault(); setTab('documents'); }}>all ${data.documents.length} LOAs</a>` : null}</span></span>
       <${DocButtons} d=${data.documents[0]} /></div>` : null}
+    ${tab === 'details' && profile ? html`<${ProfileStrip} p=${profile} onOpen=${() => setTab('device')} />` : null}
+    ${tab === 'device' && profile ? html`<${DeviceCerts} p=${profile} current=${id} app=${app} reload=${loadProfile} />` : null}
     ${tab === 'details' ? html`
       <div class="section-title">Certification</div>
       <div class="grid3">
@@ -180,4 +186,52 @@ function AttachModal({ a, r, onLink, onClose }) {
       <button class="btn primary" onClick=${() => onLink(false)}><${Icon} name="link" /> Link the existing LOA to this record</button>
       ${dates ? html`<button class="btn" onClick=${() => onLink(true)}><${Icon} name="refresh" /> Link and override this record with the letter's approval and dates</button>` : null}
       <button class="btn ghost" onClick=${onClose}>Cancel</button></div><//>`;
+}
+
+const countCerts = (p) => p.sections.reduce((n, s) => n + s.rows.filter((r) => r.record).length, 0);
+const countMissing = (p) => p.sections.reduce((n, s) => n + s.rows.filter((r) => r.status === 'missing').length, 0);
+
+/** One line on the Details tab: how many certifications this device has, and how many are missing. */
+function ProfileStrip({ p, onOpen }) {
+  const total = countCerts(p);
+  const miss = countMissing(p);
+  const expired = p.sections.reduce((n, s) => n + s.rows.filter((r) => r.record && r.record.health === 'expired').length, 0);
+  return html`<div class="loa-strip"><${Icon} name="shield" /><span class="grow"><b>${p.sections.map((s) => s.device).join(', ')}</b>
+    <span class="faint small"> · ${total} certification${total === 1 ? '' : 's'}${expired ? ` · ${expired} expired` : ''}${miss ? html` · <span class="bad-text">${miss} missing</span>` : ''}</span></span>
+    <button class="btn sm" onClick=${onOpen}>View all certifications</button></div>`;
+}
+
+/**
+ * The device's full certification set: the terminal (PCI, L1 Contact, TQM)
+ * and each contactless reader in it (L1 Contactless, TQM, L2 per brand),
+ * each with its own approval number, dates and LOA.
+ */
+function DeviceCerts({ p, current, app, reload }) {
+  const add = async (sec, row) => {
+    try {
+      const rid = await call('createSlot', { device: sec.device, platform: p.platform, bundle: p.bundle, slot: row.slot });
+      toast(`Created ${sec.device} · ${row.label}. Add its LOA here.`, 'ok');
+      app.refresh(); app.openRecord(rid, 'documents');
+    } catch (e) { toastError(e); }
+  };
+  const na = async (sec, row, v) => { try { await call('setCoverageNA', sec.key, row.slot, v); reload(); } catch (e) { toastError(e); } };
+  return html`<p class="muted small">Each certification has its own approval number, dates and LOA. Click one to open it, or add a missing one.${p.platform || p.bundle ? ` Showing ${[p.platform, p.bundle].filter(Boolean).join(' · ')}.` : ''}</p>
+    ${[...p.sections].sort((a, b) => (b.rows.some((x) => x.record && x.record.id === current) ? 1 : 0) - (a.rows.some((x) => x.record && x.record.id === current) ? 1 : 0)).map((sec) => html`<div class="section-title">${sec.device} <span class="faint">${sec.reader ? 'Contactless reader' : 'Terminal'}</span></div>
+      <table class="t compact certs"><thead><tr><th>Certification</th><th>Approval no.</th><th>Issued</th><th>Expires</th><th>Status</th><th class="num">LOAs</th><th></th></tr></thead><tbody>
+      ${sec.rows.map((row) => {
+        const r = row.record;
+        if (!r) {
+          return html`<tr class=${row.status === 'na' ? 'faint' : 'missing'}><td>${row.label}</td><td colspan="5">${row.status === 'na' ? 'Not applicable' : html`<span class="bad-text">Missing</span>`}</td>
+            <td class="nowrap">${row.status === 'na' ? html`<button class="btn sm ghost" onClick=${() => na(sec, row, false)}>Require</button>`
+              : html`<button class="btn sm" onClick=${() => add(sec, row)}><${Icon} name="plus" /> Add</button> <button class="btn sm ghost" onClick=${() => na(sec, row, true)} title="Not needed (waiver or no reader)">N/A</button>`}</td></tr>`;
+        }
+        return html`<tr class=${`click ${r.id === current ? 'sel' : ''}`} onClick=${() => r.id !== current && app.openRecord(r.id)}>
+          <td>${row.label}${r.kernel_version && r.category === 'PCI PTS' ? html` <span class="faint">${r.kernel_version}</span>` : null}</td>
+          <td class="small ellipsis" style="max-width:180px" title=${r.approval_number}>${r.approval_number || html`<span class="faint">—</span>`}</td>
+          <td class="small nowrap">${fmtDate(r.issue_date) || html`<span class="faint">—</span>`}</td>
+          <td class="small nowrap">${fmtDate(r.expiry_date) || html`<span class="faint">—</span>`}</td>
+          <td><${HealthPill} r=${r} /></td>
+          <td class="num">${r.doc_count || html`<span class="faint">—</span>`}</td>
+          <td class="nowrap" onClick=${(e) => e.stopPropagation()}><button class="btn sm ghost" onClick=${() => app.openRecord(r.id, 'documents')} title="Open its LOAs or add one"><${Icon} name="file" /> LOA</button></td></tr>`;
+      })}</tbody></table>`)}`;
 }

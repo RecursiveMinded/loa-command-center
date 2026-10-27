@@ -695,3 +695,24 @@ test('one device keeps one spelling; reader variants stay separate devices', asy
   assert.match(x.tags, /L2 Contact/);
   assert.ok(!api.info().taxonomy.categories.includes('EMV L2 Contact'));
 });
+
+test('a record shows every certification of its physical device', async () => {
+  const { api } = await fresh();
+  const mk = (device, category, scheme, extra = {}) => api.store.createRecord({ device, category, scheme, platform: 'UPP', bundle: 'Bundle 6', expiry_date: '2028-01-01', ...extra });
+  mk('Lane/5000', 'PCI PTS', 'PCI SSC', { kernel_version: 'v6' });
+  mk('Lane/5000', 'EMV L1 Contact', 'EMVCo');
+  const cl3 = mk('Lane/5000-CL3', 'EMV L1 Contactless', 'EMVCo');
+  mk('Lane/5000-CL3', 'EMV L2 Contactless', 'JCB', { approval_number: 'JCB-9' });
+  mk('Lane/5000-CL2', 'EMV L2 Contactless', 'Visa');
+  mk('Lane/7000-CL3', 'EMV L2 Contactless', 'Visa');
+  api.store.createRecord({ device: 'Lane/5000-CL3', category: 'EMV L2 Contactless', scheme: 'Amex', platform: 'UPP', bundle: 'Bundle 5' });
+  const p = api.deviceProfile(cl3.id);
+  assert.deepEqual(p.sections.map((s) => s.device), ['Lane/5000', 'Lane/5000-CL2', 'Lane/5000-CL3']);
+  const r3 = p.sections[2].rows;
+  assert.equal(r3.find((r) => r.slot === 'l2:JCB').record.approval_number, 'JCB-9');
+  assert.equal(r3.find((r) => r.slot === 'l2:Amex').status, 'missing', 'other bundles are not mixed in');
+  assert.equal(p.sections[0].rows.find((r) => r.slot === 'tqm').status, 'missing');
+  const rid = api.createSlot({ device: 'Lane/5000', platform: 'UPP', bundle: 'Bundle 6', slot: 'tqm' });
+  assert.equal(api.store.getRecord(rid).category, 'TQM');
+  assert.equal(api.deviceProfile(cl3.id).sections[0].rows.find((r) => r.slot === 'tqm').record.id, rid);
+});

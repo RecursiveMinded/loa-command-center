@@ -379,3 +379,4 @@ table.cov .cell.miss .linkbtn { font-size: 11px; padding: 0; }
 table.cov .cell.na { background: transparent; border: 1px solid var(--line); color: var(--faint); font-size: 11px; }
 .legend i.miss { background: transparent; border: 1px dashed var(--crit); }
 table.cov tr.reader td.name { padding-left: 28px; font-weight: 550; }
+table.certs tr.missing td { background: var(--crit-soft); }

@@ -108,6 +108,9 @@ function pdfFromPages(pages) {
     await p.click('.modal >> text=Link the existing LOA to this record');
     await p.waitForSelector('.drawer >> text=Northwind merged.pdf', { timeout: 5000 });
     check(true, 'duplicate LOA added from a record is linked, not stored twice');
+    await p.click('.drawer .tabs >> text=/All certifications/');
+    await p.waitForSelector('.drawer table.certs', { timeout: 5000 });
+    check(true, `record shows all certifications of its device (${await p.locator('.drawer table.certs tbody tr').count()} rows)`);
     await p.keyboard.press('Escape');
     // A letter with no device found: the AI fills it in, then Dismiss still works.
     await p.click('nav >> text=LOA inbox');
