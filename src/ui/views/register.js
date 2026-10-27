@@ -130,8 +130,8 @@ export function Register({ app, params }) {
   const exportX = async () => { try { const b = await call('exportExcel', { ids: ids() }); await saveAs('Certifications.xlsx', b, [{ name: 'Excel', extensions: ['xlsx'] }]); } catch (e) { toastError(e); } };
   const exportC = async () => { try { const t = await call('exportCsv', { ids: ids() }); await saveAs('Certifications.csv', t, [{ name: 'CSV', extensions: ['csv'] }]); } catch (e) { toastError(e); } };
   const delOne = async (r) => {
-    if (!confirm(`Delete ${r.device} · ${r.scheme} ${r.category}? Its history is removed (a daily backup is kept). Archiving hides it instead.`)) return;
-    try { await call('deleteRecord', r.id); toast('Deleted', 'ok'); const s = new Set(sel); s.delete(r.id); setSel(s); reload(); app.refresh(); } catch (e) { toastError(e); }
+    if (!confirm(`Move ${r.device} · ${r.scheme} ${r.category} to the Archive? It stays searchable there and can be restored.`)) return;
+    try { await call('deleteRecord', r.id); toast('Moved to the Archive', 'ok'); const s = new Set(sel); s.delete(r.id); setSel(s); reload(); app.refresh(); } catch (e) { toastError(e); }
   };
   const draft = async () => { try { setEmail(await call('aiDraftEmail', [...sel], { purpose: 'renewal status' })); } catch (e) { toastError(e); } };
 
@@ -158,7 +158,6 @@ export function Register({ app, params }) {
       <${Select} value=${f.owner} onChange=${(v) => setF({ ...f, owner: v })} placeholder="All owners" options=${opt('owner', '(unassigned)')} />
       <${Select} value=${f.disposition} onChange=${(v) => setF({ ...f, disposition: v })} placeholder="All dispositions" options=${opt('disposition', '(none)')} />
       <${Select} value=${f.portal} onChange=${(v) => setF({ ...f, portal: v })} placeholder="Portal: any" options=${tax.portalStatuses} />
-      <label class="check small"><input type="checkbox" checked=${f.archived} onChange=${(e) => setF({ ...f, archived: e.target.checked })} /> Show archived</label>
       ${f.month ? html`<span class="chip on" onClick=${() => setF({ ...f, month: '' })}>Expiring ${f.month} <${Icon} name="x" size="12" /></span>` : null}
       ${f.ids ? html`<span class="chip on" onClick=${() => setF({ ...f, ids: null, idsLabel: '' })}>${plural(f.ids.length, 'record')} ${f.idsLabel || 'from an action'} <${Icon} name="x" size="12" /></span>` : null}
       ${active || q ? html`<button class="btn sm ghost" onClick=${() => { setF(EMPTY); app.setSearch(''); }}>Clear filters</button>` : null}
@@ -193,7 +192,7 @@ const BULK_FIELDS = [
   ['platform', 'Platform'], ['bundle', 'Bundle'], ['family', 'Family / model group'], ['kernel_version', 'Kernel / version'],
   ['hw', 'Hardware version (CL)'], ['tags+', 'Add tag'], ['tags-', 'Remove tag'],
   ['owner', 'Owner'], ['stage', 'Stage'], ['disposition', 'Disposition'], ['next_action', 'Next action'], ['next_action_date', 'Next action date'],
-  ['portal_status', 'Portal status'], ['customer', 'Customer'], ['market', 'Market'], ['change_ticket', 'Change ticket'], ['archived', 'Archive'],
+  ['portal_status', 'Portal status'], ['customer', 'Customer'], ['market', 'Market'], ['change_ticket', 'Change ticket'],
 ];
 
 function BulkBar({ ids, tax, values, onDone, onClear, onEmail }) {
@@ -203,7 +202,7 @@ function BulkBar({ ids, tax, values, onDone, onClear, onEmail }) {
   const apply = async () => {
     if (isTag && !value.trim()) return toast('Type a tag first');
     try {
-      const v = field === 'archived' ? value === 'yes' : value;
+      const v = value;
       const CLS = ['CL1', 'CL2', 'CL3', 'CL4', 'CL5', 'CL6', 'CL7', 'CL8', 'CL9'];
       const tags = field === 'tags+' ? { add: v.split(',') } : field === 'tags-' ? { remove: v.split(',') }
         : field === 'hw' ? { remove: CLS, add: v ? [v] : [] } : null;
@@ -217,10 +216,10 @@ function BulkBar({ ids, tax, values, onDone, onClear, onEmail }) {
     } catch (e) { toastError(e); }
   };
   const remove = async () => {
-    if (!confirm(`Delete ${plural(ids.length, 'record')}? Their history is removed (a daily backup is kept). Use Set > Archive to hide them instead.`)) return;
+    if (!confirm(`Move ${plural(ids.length, 'record')} to the Archive? They leave the register but stay searchable on the Archive page, where they can be restored or deleted for good.`)) return;
     try {
       const n = await call('deleteRecords', ids);
-      toast(`Deleted ${plural(n, 'record')}`, 'ok');
+      toast(`Moved ${plural(n, 'record')} to the Archive`, 'ok');
       onClear();
       onDone();
     } catch (e) { toastError(e); }
@@ -230,7 +229,6 @@ function BulkBar({ ids, tax, values, onDone, onClear, onEmail }) {
     : field === 'stage' ? html`<${Select} value=${value} onChange=${setValue} placeholder="(automatic)" options=${tax.stages} />`
     : field === 'disposition' ? html`<${Select} value=${value} onChange=${setValue} placeholder="(none)" options=${tax.dispositions} />`
       : field === 'portal_status' ? html`<${Select} value=${value} onChange=${setValue} options=${tax.portalStatuses} placeholder="Choose" />`
-        : field === 'archived' ? html`<${Select} value=${value} onChange=${setValue} options=${[{ value: 'yes', label: 'Archive' }, { value: 'no', label: 'Restore' }]} placeholder="Choose" />`
           : field === 'next_action_date' ? html`<input type="date" value=${value} onInput=${(e) => setValue(e.target.value)} />`
             : html`<input type="text" list=${list ? 'bulk-values' : null} value=${value} aria-label="Value"
                 placeholder=${isTag ? 'Tag, e.g. Retail or Program X' : 'Value (blank clears)'} onInput=${(e) => setValue(e.target.value)}
@@ -240,7 +238,7 @@ function BulkBar({ ids, tax, values, onDone, onClear, onEmail }) {
     ${input}${list ? html`<datalist id="bulk-values">${list.map((o) => html`<option value=${o} />`)}</datalist>` : null}
     <button class="btn primary" onClick=${apply}>Apply</button><span class="grow"></span>
     <button class="btn" onClick=${onEmail}><${Icon} name="mail" /> Draft email</button>
-    <button class="btn danger" onClick=${remove} title="Delete the selected records"><${Icon} name="trash" /> Delete ${ids.length}</button>
+    <button class="btn danger" onClick=${remove} title="Move the selected records to the Archive"><${Icon} name="trash" /> Delete ${ids.length}</button>
     <button class="btn" onClick=${onClear}>Clear selection</button></div>`;
 }
 

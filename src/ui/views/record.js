@@ -42,8 +42,8 @@ export function RecordDrawer({ id, app, onClose, tab: startTab }) {
     } catch (e) { toastError(e); } finally { setBusy(false); }
   };
   const del = async () => {
-    if (!confirm(`Delete ${form.device} · ${form.scheme} ${form.category}? Its history is removed. Archiving keeps it instead.`)) return;
-    try { await call('deleteRecord', id); toast('Deleted'); app.refresh(); onClose(); } catch (e) { toastError(e); }
+    if (!confirm(`Move ${form.device} · ${form.scheme} ${form.category} to the Archive? It leaves the register but stays searchable there, and can be restored or deleted for good from the Archive page.`)) return;
+    try { await call('deleteRecord', id); toast('Moved to the Archive', 'ok'); app.refresh(); onClose(); } catch (e) { toastError(e); }
   };
   const activate = async (approvalId) => {
     try { setData(await call('activateReplacement', approvalId)); toast('Replacement is now the current approval', 'ok'); app.refresh(); load(id); } catch (e) { toastError(e); }
@@ -81,8 +81,7 @@ export function RecordDrawer({ id, app, onClose, tab: startTab }) {
         <label class="field">Days left<input type="text" disabled value=${r ? daysLabel(r.days) : ''} /></label>
       </div>
       <div class="row gap-l mt"><label class="check"><input type="checkbox" checked=${form.restricted} onChange=${set('restricted')} /> Restricted / final extension</label>
-        <label class="check"><input type="checkbox" checked=${form.extension_used} onChange=${set('extension_used')} /> Extension already used</label>
-        <label class="check"><input type="checkbox" checked=${form.archived} onChange=${set('archived')} /> Archived</label></div>
+        <label class="check"><input type="checkbox" checked=${form.extension_used} onChange=${set('extension_used')} /> Extension already used</label></div>
 
       <div class="section-title">Ownership and next step</div>
       <div class="grid3">

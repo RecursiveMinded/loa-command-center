@@ -97,11 +97,27 @@ class AppApi {
     return this.getRecord(r.id);
   }
 
+  /** Deleting moves records to the Archive. */
   deleteRecord(id) { return this.store.deleteRecord(id); }
-  /** Delete several records; each deletion is written to the audit log. Returns how many were deleted. */
-  deleteRecords(ids) { return (ids || []).filter((id) => this.store.deleteRecord(id)).length; }
+  /** Move several records to the Archive. Returns how many moved. */
+  deleteRecords(ids) { return this.store.archiveRecords(ids, { reason: 'Deleted' }); }
 
-  bulkUpdate(ids, patch, tags = null) { return this.store.bulkUpdate(ids, patch || {}, { source: 'manual' }, tags); }
+  bulkUpdate(ids, patch, tags = null) {
+    const p = { ...(patch || {}) };
+    if (p.archived) return { changed: this.store.archiveRecords(ids, { reason: 'Archived' }), skipped: [] };
+    delete p.archived;
+    return this.store.bulkUpdate(ids, p, { source: 'manual' }, tags);
+  }
+
+  // ----------------------------------------------------------------- archive
+  listArchive(q = '') { return this.store.listArchive({ q }); }
+  archiveCount() { return this.db.get('SELECT COUNT(*) n FROM archive').n; }
+  /** Records past their expiry date, for the Archive page's "Move expired records here". */
+  expiredRecords() { return this.store.expiredRecords(); }
+  archiveExpired() { return this.store.archiveRecords(this.store.expiredRecords().map((r) => r.id), { reason: 'Expired' }); }
+  restoreArchived(ids) { return this.store.restoreArchived(ids); }
+  /** The only permanent delete in the app. */
+  purgeArchived(ids) { return this.store.purgeArchived(ids); }
 
   listTags() { return this.store.allTags(); }
 
@@ -112,6 +128,13 @@ class AppApi {
       const k = this.store.norm()(r.device);
       const e = by.get(k) || { device: r.device, records: 0, archived: 0, schemes: new Set() };
       e.records++; if (r.archived) e.archived++; e.schemes.add(r.scheme);
+      by.set(k, e);
+    }
+    // Archived records still teach the app their device names.
+    for (const r of this.db.all('SELECT device, scheme FROM archive')) {
+      const k = this.store.norm()(r.device);
+      const e = by.get(k) || { device: r.device, records: 0, archived: 0, schemes: new Set() };
+      e.records++; e.archived++; e.schemes.add(r.scheme);
       by.set(k, e);
     }
     return [...by.values()].map((e) => ({ ...e, schemes: [...e.schemes].filter(Boolean).sort() }))
@@ -382,7 +405,7 @@ class AppApi {
   clearAllData() {
     this.backup('before-clear');
     this.db.tx(() => {
-      for (const t of ['document_links', 'approvals', 'inbox', 'documents', 'audit', 'tasks', 'records', 'imports', 'notifications']) this.db.run(`DELETE FROM ${t}`);
+      for (const t of ['document_links', 'approvals', 'inbox', 'documents', 'audit', 'tasks', 'records', 'archive', 'imports', 'notifications']) this.db.run(`DELETE FROM ${t}`);
     });
     this.store.setSettings({ sampleLoaded: false });
     return true;
@@ -474,6 +497,7 @@ class AppApi {
     }
     this.store.setSettings({ appVersion: VERSION });
     this.store.tagReaders();
+    this.store.migrateArchivedFlag();
     // A new version may read letters better; refresh what is waiting for review.
     if (this.store.listInbox({ status: 'pending' }).length || this.store.listInbox({ status: 'info' }).length) this.intake.reread();
     return file;
@@ -536,6 +560,7 @@ class AppApi {
 // Methods the UI may call. Anything else is rejected by the IPC/HTTP bridges.
 const PUBLIC_METHODS = [
   'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'deleteRecords', 'bulkUpdate',
+  'listArchive', 'archiveCount', 'expiredRecords', 'archiveExpired', 'restoreArchived', 'purgeArchived',
   'activateReplacement', 'listTags', 'knownDevices', 'listAliases', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
   'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
   'documentText', 'unlinkDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',

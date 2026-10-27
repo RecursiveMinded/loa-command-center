@@ -202,14 +202,112 @@ class Store {
     return changed.map((c) => c[0]);
   }
 
-  deleteRecord(id, { actor = this.actor } = {}) {
-    const cur = this.getRecord(id);
-    if (!cur) return false;
+  /** Deleting a record moves it to the Archive; only the Archive deletes for good. */
+  deleteRecord(id, { actor = this.actor, reason = 'Deleted' } = {}) {
+    return this.archiveRecords([id], { actor, reason }) === 1;
+  }
+
+  /**
+   * Move records out of the register into the Archive. Each one keeps a full
+   * snapshot (fields, approvals, linked LOAs, history) so it can be searched
+   * or restored later. Returns how many moved.
+   */
+  archiveRecords(ids, { actor = this.actor, reason = 'Deleted' } = {}) {
+    let n = 0;
     this.db.tx(() => {
-      this.audit(id, 'delete', '', `${cur.device} | ${cur.category} | ${cur.scheme}`, '', 'manual', actor);
-      this.db.run('DELETE FROM records WHERE id=?', [id]);
+      for (const id of ids || []) {
+        const rec = this.db.get('SELECT * FROM records WHERE id=?', [id]);
+        if (!rec) continue;
+        const approvals = this.db.all('SELECT approval_number, issue_date, expiry_date, role, document_id, note, created_at, created_by FROM approvals WHERE record_id=? ORDER BY id', [id]);
+        const documents = this.db.all('SELECT d.id, d.filename FROM document_links l JOIN documents d ON d.id = l.document_id WHERE l.record_id=?', [id]);
+        this.audit(id, 'archive', '', `${rec.device} | ${rec.category} | ${rec.scheme}`, reason, 'manual', actor);
+        const history = this.db.all('SELECT ts, actor, action, field, old_value, new_value, source FROM audit WHERE record_id=? ORDER BY id', [id]);
+        const data = { record: rec, approvals, documents, history };
+        const search = [
+          ...Object.values(rec), ...approvals.flatMap((a) => [a.approval_number, a.issue_date, a.expiry_date, a.note]),
+          ...documents.map((d) => d.filename), ...history.flatMap((h) => [h.old_value, h.new_value]), reason,
+        ].filter((v) => v != null && v !== '').join(' ').toLowerCase();
+        this.db.run(`INSERT OR REPLACE INTO archive(id, device, category, scheme, platform, bundle, approval_number, expiry_date, data, search, reason, archived_at, archived_by)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, [id, rec.device, rec.category, rec.scheme, rec.platform || '', rec.bundle || '', rec.approval_number || '',
+          rec.expiry_date || null, JSON.stringify(data), search, reason, nowIso(), actor || '']);
+        this.db.run('DELETE FROM records WHERE id=?', [id]);
+        n++;
+      }
     });
-    return true;
+    return n;
+  }
+
+  /** Records whose expiry date has passed (as of asOf, YYYY-MM-DD). */
+  expiredRecords(asOf = nowIso().slice(0, 10)) {
+    return this.db.all("SELECT id, device, category, scheme, expiry_date FROM records WHERE expiry_date IS NOT NULL AND expiry_date <> '' AND expiry_date < ? ORDER BY expiry_date", [asOf]);
+  }
+
+  /** Archived records. Every word in q must appear somewhere in the record, its approvals, LOA file names or history. */
+  listArchive({ q = '' } = {}) {
+    const words = String(q).toLowerCase().split(/\s+/).filter(Boolean);
+    const where = words.map(() => 'search LIKE ?').join(' AND ');
+    const rows = this.db.all(`SELECT id, device, category, scheme, platform, bundle, approval_number, expiry_date, reason, archived_at, archived_by, data
+      FROM archive ${where ? `WHERE ${where}` : ''} ORDER BY archived_at DESC, device`, words.map((w) => `%${w}%`));
+    return rows.map((r) => {
+      let d = {};
+      try { d = JSON.parse(r.data); } catch (_) { /* keep the summary columns */ }
+      const rec = d.record || {};
+      delete r.data;
+      return { ...r, vendor: rec.vendor || '', kernel_version: rec.kernel_version || '', tags: rec.tags || '', owner: rec.owner || '',
+        issue_date: rec.issue_date || null, approvals: d.approvals || [], documents: d.documents || [], history: d.history || [] };
+    });
+  }
+
+  /** Put archived records back in the register. Ones that clash with a current record stay archived and are reported. */
+  restoreArchived(ids, { actor = this.actor } = {}) {
+    const out = { restored: 0, skipped: [] };
+    this.db.tx(() => {
+      for (const id of ids || []) {
+        const row = this.db.get('SELECT data FROM archive WHERE id=?', [id]);
+        if (!row) continue;
+        const d = JSON.parse(row.data);
+        const rec = { ...d.record, archived: 0 };
+        const label = `${rec.device} · ${rec.scheme} ${rec.category}`;
+        if (this.db.get('SELECT id FROM records WHERE id=?', [id])) { out.skipped.push({ id, label, reason: 'already in the register' }); continue; }
+        rec.rkey = this.recordKey(rec);
+        if (this.db.get('SELECT id FROM records WHERE rkey=?', [rec.rkey])) { out.skipped.push({ id, label, reason: 'a current record has the same device, type and brand' }); continue; }
+        const cols = Object.keys(rec).filter((c) => c !== 'doc_count');
+        this.db.run(`INSERT INTO records(${cols.join(',')}) VALUES(${cols.map(() => '?').join(',')})`, cols.map((c) => rec[c]));
+        for (const a of d.approvals || []) {
+          const doc = a.document_id && this.db.get('SELECT id FROM documents WHERE id=?', [a.document_id]) ? a.document_id : null;
+          this.db.run('INSERT INTO approvals(record_id, approval_number, issue_date, expiry_date, role, document_id, note, created_at, created_by) VALUES(?,?,?,?,?,?,?,?,?)',
+            [id, a.approval_number || '', a.issue_date || null, a.expiry_date || null, a.role || 'current', doc, a.note || '', a.created_at || nowIso(), a.created_by || '']);
+        }
+        for (const doc of d.documents || []) {
+          if (this.db.get('SELECT id FROM documents WHERE id=?', [doc.id])) this.db.run('INSERT OR IGNORE INTO document_links(document_id, record_id) VALUES(?,?)', [doc.id, id]);
+        }
+        this.db.run('DELETE FROM archive WHERE id=?', [id]);
+        this.audit(id, 'restore', '', '', 'Restored from the Archive', 'manual', actor);
+        out.restored++;
+      }
+    });
+    return out;
+  }
+
+  /** Permanently delete archived records. This is the only way a record leaves the app for good. */
+  purgeArchived(ids, { actor = this.actor } = {}) {
+    let n = 0;
+    this.db.tx(() => {
+      for (const id of ids || []) {
+        const row = this.db.get('SELECT device, category, scheme FROM archive WHERE id=?', [id]);
+        if (!row) continue;
+        this.audit(id, 'delete', '', `${row.device} | ${row.category} | ${row.scheme}`, 'Deleted permanently from the Archive', 'manual', actor);
+        this.db.run('DELETE FROM archive WHERE id=?', [id]);
+        n++;
+      }
+    });
+    return n;
+  }
+
+  /** Records hidden with the old Archived checkbox move to the Archive page. */
+  migrateArchivedFlag() {
+    const ids = this.db.all('SELECT id FROM records WHERE archived = 1').map((r) => r.id);
+    return ids.length ? this.archiveRecords(ids, { reason: 'Archived' }) : 0;
   }
 
   /** Tag every record whose device names a reader version (CL1, CL2...) with it. Returns how many changed. */
