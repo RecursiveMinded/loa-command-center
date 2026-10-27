@@ -19,6 +19,8 @@ const { sampleRecords } = require('./sample');
 const schedule = require('./schedule');
 
 const VERSION = require('../../package.json').version;
+// Card brands whose L2 contactless approval a reader needs (US market by default; editable in Settings).
+const DEFAULT_BRANDS = ['Visa', 'Mastercard', 'Amex', 'Discover', 'UnionPay', 'JCB', 'Interac'];
 
 class AppApi {
   static async create({ dataDir, actor = '' }) {
@@ -139,6 +141,83 @@ class AppApi {
     }
     return [...by.values()].map((e) => ({ ...e, schemes: [...e.schemes].filter(Boolean).sort() }))
       .sort((a, b) => a.device.localeCompare(b.device, undefined, { numeric: true }));
+  }
+
+  // --------------------------------------------------------------- coverage
+  /**
+   * What each device needs to be certified. A contact device needs PCI, L1
+   * Contact and TQM; a contactless reader (CL1, CL2...) needs L1 Contactless,
+   * TQM and an L2 Contactless approval from every required brand. Each cell
+   * holds the record that covers it, or is missing / not applicable.
+   */
+  deviceCoverage() {
+    const s = this.store.getSettings();
+    const brands = s.requiredBrands && s.requiredBrands.length ? s.requiredBrands : DEFAULT_BRANDS;
+    const na = s.coverageNA || {};
+    const contact = [
+      { key: 'pci', label: 'PCI', group: 'Contact device', category: 'PCI PTS' },
+      { key: 'l1c', label: 'L1 Contact', group: 'Contact device', category: 'EMV L1 Contact' },
+      { key: 'tqm', label: 'TQM', group: 'Contact device', category: 'TQM' },
+    ];
+    const reader = [
+      { key: 'l1cl', label: 'L1 Contactless', group: 'Contactless reader', category: 'EMV L1 Contactless' },
+      { key: 'tqmcl', label: 'TQM', group: 'Contactless reader', category: 'TQM' },
+      ...brands.map((b) => ({ key: `l2:${b}`, label: b, group: 'L2 Contactless', category: 'EMV L2 Contactless', scheme: b })),
+    ];
+    const n = this.store.norm();
+    const devices = new Map();
+    for (const r of this.listRecords()) {
+      const key = n(r.device);
+      const grp = [r.platform, r.bundle].filter(Boolean).join(' · ') || 'Unassigned';
+      const k = `${grp}||${key}`;
+      if (!devices.has(k)) devices.set(k, { grp, platform: r.platform || '', bundle: r.bundle || '', device: r.device, key, records: [] });
+      devices.get(k).records.push(r);
+    }
+    const better = (a, b) => (!b || (a.days ?? -1e9) > (b.days ?? -1e9) ? a : b);
+    const rows = [];
+    let missing = 0;
+    for (const d of devices.values()) {
+      const isReader = /CL\d+$/.test(d.key);
+      const hasCless = d.records.some((r) => /Contactless/.test(r.category));
+      // A device with a built-in reader but no CL suffix needs both sets.
+      const slots = isReader ? reader : hasCless ? [...contact, ...reader] : contact;
+      const cells = {};
+      for (const slot of [...contact, ...reader]) {
+        const hits = d.records.filter((r) => r.category === slot.category && (!slot.scheme || String(r.scheme).toLowerCase() === slot.scheme.toLowerCase()));
+        const rec = hits.reduce((b, r) => better(r, b), null);
+        const needed = slots.includes(slot);
+        const isNa = (na[d.key] || []).includes(slot.key);
+        const status = rec ? (rec.expiry_date ? 'ok' : 'nodate') : isNa ? 'na' : needed ? 'missing' : 'none';
+        if (status === 'missing') missing++;
+        cells[slot.key] = { status, record: rec ? { id: rec.id, expiry_date: rec.expiry_date, days: rec.days, health: rec.health, approval_number: rec.approval_number, scheme: rec.scheme } : null };
+      }
+      rows.push({ grp: d.grp, platform: d.platform, bundle: d.bundle, device: d.device, key: d.key, reader: isReader,
+        missing: Object.values(cells).filter((c) => c.status === 'missing').length, cells });
+    }
+    rows.sort((a, b) => a.grp.localeCompare(b.grp, undefined, { numeric: true }) || a.device.localeCompare(b.device, undefined, { numeric: true }));
+    return { columns: [...contact, ...reader].map(({ key, label, group }) => ({ key, label, group })), rows, missing, brands };
+  }
+
+  /** Mark a required certification as not applicable to a device (e.g. no contact reader), or undo that. */
+  setCoverageNA(deviceKey, slotKey, value = true) {
+    const na = { ...(this.store.getSettings().coverageNA || {}) };
+    const list = new Set(na[deviceKey] || []);
+    if (value) list.add(slotKey); else list.delete(slotKey);
+    if (list.size) na[deviceKey] = [...list]; else delete na[deviceKey];
+    this.store.setSettings({ coverageNA: na });
+    return na;
+  }
+
+  /** Create empty records for missing certifications: [{ device, platform, bundle, slot }]. Returns how many were created. */
+  createMissing(items) {
+    const SLOT = { pci: ['PCI PTS', 'PCI SSC'], l1c: ['EMV L1 Contact', 'EMVCo'], tqm: ['TQM', 'Mastercard TQM'], l1cl: ['EMV L1 Contactless', 'EMVCo'], tqmcl: ['TQM', 'Mastercard TQM'] };
+    let n = 0;
+    for (const it of items || []) {
+      const [category, scheme] = it.slot.startsWith('l2:') ? ['EMV L2 Contactless', it.slot.slice(3)] : SLOT[it.slot] || [];
+      if (!category) continue;
+      try { this.store.createRecord({ device: it.device, platform: it.platform, bundle: it.bundle, category, scheme }, { source: 'manual', note: 'Created from device coverage' }); n++; } catch (_) { /* already exists */ }
+    }
+    return n;
   }
 
   /** Make a replacement approval the current one (audited). */
@@ -578,6 +657,8 @@ class AppApi {
     this.store.setSettings({ appVersion: VERSION });
     this.store.tagReaders();
     this.store.migrateArchivedFlag();
+    this.store.migrateL2Contact();
+    this.store.unifyDeviceSpellings();
     // A new version may read letters better; refresh what is waiting for review.
     if (this.store.listInbox({ status: 'pending' }).length || this.store.listInbox({ status: 'info' }).length) this.intake.reread();
     return file;
@@ -641,7 +722,7 @@ class AppApi {
 const PUBLIC_METHODS = [
   'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'deleteRecords', 'bulkUpdate',
   'listArchive', 'archiveCount', 'expiredRecords', 'archiveExpired', 'restoreArchived', 'purgeArchived',
-  'activateReplacement', 'listTags', 'knownDevices', 'listAliases', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
+  'activateReplacement', 'deviceCoverage', 'setCoverageNA', 'createMissing', 'listTags', 'knownDevices', 'listAliases', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
   'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
   'documentText', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',

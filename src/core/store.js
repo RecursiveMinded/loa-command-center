@@ -22,7 +22,7 @@ const DEFAULT_SETTINGS = {
   thresholds: [365, 180, 90, 60, 30],
   // Days before expiry that renewal work should start, per approval category.
   leadTimes: {
-    'EMV L1 Contact': 180, 'EMV L1 Contactless': 180, 'EMV L2 Contact': 120,
+    'EMV L1 Contact': 180, 'EMV L1 Contactless': 180,
     'EMV L2 Contactless': 120, 'PCI PTS': 270, TQM: 60, 'Letter of Equivalency': 0, Other: 90,
   },
   autoApproveConfidence: 90,
@@ -147,6 +147,7 @@ class Store {
     rec.category = normalizeCategory(rec.category || 'Other');
     rec.scheme = normalizeScheme(rec.scheme || '');
     for (const f of ALIAS_FIELDS) if (rec[f]) rec[f] = this.aliasValue(f, rec[f]);
+    rec.device = this.deviceSpelling(rec.device);
     rec.tags = withReaderTag(rec.tags, rec.device);
     if (!rec.tags) delete rec.tags;
     const rkey = this.recordKey(rec);
@@ -308,6 +309,58 @@ class Store {
   migrateArchivedFlag() {
     const ids = this.db.all('SELECT id FROM records WHERE archived = 1').map((r) => r.id);
     return ids.length ? this.archiveRecords(ids, { reason: 'Archived' }) : 0;
+  }
+
+  /**
+   * One device, one name: "Lane/3000 CL1" and "Lane/3000-CL1" are the same
+   * device, so a new record takes the spelling already in use. A reader
+   * variant (CL1, CL2...) is a different device and keeps its own name.
+   */
+  deviceSpelling(name) {
+    const key = this.norm()(name);
+    if (!key) return name;
+    const counts = new Map();
+    for (const r of this.db.all('SELECT device FROM records')) if (this.norm()(r.device) === key) counts.set(r.device, (counts.get(r.device) || 0) + 1);
+    if (!counts.size || counts.has(name)) return counts.size > 1 ? bestSpelling(counts) : name;
+    return bestSpelling(counts);
+  }
+
+  /** Rename spelling variants of one device to its most used spelling. Returns how many records changed. */
+  unifyDeviceSpellings({ actor = this.actor } = {}) {
+    const groups = new Map();
+    for (const r of this.db.all('SELECT id, device FROM records')) {
+      const k = this.norm()(r.device);
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(r);
+    }
+    let n = 0;
+    this.db.tx(() => {
+      for (const rows of groups.values()) {
+        const counts = new Map();
+        for (const r of rows) counts.set(r.device, (counts.get(r.device) || 0) + 1);
+        if (counts.size < 2) continue;
+        const best = bestSpelling(counts);
+        for (const r of rows) {
+          if (r.device === best) continue;
+          try { if (this.updateRecord(r.id, { device: best }, { source: 'spelling', actor }).length) n++; } catch (_) { /* clash: leave it for the user */ }
+        }
+      }
+    });
+    return n;
+  }
+
+  /** "EMV L2 Contact" is not a per-device approval; file old records as Other with a tag. */
+  migrateL2Contact({ actor = this.actor } = {}) {
+    let n = 0;
+    this.db.tx(() => {
+      for (const r of this.db.all("SELECT id, tags FROM records WHERE category = 'EMV L2 Contact'")) {
+        try {
+          this.updateRecord(r.id, { category: 'Other', tags: joinTags([...splitTags(r.tags), 'L2 Contact']) }, { source: 'upgrade', actor });
+          n++;
+        } catch (_) { /* clash with an existing Other record: leave it */ }
+      }
+    });
+    return n;
   }
 
   /** Tag every record whose device names a reader version (CL1, CL2...) with it. Returns how many changed. */
@@ -530,6 +583,12 @@ function withReaderTag(tags, device, replace = false) {
   if (replace) list = list.filter((t) => !/^CL\d$/i.test(t));
   if (cl && !list.some((t) => t.toUpperCase() === cl)) list.push(cl);
   return joinTags(list);
+}
+
+/** The most used spelling; ties go to the most formatted one (Lane/3000-CL1 over LANE3000CL1). */
+function bestSpelling(counts) {
+  const score = (d) => (/[/\-\s]/.test(d) ? 1 : 0) + (/[a-z]/.test(d) ? 1 : 0);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || score(b[0]) - score(a[0]) || a[0].localeCompare(b[0]))[0][0];
 }
 
 function fixRow(r) {

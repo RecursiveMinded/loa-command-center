@@ -128,7 +128,7 @@ class LocalAI {
    * help locate facts but can never introduce them.
    */
   async assistExtract(letterText, missing) {
-    const prompt = `From this Letter of Approval text, return JSON with keys: issuer, category (one of: EMV L1 Contact, EMV L1 Contactless, EMV L2 Contact, EMV L2 Contactless, PCI PTS, TQM, Other), approval_number, products (array of device names), issue_date, expiry_date. Copy values exactly as written in the text. Use null when absent.\n\nTEXT:\n${letterText.slice(0, 6000)}`;
+    const prompt = `From this Letter of Approval text, return JSON with keys: issuer, category (one of: EMV L1 Contact, EMV L1 Contactless, EMV L2 Contactless, PCI PTS, TQM, Other), approval_number, products (array of device names), issue_date, expiry_date. Copy values exactly as written in the text. Use null when absent.\n\nTEXT:\n${letterText.slice(0, 6000)}`;
     const raw = await this.chat([{ role: 'user', content: prompt }], { json: true, temperature: 0 });
     let obj;
     try { obj = JSON.parse(raw.replace(/^```json|```$/g, '').trim()); } catch (_) { throw new Error('The AI answer was not valid JSON'); }

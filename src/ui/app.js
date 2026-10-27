@@ -11,6 +11,7 @@ import { Inbox } from './views/inbox.js';
 import { Reports, ReportModal } from './views/reports.js';
 import { Settings } from './views/settings.js';
 import { Archive } from './views/archive.js';
+import { Devices } from './views/devices.js';
 import { RecordDrawer } from './views/record.js';
 import { Assistant } from './views/assistant.js';
 import { selfTest } from './selftest.js';
@@ -22,6 +23,7 @@ const NAV = [
   ['dashboard', 'Today', 'home'],
   ['plan', 'Action plan', 'plan'],
   ['register', 'Certifications', 'list'],
+  ['devices', 'Devices', 'shield'],
   ['matrix', 'Matrix', 'grid'],
   ['inbox', 'LOA inbox', 'inbox'],
   ['reports', 'Reports', 'report'],
@@ -116,7 +118,7 @@ function App() {
     openRecord: (id, tab) => { setRecordTab(tab || null); setRecord(id); }, openReport: (opts) => setReport(opts && !(opts instanceof Event) ? opts : {}),
     openAi: () => setAi(true), search, setSearch,
   };
-  const View = { dashboard: Dashboard, plan: Plan, register: Register, matrix: Matrix, inbox: Inbox, reports: Reports, archive: Archive, settings: Settings }[route.name] || Dashboard;
+  const View = { dashboard: Dashboard, plan: Plan, register: Register, devices: Devices, matrix: Matrix, inbox: Inbox, reports: Reports, archive: Archive, settings: Settings }[route.name] || Dashboard;
 
   return html`<div class="app">
     <nav class="side" aria-label="Main">

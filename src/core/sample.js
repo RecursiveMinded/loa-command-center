@@ -28,7 +28,7 @@ function sampleRecords(asOf = todayIso()) {
         });
       }
     }
-    out.push({ platform, bundle: 'Bundle 3', device: 'Kernel family', category: 'EMV L2 Contact', scheme: 'EMVCo', kernel_version: '9.06', expiry_date: d(430) });
+    out.push({ platform, bundle: 'Bundle 3', device: 'Kernel family', category: 'Other', scheme: 'EMVCo', tags: 'Contact kernel', kernel_version: '9.06', expiry_date: d(430) });
   }
   // A few records with data gaps, to show the data-quality actions.
   out.push({ platform: 'Platform B', bundle: 'Bundle 2', device: 'T100-CL1', category: 'EMV L2 Contactless', scheme: 'Visa', expiry_date: null });

@@ -55,7 +55,7 @@ function mapHeaders(headers) {
 function sheetHint(name) {
   const n = String(name || '');
   const cat = normalizeCategory(n);
-  return ['EMV L1 Contact', 'EMV L1 Contactless', 'EMV L2 Contact', 'EMV L2 Contactless', 'PCI PTS', 'TQM'].includes(cat) ? cat : '';
+  return ['EMV L1 Contact', 'EMV L1 Contactless', 'EMV L2 Contactless', 'PCI PTS', 'TQM'].includes(cat) ? cat : '';
 }
 
 function cellValue(v) {
@@ -93,6 +93,16 @@ function certDbMap(headers) {
 }
 
 /** Turn a 2D array into normalized record candidates. */
+function looksLikeDevice(name) {
+  const s = String(name).trim();
+  if (s.length > 40 || s.split(/\s+/).length > 4 || /[.;:!?]$/.test(s)) return false;
+  if (/^(terminal|device|model|product|l[12]\b.*|level\s*[12].*|emv\b.*|pci\b.*|tqm\b.*)$/i.test(s)) return false;
+  return /\d/.test(s);
+}
+
+/** Summary, glossary and notes sheets repeat or describe data; they are not records. */
+const SKIP_SHEETS = /^(dashboard|summary|overview|glossary|legend|definitions?|notes|readme|instructions|lists?)$/i;
+
 function rowsToRecords(table, { sheetName = '', defaults = {} } = {}) {
   let headerIdx = -1, map = null;
   for (let i = 0; i < Math.min(15, table.length); i++) {
@@ -108,6 +118,8 @@ function rowsToRecords(table, { sheetName = '', defaults = {} } = {}) {
     const get = (f) => (map[f] != null ? cellValue(row[map[f]]) : '');
     let device = String(get('device') || '').trim();
     if (!device) { skipped++; continue; }
+    // Glossary and heading rows ("Terminal", "L1 EMV Contact", a sentence) are not devices.
+    if (!looksLikeDevice(device)) { skipped++; continue; }
     // Cert database rows give the reader version separately ("Lane/3600" + "CL1").
     const cfg = String(get('config') || '').trim().toUpperCase();
     if (/^CL\d$/.test(cfg) && /contactless|cless/i.test(String(get('category'))) && !/CL\d\s*$/i.test(device)) device = `${device}-${cfg}`;
@@ -123,7 +135,7 @@ function rowsToRecords(table, { sheetName = '', defaults = {} } = {}) {
     if (!category) category = scheme && !['EMVCo', 'PCI SSC'].includes(scheme) ? 'EMV L2 Contactless' : 'Other';
     if (category === 'TQM') scheme = 'Mastercard TQM';
     if (!scheme || scheme === rawScheme && /contact|level|emv\b/i.test(rawScheme)) {
-      scheme = category === 'PCI PTS' ? 'PCI SSC' : category.startsWith('EMV L1') || category === 'EMV L2 Contact' ? 'EMVCo' : category === 'TQM' ? 'Mastercard TQM' : (scheme || 'Other');
+      scheme = category === 'PCI PTS' ? 'PCI SSC' : category.startsWith('EMV L1') ? 'EMVCo' : category === 'TQM' ? 'Mastercard TQM' : (scheme || 'Other');
     }
     const rec = {
       platform: String(get('platform') || defaults.platform || '').trim(),
@@ -272,6 +284,7 @@ async function importTracker(store, { filename, bytes, dryRun = false, defaults 
   const keep = dbSheets.length > 1 ? dbSheets.reduce((a, b) => (Math.max(...b.rows.slice(0, 15).map((r) => r.length)) > Math.max(...a.rows.slice(0, 15).map((r) => r.length)) ? b : a)) : null;
   for (const s of sheets) {
     if (keep && isDb(s) && s !== keep) { sheetReports.push({ sheet: s.name, rows: 0, skipped: 0, mapping: null, note: `Same LoAs as "${keep.name}"` }); continue; }
+    if (SKIP_SHEETS.test(String(s.name).trim()) && sheets.length > 1) { sheetReports.push({ sheet: s.name, rows: 0, skipped: s.rows.length, mapping: null, note: 'Summary or glossary sheet' }); continue; }
     const { records, skipped, mapping } = rowsToRecords(s.rows, { sheetName: s.name, defaults });
     sheetReports.push({ sheet: s.name, rows: records.length, skipped, mapping });
     all.push(...records);

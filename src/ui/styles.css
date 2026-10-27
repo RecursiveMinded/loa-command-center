@@ -374,3 +374,7 @@ tr td.row-del .iconbtn:focus-visible { opacity: 1; }
 tr.detail > td { background: var(--panel-2, rgba(127,127,127,.06)); }
 .archive-detail { padding: 6px 0 10px; }
 .archive-detail .section-title { margin-top: 10px; }
+table.cov .cell.miss { background: transparent; border: 1px dashed var(--crit); color: var(--crit); cursor: default; }
+table.cov .cell.miss .linkbtn { font-size: 11px; padding: 0; }
+table.cov .cell.na { background: transparent; border: 1px solid var(--line); color: var(--faint); font-size: 11px; }
+.legend i.miss { background: transparent; border: 1px dashed var(--crit); }
