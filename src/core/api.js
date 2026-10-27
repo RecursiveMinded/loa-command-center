@@ -214,6 +214,8 @@ class AppApi {
   approveAllSafe() { return this.intake.approveAllSafe({ actor: this.store.actor }); }
 
   rematch() { return this.intake.rematch(); }
+  /** Read the files behind these review items (all waiting items when none given) again. */
+  rereadInbox(ids) { return this.intake.reread(ids && ids.length ? ids : undefined); }
 
   listDocuments() { return this.store.listDocuments(); }
 
@@ -423,8 +425,9 @@ class AppApi {
       fs.writeFileSync(file, before);
     }
     this.store.setSettings({ appVersion: VERSION });
+    this.store.tagReaders();
     // A new version may read letters better; refresh what is waiting for review.
-    if (this.store.listInbox({ status: 'pending' }).length) this.intake.rematch();
+    if (this.store.listInbox({ status: 'pending' }).length || this.store.listInbox({ status: 'info' }).length) this.intake.reread();
     return file;
   }
 
@@ -486,7 +489,7 @@ class AppApi {
 const PUBLIC_METHODS = [
   'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'bulkUpdate',
   'activateReplacement', 'listTags', 'knownDevices', 'listAliases', 'setAlias', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
-  'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'listDocuments',
+  'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
   'documentText', 'unlinkDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
   'aiDraftEmail', 'backup', 'listBackups', 'restore', 'health',

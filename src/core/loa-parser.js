@@ -348,23 +348,32 @@ const ISSUERS = {
     // product gets its own label, interface (IFM = contact, PCD = contactless)
     // and expiry.
     products: (t) => {
+      // The table is printed block by block (one component per block, blocks
+      // separated by blank lines); each block names its TQM label, interface,
+      // the devices it covers and the label's expiry.
       const out = [];
       const seen = new Set();
-      const rowRe = new RegExp(`(?:AXIUM\\s+)?([A-Z][A-Za-z]*\\/?\\d{3,5}[A-Za-z]{0,3}(?:[-\\s]CL\\d)?)\\s+(\\d{1,2}(?:st|nd|rd|th)?\\s+${MONTH_RE}\\.?\\s+\\d{4})`, 'gi');
-      let m;
-      while ((m = rowRe.exec(t))) {
-        const before = t.slice(Math.max(0, m.index - 260), m.index);
-        const labels = [...before.matchAll(/(TQM\d{3,6}\/\d{2})(?:\/\w+)?\s+\S*?(IFM|PCD)?/gi)];
-        const last = labels[labels.length - 1];
-        const iface = (before.match(/\b(IFM|PCD)\b(?![\s\S]*\b(?:IFM|PCD)\b)/i) || [])[1];
-        const key = `${m[1].toUpperCase()}|${iface || ''}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const f = field(m[1], m[0], 0.8);
-        f.expiry = parseDate(m[2]);
-        if (last) f.label = last[1];
-        if (iface) f.interface = iface.toUpperCase() === 'PCD' ? 'Contactless (PCD)' : 'Contact (IFM)';
-        out.push(f);
+      const dateRe = new RegExp(`(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_RE})\\.?\\s+(\\d{4})`, 'i');
+      for (const block of t.split(/\n[ \t]*\n/)) {
+        const lab = block.match(/\b(TQM\d{3,6}\/\d{2})(?:\/\w+)?/i);
+        if (!lab) continue;
+        const iface = (block.match(/\b(IFM|PCD)\b/) || [])[1];
+        const dm = block.match(dateRe);
+        const expiry = dm ? parseDate(dm[0].replace(/(\d)(?:st|nd|rd|th)/i, '$1').replace('.', '')) : null;
+        const devRe = /(?:AXIUM\s+)?\b((?:Desk|Lane|Move|Self|Link|Open|Flex|Tetra|iPP|iSC|iWL|iCT|DX|EX|RX|SX|[A-Z][a-z]{2,8})[\/ ]?\d{3,5}[A-Z]?)\b/g;
+        let m;
+        while ((m = devRe.exec(block))) {
+          const v = m[1].replace(/^([A-Za-z]+)\s(\d)/, '$1/$2');
+          if (/^(?:Version|Template|Pages?|Sites?)\b/i.test(v) || new RegExp(`^${MONTH_RE}\\b`, 'i').test(v)) continue;
+          const key = `${v.toUpperCase().replace(/[^A-Z0-9]/g, '')}|${iface || ''}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const f = field(v, block.replace(/\s+/g, ' ').slice(0, 200), 0.8);
+          f.label = lab[1];
+          if (expiry) f.expiry = expiry;
+          if (iface) f.interface = iface.toUpperCase() === 'PCD' ? 'Contactless (PCD)' : 'Contact (IFM)';
+          out.push(f);
+        }
       }
       return out;
     },
@@ -404,7 +413,7 @@ const ISSUERS = {
       // The certificate prints its table as values then labels; the model
       // follows the certificate number.
       const m = t.match(/\bQP-\d{2,6}\s+(\S.{1,30}?)\s+(?:Certificate|Operation|Product|Kernel)/i);
-      if (m && /\d{3}/.test(m[1])) return splitProducts(m[1]).map((v) => field(v, m[0], 0.8));
+      if (m && /\d{3}/.test(m[1])) return splitProducts(m[1].replace(/^(?:Product\s+)?Model\s*:?\s*/i, '')).map((v) => field(v, m[0], 0.8));
       // OCR noise can push labels between the number and the model; take the
       // first device-like name after the certificate number.
       const qp = t.search(/\bQP-\d{2,6}\b/);
@@ -462,14 +471,32 @@ const ISSUERS = {
   },
 
   bulletin: {
-    issuer: 'Manufacturer', scheme: 'Other', category: () => 'Other', informational: true,
+    issuer: 'Manufacturer', scheme: 'EMVCo', informational: true,
+    category: (t) => (/Level\s*1\s+Contactless|\bPCD\b/i.test(t.slice(0, 400)) ? 'EMV L1 Contactless' : /Level\s*1\s+Contact/i.test(t.slice(0, 400)) ? 'EMV L1 Contact' : 'Other'),
+    // The line under the title lists the devices: "Lane/3000 N, Desk/1500 N,".
     products: (t) => {
-      const m = t.match(/Product\s+Configuration\s+Bulletin\s*[–-]?\s*(?:IFM|PCD)?\s*([A-Z][A-Za-z]*\/?\d{3,5}\S*)/i);
-      return m ? [field(m[1], m[0], 0.6)] : [];
+      const m = t.match(/Product\s+Configuration\s+Bulletin\s*\n\s*([^\n]+)/i);
+      const line = m ? m[1] : (t.match(/(?:IFM|PCD)\s+identification\s*-\s*([^\n]+)/i) || [])[1];
+      if (!line) return [];
+      return line.split(/,\s*/).map((v) => v.replace(/\s+N$/, '').trim()).filter((v) => /\d{3}/.test(v) && v.length <= 30)
+        .map((v) => field(v, line, 0.7));
     },
-    dates: (t, base) => ({ issue: dateAfter(t, /Date:/i, 30) || base.letterDate, expiry: null, basis: 'Supporting bulletin (no expiry)' }),
+    approval: (t) => grab(t, /\b(\d{5}\s+\d{4}\s+\d{3}\s+\w{2,4}(?:\s+\w{2,4})?\s+[A-Z]{3,4})\b/, 0.7),
+    // The table wraps unpredictably, so its dates are not read: the L1 letter itself carries the expiry.
+    dates: (t, base) => ({ issue: dateAfter(t, /Date:/i, 30) || base.letterDate, expiry: null, basis: 'Supporting bulletin (the EMV L1 letter has the expiry)' }),
   },
 };
+
+// Device names printed after the usual labels ("Product Marketing Name",
+// "Product Commercial Name", "Model", ...), for letters without a rule of
+// their own or whose rule found none.
+function genericProducts(t) {
+  const label = /(?:Product\s+(?:Marketing|Commercial|Trade|Model)\s+Name|Product\s+(?:Name|Model)(?!\s+(?:Number|No|Ref))|Model\s+(?:Name|Number)|Terminal\s+(?:Name|Model)|Device\s+(?:Name|Model)|Commercial\s+Name|Marketing\s+Name)\s*:?\s*(.+?)(?:\s{2,}|\n|Firmware|Hardware|Version|$)/i;
+  const p = grab(t, label, 0.6) || grab(t, /(?:^|\n)\s*(?:Product|Model|Device|Terminal)\s*:\s*(.+?)(?:\s{2,}|\n|$)/i, 0.5);
+  if (!p) return [];
+  // A device name is short and has a model number; ids with underscores or long digit runs are references.
+  return splitProducts(p.value).filter((v) => /\d/.test(v) && v.length <= 40 && !/_|\d{6,}|^(?:Number|No)\b/i.test(v)).map((v) => field(v, p.evidence, p.confidence));
+}
 
 // Generic fallback for letters from bodies we have no specific rule for.
 function genericParse(t) {
@@ -486,9 +513,7 @@ function genericParse(t) {
   }
   const approval = grab(t, /(?:Approval|Certificate|Reference|LoA)\s+(?:Number|No\.?|Identifier|ID)\s*:?\s*([A-Z0-9][A-Z0-9.\-_/ ]{3,40}?)(?=\s{2}|\n|$)/i, 0.6);
   const expiry = dateAfter(t, /(?:Expir\w*|Valid\s+(?:until|through)|Renewal)\s*(?:Date)?\s*:?/i, 60, 0.7);
-  const products = [];
-  const p = grab(t, /(?:Product(?:\s+Name)?|Model|Device|Terminal)\s*:?\s*(.+?)(?:\s{2,}|\n|Firmware|Hardware|Version)/i, 0.5);
-  if (p) products.push(...splitProducts(p.value).map((v) => field(v, p.evidence, 0.5)));
+  const products = genericProducts(t);
   let category = 'Other';
   if (/level\s*1|\bL1\b/i.test(t)) category = /contactless|proximity/i.test(t) ? 'EMV L1 Contactless' : 'EMV L1 Contact';
   else if (/level\s*2|\bL2\b|kernel/i.test(t)) category = /contactless/i.test(t) ? 'EMV L2 Contactless' : 'EMV L2 Contact';
@@ -504,7 +529,7 @@ function dedupeProducts(list) {
   const seen = new Set();
   const out = [];
   for (const f of list.filter(Boolean)) {
-    const k = String(f.value).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const k = String(f.value).toUpperCase().replace(/[^A-Z0-9]/g, '') + (f.interface ? `|${f.interface}` : '');
     if (!k || seen.has(k)) continue;
     seen.add(k);
     out.push(f);
@@ -529,7 +554,17 @@ function parseLetter(seg) {
       const d2 = rule.dates(flat, base);
       if (d2.expiry) d = { ...d2, issue: d.issue || d2.issue };
     }
+    // Any letter: a renewal date is the date the approval must be renewed by,
+    // i.e. its expiry. Used when the issuer's own wording was not found.
+    if (!d.expiry && !rule.informational) {
+      const e = dateAfter(t, /(?:Renewal|Expiry|Expiration)\s+Date\s*:?|Valid\s+(?:until|through)\s*:?/i, 60, 0.75) || (flat !== t ? dateAfter(flat, /(?:Renewal|Expiry|Expiration)\s+Date\s*:?|Valid\s+(?:until|through)\s*:?/i, 60, 0.75) : null);
+      if (e) d = { ...d, expiry: e, basis: 'Renewal/expiry date stated in letter' };
+    }
     let products = rule.products ? rule.products(t) : [];
+    if (!products.length && !rule.informational) {
+      const g = genericProducts(t);
+      if (g.length) products = g;
+    }
     if (!products.length && rule.products && flat !== t) products = rule.products(flat).filter((p) => p.value.length <= 60);
     r = {
       issuer: rule.issuer,
@@ -588,9 +623,21 @@ function parseLetter(seg) {
   return r;
 }
 
+// PDFs print the same characters many ways: unify dashes, spaces and quotes
+// so one pattern reads every letter.
+function normalizeText(t) {
+  return String(t || '')
+    .replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, '-')
+    .replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, ' ')
+    .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, '')
+    .replace(/[\u2018\u2019\u201B\u2032]/g, "'")
+    .replace(/[\u201C\u201D\u201F\u2033]/g, '"');
+}
+
 /** Parse a whole document (array of page texts) into letters. */
 function parseDocument(pages) {
-  return segmentLetters(pages).map((seg, i) => ({ index: i, ...parseLetter(seg) }));
+  if (typeof pages === 'string') pages = [pages];
+  return segmentLetters(pages.map(normalizeText)).map((seg, i) => ({ index: i, ...parseLetter(seg) }));
 }
 
 module.exports = { segmentLetters, parseLetter, parseDocument, ISSUERS, STARTS };

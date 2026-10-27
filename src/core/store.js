@@ -121,6 +121,8 @@ class Store {
     if (!rec.device) throw new Error('Device is required');
     rec.category = normalizeCategory(rec.category || 'Other');
     rec.scheme = normalizeScheme(rec.scheme || '');
+    rec.tags = withReaderTag(rec.tags, rec.device);
+    if (!rec.tags) delete rec.tags;
     const rkey = this.recordKey(rec);
     if (this.db.get('SELECT id FROM records WHERE rkey=?', [rkey])) {
       throw new Error(`A record for ${rec.device} / ${rec.category} / ${rec.scheme} already exists`);
@@ -149,6 +151,8 @@ class Store {
     const p = sanitize(patch);
     if (p.category !== undefined) p.category = normalizeCategory(p.category);
     if (p.scheme !== undefined) p.scheme = normalizeScheme(p.scheme);
+    // A renamed device carries its reader version (CL1, CL2...) as a tag.
+    if (p.device !== undefined && p.device !== cur.device) p.tags = withReaderTag(p.tags !== undefined ? p.tags : cur.tags, p.device, true);
     const changed = [];
     for (const f of RECORD_FIELDS) {
       if (p[f] === undefined) continue;
@@ -179,6 +183,18 @@ class Store {
       this.db.run('DELETE FROM records WHERE id=?', [id]);
     });
     return true;
+  }
+
+  /** Tag every record whose device names a reader version (CL1, CL2...) with it. Returns how many changed. */
+  tagReaders() {
+    let n = 0;
+    this.db.tx(() => {
+      for (const r of this.db.all('SELECT id, device, tags FROM records')) {
+        const t = withReaderTag(r.tags, r.device);
+        if (t !== (r.tags || '')) { this.db.run('UPDATE records SET tags=? WHERE id=?', [t, r.id]); n++; }
+      }
+    });
+    return n;
   }
 
   /**
@@ -373,6 +389,20 @@ function splitTags(v) {
   return out;
 }
 function joinTags(list) { return list.join(', '); }
+
+/** "Self/4000-CL2" -> "CL2"; '' for a device without a reader version. */
+function readerOf(device) {
+  const m = String(device || '').toUpperCase().replace(/[^A-Z0-9]/g, '').match(/CL(\d)$/);
+  return m ? `CL${m[1]}` : '';
+}
+/** Tag list with the device's reader version added (replacing another CLn when `replace`). */
+function withReaderTag(tags, device, replace = false) {
+  const cl = readerOf(device);
+  let list = splitTags(tags);
+  if (replace) list = list.filter((t) => !/^CL\d$/i.test(t));
+  if (cl && !list.some((t) => t.toUpperCase() === cl)) list.push(cl);
+  return joinTags(list);
+}
 
 function fixRow(r) {
   for (const f of BOOL_FIELDS) r[f] = !!r[f];

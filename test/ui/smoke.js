@@ -127,6 +127,11 @@ function pdfFromPages(pages) {
     await p.click('button:has-text("Clear filters")');
     await p.waitForSelector('text=Zeta/7200-CL1', { timeout: 10000 });
     check(true, 'family letter with no matching records creates them');
+    // Hardware version filter: CL1 records only.
+    await p.selectOption('select[aria-label="All hardware (CL)"]', 'CL1');
+    const devs = await p.$$eval('table.t tbody .dev', (els) => els.map((e) => e.textContent));
+    check(devs.length > 0 && devs.every((d) => /CL1/.test(d)), `hardware (CL) filter: ${devs.length} CL1 records`);
+    await p.click('button:has-text("Clear filters")');
     await p.click('nav >> text=LOA inbox');
     const [ch4] = await Promise.all([p.waitForEvent('filechooser'), p.click('text=Choose files')]);
     await ch4.setFiles(named);

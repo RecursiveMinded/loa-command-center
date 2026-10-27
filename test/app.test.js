@@ -79,11 +79,22 @@ test('dropping LOAs: proposals, review, apply, audit and dedupe', async () => {
   assert.equal(loa.name, 'merged.pdf');
   assert.equal(loa.bytes.toString(), 'pdf-bytes-1', 'the archived LOA can be reopened or saved');
 
+  // Dropped again while other letters wait: those are read again, the
+  // approved Amex letter is not offered a second time.
   const again = api.ingestDocument({ filename: 'copy.pdf', bytes: Buffer.from('pdf-bytes-1'), pages: [L.amex] });
-  assert.equal(again.status, 'duplicate');
+  assert.equal(again.status, 'ok');
+  assert.equal(again.reread, true);
+  const waiting = api.listInbox('pending');
+  assert.ok(!waiting.some((i) => i.parsed.scheme === 'Amex'), 'approved letter stays approved');
+  const mc2 = waiting.find((i) => i.parsed.scheme === 'Mastercard');
+  assert.ok(mc2, 'waiting letters are read again');
 
-  api.rejectInbox(mc.id, 'not now');
+  api.rejectInbox(mc2.id, 'not now');
   assert.equal(api.listInbox('rejected').length, 1);
+  for (const i of api.listInbox('pending')) api.rejectInbox(i.id, 'test');
+  for (const i of api.listInbox('info')) api.rejectInbox(i.id, 'test');
+  const third = api.ingestDocument({ filename: 'copy.pdf', bytes: Buffer.from('pdf-bytes-1'), pages: [L.amex] });
+  assert.equal(third.status, 'duplicate', 'nothing left to review: a true duplicate');
 });
 
 test('a renewal that starts in the future is tracked as a replacement', async () => {
@@ -327,7 +338,7 @@ test('device and approval type are read from the file name when the letter does 
   api.ingestDocument({ filename: 'T100CL1_Discover.pdf', bytes: Buffer.from('b'), pages: [blindText.replace('Discover', 'Discover Global Network')] });
   const junk = api.listInbox('pending').find((i) => i.filename === 'T100CL1_Discover.pdf');
   assert.equal(junk.parsed.products[0].value, 'T100-CL1');
-  assert.ok(junk.parsed.warnings.some((w) => /not a device you track/.test(w)));
+  assert.ok(junk.parsed.warnings.some((w) => /file name/.test(w)));
 
   const known = api.knownDevices();
   assert.ok(known.some((d) => d.device === 'P400-CL1' && d.records >= 2 && d.schemes.includes('Discover')));
@@ -447,4 +458,85 @@ test('a cert database export is mapped by its own columns and joins tracker reco
   assert.equal(nx.platform, 'Alpha', 'platform is not taken from "Software ID"');
   assert.equal(recs.find((x) => x.device === 'Flex/3500-CL1').approval_number, 'D-77');
   assert.equal(recs.find((x) => x.device === 'ZX900').category, 'EMV L1 Contact');
+});
+
+const JCB = `JCB CO., LTD.
+5-1 Example Street, Tokyo
+Northwind Terminals ("Vendor")
+August 10, 2023
+To whom it may concern
+RE: Letter of Approval – JCB Contactless IC Terminal
+JCB Reference Number   23XX00-001
+1. Information of the Approved Product
+◆ Product Marketing Name   Flex/5000-CL3 & Flex/3500-CL3
+◆ JCB Contactless L2 Application (kernel) Version   04.04.00
+◆ Renewal Date   10-Aug-2027
+Yours Sincerely,`;
+
+test('letters waiting from an older version are read again after an update', async () => {
+  const { api } = await fresh();
+  const r = api.ingestDocument({ filename: 'Flex5000CL3_JCB_040400.pdf', bytes: Buffer.from('jcb'), pages: [JCB] });
+  assert.equal(r.letters, 1);
+  const good = api.listInbox('pending')[0];
+  assert.equal(good.parsed.approvalNumber.value, '23XX00-001');
+  assert.equal(good.parsed.expiryDate.value, '2027-08-10', 'a renewal date is the expiry');
+  assert.deepEqual(good.parsed.products.map((p) => p.value), ['Flex/5000-CL3', 'Flex/3500-CL3']);
+  // Approve the real letter, then plant the empty letterhead page an older reader split off.
+  api.applyInbox(good.id, [{ create: ['Flex/5000-CL3'] }]);
+  const junk = { ...good.parsed, type: 'unknown', index: 0, products: [], approvalNumber: null, expiryDate: null, category: 'Other', confidence: 15 };
+  api.store.addInbox({ document_id: good.document_id, letter_index: 0, parsed: junk, proposals: [], status: 'pending' });
+  assert.equal(api.listInbox('pending').length, 1);
+  api.store.setSettings({ appVersion: '0.0.1' });
+  api.upgradeBackup(null);
+  assert.equal(api.listInbox('pending').length, 0, 'the leftover page is gone and the approved letter is not offered again');
+
+  // A waiting letter is replaced by a fresh reading, keeping the platform chosen for it.
+  api.ingestDocument({ filename: 'Flex7000_JCB.pdf', bytes: Buffer.from('jcb2'), pages: [JCB.replace(/Flex\/5000-CL3 & Flex\/3500-CL3/, 'Flex/7000')] });
+  const w = api.listInbox('pending')[0];
+  api.setInboxDefaults([w.id], { platform: 'Beta' });
+  api.store.setInbox(w.id, { parsed: { ...api.listInbox('pending')[0].parsed, products: [], expiryDate: null } });
+  const rr = api.rereadInbox([w.id]);
+  assert.equal(rr.letters, 1);
+  const w2 = api.listInbox('pending')[0];
+  assert.equal(w2.parsed.expiryDate.value, '2027-08-10');
+  assert.equal(w2.parsed.products[0].value, 'Flex/7000');
+  assert.equal(w2.parsed.recordDefaults.platform, 'Beta');
+});
+
+test('one statement saved under several device file names is read for each device', async () => {
+  const { api } = await fresh();
+  const same = Buffer.from('same-statement');
+  const a = api.ingestDocument({ filename: 'Flex3000CL1_TqmContactless.pdf', bytes: same, pages: [JCB] });
+  const b = api.ingestDocument({ filename: 'Flex2500CL2_TqmContactless.pdf', bytes: same, pages: [JCB] });
+  assert.equal(a.status, 'ok');
+  assert.equal(b.status, 'ok', 'a different device in the file name is not a duplicate');
+  assert.notEqual(a.documentId, b.documentId);
+  const c = api.ingestDocument({ filename: 'Flex3000CL1_TqmContactless (1).pdf', bytes: same, pages: [JCB] });
+  assert.equal(c.status, 'ok', 'still waiting, so read again');
+  assert.equal(c.documentId, a.documentId, 'same device: same document');
+});
+
+test('dashes, spaces and quotes printed differently still read', async () => {
+  const { parseDocument } = require('../src/core/loa-parser');
+  for (const dash of ['-', '‐', '−', '—']) {
+    const [r] = parseDocument([JCB.replace('–', dash).replace(/ {3}/g, '  ')]);
+    assert.equal(r.type, 'jcb', `dash ${dash.charCodeAt(0).toString(16)}`);
+    assert.equal(r.expiryDate.value, '2027-08-10');
+  }
+});
+
+test('records carry their hardware version (CL1, CL2...) as a tag', async () => {
+  const { api } = await fresh();
+  const a = api.store.createRecord({ device: 'Self/4000-CL2', category: 'EMV L2 Contactless', scheme: 'Amex' });
+  assert.equal(a.tags, 'CL2');
+  const b = api.store.createRecord({ device: 'Lane/3000', category: 'EMV L1 Contact', scheme: 'EMVCo', tags: 'Retail' });
+  assert.equal(b.tags, 'Retail');
+  api.store.updateRecord(a.id, { device: 'Self/4000-CL3' });
+  assert.equal(api.store.getRecord(a.id).tags, 'CL3', 'renaming the reader swaps the tag');
+  api.store.db.run("UPDATE records SET tags='' WHERE id=?", [a.id]);
+  assert.equal(api.store.tagReaders(), 1, 'older records get the tag on update');
+  assert.equal(api.store.getRecord(a.id).tags, 'CL3');
+  const r = api.bulkUpdate([b.id], {}, { remove: ['CL1', 'CL2', 'CL3'], add: ['CL1'] });
+  assert.equal(r.changed, 1);
+  assert.equal(api.store.getRecord(b.id).tags, 'Retail, CL1');
 });
