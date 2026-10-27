@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'preact/hooks';
-import { html, Icon, Drawer, fmtDate, fmtWhen, Spinner, toast, toastError, HealthPill, Select, daysLabel } from '../lib.js';
+import { html, Icon, Drawer, Modal, fmtDate, fmtWhen, Spinner, toast, toastError, HealthPill, Select, daysLabel } from '../lib.js';
+import { extractFile, LOA_EXTENSIONS } from '../extract.js';
 import { call } from '../api.js';
 import { DocButtons, openDoc } from '../docs.js';
 
@@ -50,6 +51,41 @@ export function RecordDrawer({ id, app, onClose, tab: startTab }) {
   };
   const unlink = async (docId) => {
     try { await call('unlinkDocument', docId, id); load(id); app.refresh(); } catch (e) { toastError(e); }
+  };
+  // Add an LOA straight to this record. A file already in the app is offered for linking instead.
+  const [attach, setAttach] = useState(null);
+  const [adding, setAdding] = useState('');
+  const pickLoa = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      setAdding(`Checking ${file.name}…`);
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const dup = await call('checkAttach', id, { bytes });
+      if (dup) {
+        if (dup.linkedHere) toast(`${dup.document.filename} is already linked to this record`);
+        else setAttach({ kind: 'duplicate', name: file.name, ...dup });
+        return;
+      }
+      setAdding(`Reading ${file.name}…`);
+      const ex = await extractFile(file.name, bytes, { onProgress: (d, t, note) => setAdding(`${note || 'Reading'}…`) });
+      const res = await call('attachNewDocument', id, { filename: file.name, bytes, pages: ex.pages, ocrPages: ex.ocrPages });
+      if (res.duplicate) { setAttach({ kind: 'duplicate', name: file.name, ...res.duplicate }); return; }
+      toast(`Added ${file.name} to this record`, 'ok');
+      load(id); app.refresh();
+      const v = res.values;
+      if (v && r && (v.expiry_date && v.expiry_date !== r.expiry_date || v.approval_number && v.approval_number !== r.approval_number)) {
+        setAttach({ kind: 'new', name: file.name, document: { id: res.documentId, filename: file.name }, values: v });
+      }
+    } catch (err) { toastError(err); } finally { setAdding(''); }
+  };
+  const linkLoa = async (useValues) => {
+    try {
+      setData(await call('linkDocumentToRecord', id, attach.document.id, { useValues, values: attach.values }));
+      toast(useValues ? 'LOA linked and this record updated from it' : 'LOA linked to this record', 'ok');
+      setAttach(null); load(id); app.refresh();
+    } catch (err) { toastError(err); }
   };
 
   if (!form) return html`<${Drawer} title="Loading…" onClose=${onClose}><${Spinner} /><//>`;
@@ -113,7 +149,11 @@ export function RecordDrawer({ id, app, onClose, tab: startTab }) {
           <td class="nowrap"><span class="row"><${DocButtons} d=${d} />
           <button class="btn sm ghost" onClick=${() => unlink(d.id)} title="Remove the link to this record (the file stays archived)">Unlink</button></span></td></tr>`)}</tbody></table>
         <p class="muted small mt">LOAs are archived in the data folder, so they open even if the original file was moved or deleted.</p>`
-      : html`<p class="muted">No LOA linked yet. Drop the letter in the inbox and approve it to attach it here.</p>`}` : null}
+      : html`<p class="muted">No LOA linked yet. Add the letter here, or drop it in the LOA inbox and approve it.</p>`}
+      <div class="row mt"><label class="btn"><${Icon} name="plus" /> Add LOA to this record
+        <input type="file" id="attach-loa" hidden accept=${LOA_EXTENSIONS.map((x) => `.${x}`).join(',')} onChange=${pickLoa} /></label>
+        ${adding ? html`<span class="row muted small"><${Spinner} /> ${adding}</span>` : html`<span class="faint small">Use this for a variant device that shares a letter with another record.</span>`}</div>` : null}
+    ${attach ? html`<${AttachModal} a=${attach} r=${r} onLink=${linkLoa} onClose=${() => setAttach(null)} />` : null}
 
     ${tab === 'history' ? html`${data.audit.length ? html`<table class="t compact"><thead><tr><th>When</th><th>Change</th><th>By / source</th></tr></thead><tbody>
         ${data.audit.map((a) => html`<tr><td class="small nowrap">${fmtWhen(a.ts)}</td>
@@ -121,4 +161,23 @@ export function RecordDrawer({ id, app, onClose, tab: startTab }) {
           <td class="small muted">${[a.actor, a.source].filter(Boolean).join(' · ')}</td></tr>`)}</tbody></table>`
       : html`<p class="muted">No changes recorded.</p>`}` : null}
   <//>`;
+}
+
+function AttachModal({ a, r, onLink, onClose }) {
+  const v = a.values;
+  const dates = v ? [v.approval_number, v.issue_date && `issued ${fmtDate(v.issue_date)}`, v.expiry_date && `expires ${fmtDate(v.expiry_date)}`].filter(Boolean).join(' · ') : '';
+  const now = [r.approval_number, r.expiry_date && `expires ${fmtDate(r.expiry_date)}`].filter(Boolean).join(' · ') || 'no approval yet';
+  if (a.kind === 'new') {
+    return html`<${Modal} title="Update this record from the LOA?" onClose=${onClose}>
+      <p>${a.name} reads <b>${dates}</b>.</p><p class="muted small">This record has ${now}. Updating keeps the old approval in its history.</p>
+      <div class="row mt"><button class="btn primary" onClick=${() => onLink(true)}>Update this record</button><button class="btn" onClick=${onClose}>Keep current values</button></div><//>`;
+  }
+  return html`<${Modal} title="Duplicate LOA" onClose=${onClose}>
+    <p><b>${a.document.filename}</b> is already in the app (added ${fmtWhen(a.document.uploaded_at)})${a.linkedTo.length ? ' and linked to:' : ', but no record uses it yet.'}</p>
+    ${a.linkedTo.length ? html`<ul class="small">${a.linkedTo.slice(0, 8).map((x) => html`<li>${x.device} · ${x.scheme} ${x.category}</li>`)}${a.linkedTo.length > 8 ? html`<li>and ${a.linkedTo.length - 8} more</li>` : null}</ul>` : null}
+    <p class="muted small">This record (${r.device}) has ${now}.${dates ? ` The letter gives ${dates}.` : ''}</p>
+    <div class="col gap mt">
+      <button class="btn primary" onClick=${() => onLink(false)}><${Icon} name="link" /> Link the existing LOA to this record</button>
+      ${dates ? html`<button class="btn" onClick=${() => onLink(true)}><${Icon} name="refresh" /> Link and override this record with the letter's approval and dates</button>` : null}
+      <button class="btn ghost" onClick=${onClose}>Cancel</button></div><//>`;
 }

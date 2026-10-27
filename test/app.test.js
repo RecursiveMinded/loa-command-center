@@ -631,3 +631,24 @@ test('records hidden with the old Archived flag move to the Archive on upgrade',
   assert.equal(api.bulkUpdate([api.listRecords()[0].id], { archived: true }).changed, 1);
   assert.equal(api.archiveCount(), 2);
 });
+
+test('an LOA already in the app can be linked to a variant record from its LOA tab', async () => {
+  const { api } = await fresh();
+  const a = api.store.createRecord({ device: 'Lane3000', category: 'EMV L1 Contactless', scheme: 'Mastercard' });
+  const b = api.store.createRecord({ device: 'Lane3000 CL1', category: 'EMV L1 Contactless', scheme: 'Mastercard' });
+  const bytes = Buffer.from('%PDF fake letter bytes');
+  const pages = ['Mastercard Letter of Approval\nProduct Name: Lane3000\nApproval Number: MC-777\nExpiry Date: 11 March 2028\n' + 'x'.repeat(60)];
+  const first = api.attachNewDocument(a.id, { filename: 'Lane3000_MC.pdf', bytes, pages });
+  assert.ok(first.documentId);
+  api.linkDocumentToRecord(a.id, first.documentId, { useValues: true, values: { approval_number: 'MC-777', expiry_date: '2028-03-11' } });
+  // Same file on the variant record: reported as a duplicate, not stored twice.
+  const dup = api.attachNewDocument(b.id, { filename: 'copy.pdf', bytes, pages });
+  assert.ok(dup.duplicate);
+  assert.equal(dup.duplicate.linkedTo[0].device, 'Lane3000');
+  assert.equal(dup.duplicate.values.approval_number, 'MC-777');
+  const r = api.linkDocumentToRecord(b.id, dup.duplicate.document.id, { useValues: true });
+  assert.equal(r.record.expiry_date, '2028-03-11');
+  assert.equal(r.documents.length, 1);
+  assert.equal(api.checkAttach(b.id, { bytes }).linkedHere, true);
+  assert.equal(api.listDocuments().length, 1);
+});

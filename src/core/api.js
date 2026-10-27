@@ -307,6 +307,86 @@ class AppApi {
 
   unlinkDocument(documentId, recordId) { this.store.unlinkDocument(documentId, recordId); return this.getRecord(recordId); }
 
+  // ---------------------------------------- adding an LOA from a record's LOA tab
+  /**
+   * Is this file already in the app? Matches the same bytes, including copies
+   * stored once per device name. Returns the existing LOA, the records it is
+   * linked to, and the approval it carries for this record, or null.
+   */
+  checkAttach(recordId, { bytes }) {
+    const { sha256 } = require('./intake');
+    const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes || []);
+    if (!buf.length) return null;
+    const h = sha256(buf);
+    const docs = this.db.all('SELECT id, filename, uploaded_at FROM documents WHERE sha256=? OR sha256 LIKE ? ORDER BY id', [h, `${h}:%`]);
+    if (!docs.length) return null;
+    const doc = docs[0];
+    const ids = docs.map((d) => d.id);
+    const linked = this.db.all(`SELECT DISTINCT r.id, r.device, r.scheme, r.category FROM document_links l JOIN records r ON r.id = l.record_id
+      WHERE l.document_id IN (${ids.map(() => '?').join(',')}) ORDER BY r.device`, ids);
+    return { document: doc, documentIds: ids, linkedHere: linked.some((r) => r.id === recordId), linkedTo: linked.filter((r) => r.id !== recordId),
+      values: this.letterValues(ids, recordId) };
+  }
+
+  /** The approval number and dates an LOA gives this record: from records it already updated, else read from its text. */
+  letterValues(documentIds, recordId) {
+    const ids = [].concat(documentIds);
+    const rec = this.store.getRecord(recordId);
+    const ap = this.db.get(`SELECT approval_number, issue_date, expiry_date FROM approvals WHERE document_id IN (${ids.map(() => '?').join(',')})
+      AND (approval_number <> '' OR expiry_date IS NOT NULL) ORDER BY CASE role WHEN 'current' THEN 0 ELSE 1 END, id DESC`, ids);
+    if (ap) return ap;
+    const text = this.store.documentText(ids[0]);
+    if (!text) return null;
+    const { parseDocument } = require('./loa-parser');
+    const letters = parseDocument(text.split('\n\f\n')).filter((L) => !L.informational);
+    const v = (f) => (f ? f.value : null);
+    const L = letters.find((x) => rec && x.category === rec.category && String(x.scheme).toLowerCase() === String(rec.scheme).toLowerCase()) || letters[0];
+    if (!L) return null;
+    const out = { approval_number: v(L.approvalNumber) || '', issue_date: v(L.issueDate), expiry_date: v(L.expiryDate) };
+    return out.approval_number || out.expiry_date ? out : null;
+  }
+
+  /**
+   * Link an LOA to a record. With useValues, the letter's approval number and
+   * dates also replace the record's (the old approval is kept as history).
+   */
+  linkDocumentToRecord(recordId, documentId, { useValues = false, values = null } = {}) {
+    const rec = this.store.getRecord(recordId);
+    if (!rec) throw new Error('Record not found');
+    const doc = this.store.getDocument(documentId);
+    if (!doc) throw new Error('LOA not found');
+    const actor = this.store.actor;
+    this.db.tx(() => {
+      this.store.linkDocument(documentId, recordId);
+      this.store.audit(recordId, 'link-document', 'document', '', doc.filename, 'manual', actor);
+      const v = useValues ? (values || this.letterValues([documentId], recordId)) : null;
+      if (v && (v.approval_number || v.expiry_date)) {
+        this.db.run("UPDATE approvals SET role='superseded' WHERE record_id=? AND role IN ('current','replacement')", [recordId]);
+        this.store.addApproval(recordId, { approval_number: v.approval_number || rec.approval_number, issue_date: v.issue_date || null,
+          expiry_date: v.expiry_date || null, role: 'current', document_id: documentId }, { actor });
+        const patch = { verified_at: new Date().toISOString(), verified_by: actor };
+        for (const k of ['approval_number', 'issue_date', 'expiry_date']) if (v[k]) patch[k] = v[k];
+        this.store.updateRecord(recordId, patch, { source: 'loa', actor });
+      }
+    });
+    return this.getRecord(recordId);
+  }
+
+  /** Save a new LOA file and link it to this record (it does not go through the LOA inbox). */
+  attachNewDocument(recordId, { filename, bytes, pages = [], ocrPages = 0 }) {
+    const { sha256, archiveFile } = require('./intake');
+    if (!this.store.getRecord(recordId)) throw new Error('Record not found');
+    const dup = this.checkAttach(recordId, { bytes });
+    if (dup) return { duplicate: dup };
+    const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes || []);
+    const text = (pages || []).join('\n\f\n');
+    const stored = buf.length && this.archiveDir ? archiveFile(this.archiveDir, filename, buf) : null;
+    const documentId = this.store.addDocument({ sha256: sha256(buf.length ? buf : Buffer.from(text)), filename, stored_path: stored, size: buf.length,
+      page_count: pages.length, ocr_pages: ocrPages, text });
+    this.linkDocumentToRecord(recordId, documentId);
+    return { documentId, values: this.letterValues([documentId], recordId) };
+  }
+
   /** Let the local model fill fields the reader missed (values must exist in the text). */
   async assistInbox(id) {
     const it = this.store.getInbox(id);
@@ -563,7 +643,7 @@ const PUBLIC_METHODS = [
   'listArchive', 'archiveCount', 'expiredRecords', 'archiveExpired', 'restoreArchived', 'purgeArchived',
   'activateReplacement', 'listTags', 'knownDevices', 'listAliases', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
   'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
-  'documentText', 'unlinkDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
+  'documentText', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
   'aiDraftEmail', 'backup', 'listBackups', 'restore', 'health',
 ];
