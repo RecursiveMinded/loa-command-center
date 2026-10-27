@@ -46,7 +46,7 @@ export function Devices({ app }) {
       <tbody>${rows.map((row) => {
         const head = row.grp !== lastGrp ? html`<tr class="grp"><td colspan=${cov.columns.length + 1}>${row.grp}</td></tr>` : null;
         lastGrp = row.grp;
-        return html`${head}<tr><td class="name">${row.device}${row.missing ? html` <span class="pill bad" title="Missing certifications">${row.missing}</span>` : null}</td>${cov.columns.map((c) => {
+        return html`${head}<tr class=${row.reader ? 'reader' : ''}><td class="name">${row.reader ? html`<span class="faint" title="Contactless reader in this device">↳ </span>` : null}${row.device}${row.missing ? html` <span class="pill bad" title="Missing certifications">${row.missing}</span>` : null}</td>${cov.columns.map((c) => {
           const cell = row.cells[c.key];
           const r = cell.record;
           if (r) {
