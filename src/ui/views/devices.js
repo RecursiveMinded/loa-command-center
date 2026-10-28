@@ -1,5 +1,5 @@
 // Device coverage: every device against the certifications it needs. A contact
-// device needs PCI, L1 Contact, L2 Contact and TQM; a contactless reader (CL1, CL2...) needs
+// device holds PCI, L1 Contact and L2 Contact for all its versions; a hardware version (CL1, CL2...) needs
 // L1 Contactless, TQM and an L2 Contactless approval from each required brand.
 import { useMemo } from 'preact/hooks';
 import { html, Icon, fmtDate, useLoad, Spinner, unique, usePersist, Select, HEALTH, daysLabel, plural, toast, toastError } from '../lib.js';
@@ -37,7 +37,7 @@ export function Devices({ app }) {
   let lastGrp = null;
 
   return html`
-    <div class="page-head"><div><h1>Devices</h1><p>What each device needs to be certified. A terminal needs PCI, L1 Contact, L2 Contact and TQM. A contactless reader (CL1, CL2, CL3) needs L1 Contactless, TQM and L2 Contactless from each brand. Certifications marked end of life are not gaps.</p></div>
+    <div class="page-head"><div><h1>Devices</h1><p>What each device needs to be certified. PCI, L1 Contact and L2 Contact are held once per device and shared by all its hardware versions. Each hardware version (CL1, CL2, CL3; a name without a suffix is CL1) needs its own L1 Contactless, TQM and L2 Contactless from each brand. Certifications marked end of life are not gaps.</p></div>
       <div class="row"><button class="btn" onClick=${l3} title="Every device's L1, L2 and brand approval numbers, for acquirers' Level 3 work"><${Icon} name="download" /> L3 sheet</button>
         ${gaps.length && oneGroup ? html`<button class="btn" onClick=${createAll} title="Creates empty records you then fill in from each LOA"><${Icon} name="plus" /> Create ${plural(gaps.length, 'missing record')}</button>` : null}</div></div>
     <div class="filters">
@@ -54,7 +54,7 @@ export function Devices({ app }) {
       <tbody>${rows.map((row) => {
         const head = row.grp !== lastGrp ? html`<tr class="grp"><td colspan=${cov.columns.length + 1}>${row.grp}${gapsByGrp[row.grp] ? html` <span class="faint">· ${plural(gapsByGrp[row.grp], 'missing certification')}</span>` : null}</td></tr>` : null;
         lastGrp = row.grp;
-        return html`${head}<tr class=${row.reader ? 'reader' : ''}><td class="name">${row.reader ? html`<span class="faint" title="Contactless reader in this device">↳ </span>` : null}${row.device}${row.retired ? html` <span class="tag" title="Every certification of this device is end of life">EOL</span>` : null}${row.missing ? html` <span class="pill bad" title="Missing certifications">${row.missing}</span>` : null}</td>${cov.columns.map((c) => {
+        return html`${head}<tr class=${row.reader ? 'reader' : ''}><td class="name">${row.reader ? html`<span class="faint" title="Hardware version of this device">↳ </span>` : null}${row.label || row.device}${row.replacedBy ? html` <span class="tag" title=${`A newer hardware version exists: ${row.replacedBy}`}>replaced by ${row.replacedBy.replace(/^.*?(CL\d+)\)?$/, '$1')}</span>` : null}${row.retired ? html` <span class="tag" title="Every certification of this device is end of life">EOL</span>` : null}${row.missing ? html` <span class="pill bad" title="Missing certifications">${row.missing}</span>` : null}</td>${cov.columns.map((c) => {
           const cell = row.cells[c.key];
           const r = cell.record;
           if (r) {

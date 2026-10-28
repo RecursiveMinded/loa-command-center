@@ -84,8 +84,9 @@ function buildProposals(letter, records, { norm, aliases = {}, noiseWords = [], 
     if (!scored.length) {
       // Statements that list many products (e.g. a TQM statement) mention
       // devices outside this portfolio; do not offer to create those.
-      if (letter.products.length >= 4) continue;
-      if (letter.category === 'TQM' && prod.source !== 'filename') continue;
+      // A bulletin row lists exactly the devices it certifies.
+      if (letter.products.length >= 4 && prod.source !== 'bulletin') continue;
+      if (letter.category === 'TQM' && prod.source !== 'filename' && prod.source !== 'bulletin') continue;
       if (isFamily) {
         proposals.push({ action: 'unmatched', device: prod.value, category: letter.category, scheme: letter.scheme, score: 0, changes: {}, warnings: [`"${prod.value}" names a device family. Choose the records it covers.`] });
         continue;
@@ -165,7 +166,7 @@ function letterRecord(letter, device, prod = {}) {
     issue_date: val(letter.issueDate),
     expiry_date: prod.expiry || val(letter.expiryDate),
     expiry_basis: letter.expiryBasis || '',
-    kernel_version: prod.interface || val(letter.kernelVersion) || '',
+    kernel_version: /^EMV L1/.test(letter.category) ? '' : prod.interface || val(letter.kernelVersion) || '',
     restricted: !!letter.restricted,
     stage: letter.restricted ? 'Restricted Extension' : '',
   };
@@ -270,10 +271,13 @@ function proposalFor(r, score, L, { asOf, auditFor }) {
   if (L.issue && L.issue !== r.issue_date) changes.issue_date = { from: r.issue_date || '', to: L.issue };
   if (L.expiryBasis && L.expiryBasis !== r.expiry_basis) changes.expiry_basis = { from: r.expiry_basis || '', to: L.expiryBasis };
   const kv = val(L.kernelVersion);
-  if (kv && !r.kernel_version) changes.kernel_version = { from: '', to: kv };
+  const kernelKey = (v) => String(v || '').toUpperCase().replace(/\(.*\)/, '').replace(/[^A-Z0-9]/g, '');
+  const newKernel = kv && r.kernel_version && /^EMV L2/.test(r.category) && kernelKey(kv) !== kernelKey(r.kernel_version);
+  if (kv && (!r.kernel_version || newKernel)) changes.kernel_version = { from: r.kernel_version || '', to: kv };
   if (L.restricted && !r.restricted) changes.restricted = { from: false, to: true };
 
   const warnings = [];
+  if (newKernel) warnings.push(`Different kernel: this letter approves ${kv}, the record has ${r.kernel_version}. Check that the new kernel replaces the old one and is not a second approval to track separately`);
   if (L.expiryBasis && L.expiryBasis.startsWith('Calculated')) warnings.push('Expiry was calculated from the validity period');
   if (auditFor) {
     const last = auditFor(r.id, 'expiry_date');

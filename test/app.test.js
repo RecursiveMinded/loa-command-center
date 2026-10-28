@@ -666,13 +666,14 @@ test('device coverage lists the required certifications per device', async () =>
   const lane = cov.rows.find((r) => r.device === 'Lane/3000');
   const cl1 = cov.rows.find((r) => r.device === 'Lane/3000-CL1');
   assert.equal(lane.cells.pci.status, 'ok');
-  assert.equal(lane.cells.tqm.status, 'missing');
-  assert.equal(lane.cells['l2:Visa'].status, 'none', 'a contact device needs no L2 contactless');
+  assert.equal(lane.cells.tqm.status, 'none', 'with a contactless side, TQM is held per hardware version');
+  assert.equal(lane.cells['l2:Visa'].status, 'none', 'the shared part needs no L2 contactless');
+  assert.equal(lane.missing, 1, 'only L2 Contact');
   assert.equal(cl1.cells['l2:Visa'].status, 'ok');
   assert.equal(cl1.cells['l2:Amex'].status, 'missing');
   assert.equal(cl1.missing, 6); // TQM + Amex, Discover, UnionPay, JCB, Interac
-  api.setCoverageNA(lane.key, 'tqm', true);
-  assert.equal(api.deviceCoverage().rows.find((r) => r.device === 'Lane/3000').cells.tqm.status, 'na');
+  api.setCoverageNA(cl1.key, 'tqmcl', true);
+  assert.equal(api.deviceCoverage().rows.find((r) => r.device === 'Lane/3000-CL1').cells.tqmcl.status, 'na');
   assert.equal(api.createMissing([{ device: 'Lane/3000-CL1', platform: 'UPP', bundle: 'Bundle 6', slot: 'l2:Amex' }]), 1);
   assert.equal(api.deviceCoverage().rows.find((r) => r.device === 'Lane/3000-CL1').cells['l2:Amex'].status, 'nodate');
 });
@@ -709,13 +710,15 @@ test('a record shows every certification of its physical device', async () => {
   api.store.createRecord({ device: 'Lane/5000-CL3', category: 'EMV L2 Contactless', scheme: 'Amex', platform: 'UPP', bundle: 'Bundle 5' });
   const p = api.deviceProfile(cl3.id);
   assert.deepEqual(p.sections.map((s) => s.device), ['Lane/5000', 'Lane/5000-CL2', 'Lane/5000-CL3']);
+  assert.equal(p.sections[1].replacedBy, 'Lane/5000-CL3', 'CL2 is replaced by the newer CL3');
   const r3 = p.sections[2].rows;
   assert.equal(r3.find((r) => r.slot === 'l2:JCB').record.approval_number, 'JCB-9');
   assert.equal(r3.find((r) => r.slot === 'l2:Amex').status, 'missing', 'other bundles are not mixed in');
-  assert.equal(p.sections[0].rows.find((r) => r.slot === 'tqm').status, 'missing');
-  const rid = api.createSlot({ device: 'Lane/5000', platform: 'UPP', bundle: 'Bundle 6', slot: 'tqm' });
+  assert.ok(!p.sections[0].rows.some((r) => r.slot === 'tqm'), 'TQM is per hardware version');
+  assert.equal(r3.find((r) => r.slot === 'tqmcl').status, 'missing');
+  const rid = api.createSlot({ device: 'Lane/5000-CL3', platform: 'UPP', bundle: 'Bundle 6', slot: 'tqmcl' });
   assert.equal(api.store.getRecord(rid).category, 'TQM');
-  assert.equal(api.deviceProfile(cl3.id).sections[0].rows.find((r) => r.slot === 'tqm').record.id, rid);
+  assert.equal(api.deviceProfile(cl3.id).sections[2].rows.find((r) => r.slot === 'tqmcl').record.id, rid);
 });
 
 test('one LOA can certify a series of devices that share a reader', async () => {
@@ -886,4 +889,46 @@ test('the assistant reads the industry background and the user rules file', asyn
   assert.match(p, /TQM/);
   assert.match(p, /CL1 readers are end of life/);
   assert.ok(!/organisation's own rules/.test(systemPrompt('')));
+});
+
+test('a device name without a CL suffix is its first hardware version (CL1)', async () => {
+  const { api } = await fresh();
+  const mk = (device, category, scheme, days = 400) => api.store.createRecord({ device, category, scheme, platform: 'UPP', bundle: 'B6', expiry_date: addDays(todayIso(), days) });
+  mk('Lane/3000', 'PCI PTS', 'PCI SSC');
+  mk('Lane/3000', 'EMV L1 Contactless', 'EMVCo', 100);
+  const visa1 = mk('Lane/3000-CL1', 'EMV L2 Contactless', 'Visa', 200);
+  mk('Lane/3000-CL2', 'EMV L1 Contactless', 'EMVCo', 900);
+  mk('Lane/3000-CL2', 'PCI PTS', 'PCI SSC', 1200);
+  const rows = api.deviceCoverage().rows;
+  assert.deepEqual(rows.map((r) => r.label), ['Lane/3000', 'Lane/3000-CL1', 'Lane/3000-CL2']);
+  const cl1 = rows[1];
+  assert.equal(cl1.cells.l1cl.status, 'ok', 'the L1 Contactless filed under the bare name belongs to CL1');
+  assert.equal(cl1.cells['l2:Visa'].record.id, visa1.id);
+  assert.equal(cl1.replacedBy, 'Lane/3000-CL2');
+  assert.equal(rows[0].cells.pci.record.expiry_date, addDays(todayIso(), 1200), 'PCI is shared by every version; the latest wins');
+  // Only a bare name: its version row is labelled CL1 and new records use the bare name.
+  const { api: b } = await fresh();
+  b.store.createRecord({ device: 'Desk/1700', category: 'EMV L1 Contactless', scheme: 'EMVCo' });
+  const r = b.deviceCoverage().rows.find((x) => x.version === 'CL1');
+  assert.equal(r.label, 'Desk/1700 (CL1)');
+  assert.equal(r.device, 'Desk/1700');
+  // The plan warns about an old version expiring when a newer one exists.
+  const acts = api.analysis().actions.filter((a) => a.kind === 'version');
+  assert.equal(acts.length, 1);
+  assert.match(acts[0].title, /Lane\/3000-CL1 is replaced by CL2/);
+  assert.ok(acts[0].recordIds.includes(visa1.id));
+  // L2 on CL1 rests on the L1 Contactless filed under the bare name.
+  assert.ok(!api.dataChecks().some((i) => i.key === 'l2-no-l1'));
+});
+
+test('an L2 letter for a different kernel is flagged, not quietly applied', async () => {
+  const { api } = await fresh();
+  await api.importTracker({ filename: 'tracker.csv', bytes: Buffer.from(CSV) });
+  const rec = api.listRecords().find((r) => r.device === 'Flex/3500-CL1');
+  api.saveRecord(rec.id, { kernel_version: '123 v0405' });
+  api.ingestDocument({ filename: 'disc.pdf', bytes: Buffer.from('k1'), pages: [L.discover] });
+  const p = api.listInbox('pending').find((i) => i.parsed.scheme === 'Discover').proposals[0];
+  assert.deepEqual(p.changes.kernel_version, { from: '123 v0405', to: '123 v0406' });
+  assert.match(p.warnings.join(' '), /Different kernel/);
+  assert.ok(api.dataChecks().every((c) => c.key !== 'l2-no-kernel' || !c.recordIds.includes(rec.id)));
 });

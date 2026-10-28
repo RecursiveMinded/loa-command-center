@@ -295,8 +295,8 @@ const ISSUERS = {
       const p = grab(t, /Commercial\s+Product\s+Name:\s*(.+?)\s+Technical/i);
       return p ? splitProducts(p.value).map((v) => field(v, p.evidence)) : [];
     },
-    kernel: (t) => grab(t, /Application\s+Version:\s*(\S+(?:\s+\d[\d.]*)?)/i, 0.85),
-    spec: (t) => grab(t, /Technical\s+Specification\s+Version:\s*(.+?)\s+(?:EMVco|EMVCo|$)/i, 0.6),
+    kernel: (t) => grab(t, /Application\s+Version:\s*(\S+(?:\s+v?\d[\d.]*)?)/i, 0.85),
+    spec: (t) => grab(t, /Technical\s+Specification\s+Version:\s*(.{3,90}?)\s+(?:EMVco|EMVCo|EMV\s+C|Technical|$)/i, 0.6),
     dates: (t) => ({
       issue: dateAfter(t, /Approval\s+date\s*:?/i),
       expiry: dateAfter(t, /Renewal\s+date\s*:?/i),
@@ -333,7 +333,8 @@ const ISSUERS = {
       const p = grab(t, /Product\s+Commercial\s+Name\s*:?\s*(.+?)\s+Product\s+Technical/i);
       return p ? splitProducts(p.value).map((v) => field(v, p.evidence)) : [];
     },
-    kernel: (t) => grab(t, /PAYPASS_L2\s+version\s+([\d.]+)|Kernel\s+\S+\s+version\s+([\d.]+)/i, 0.85, (a, m) => clean(m[1] || m[2])),
+    // "Mastercard Contactless Kernel   PAYPASS_L2 version 04.04" -> "PAYPASS_L2 v04.04"
+    kernel: (t) => grab(t, /Kernel\s+([A-Za-z][\w.\-]*)\s+version\s+v?([\d.]+)/i, 0.85, (a, m) => `${m[1]} v${m[2]}`),
     dates: (t, base) => {
       const expiry = dateAfter(t, /LoA\s+Expiration\s+Date\s*:?/i);
       return { issue: base.letterDate, expiry, basis: expiry ? 'LoA expiration date stated in letter' : '' };
@@ -487,6 +488,33 @@ const ISSUERS = {
   },
 };
 
+// An L2 approval is for one kernel build, so its identity matters: name,
+// version, checksum and the entry point it was tested with. Brands print it
+// under many labels; the first one found wins.
+const KERNEL_LABELS = [
+  /Contact(?:less)?\s+Kernel\s+([A-Za-z][\w.\-]*\s+version\s+v?[\d.]+)/i,
+  /\(kernel\)\s+Version\s*:?\s*(v?\d[\d.]*)/i,
+  /Kernel\s+Version\s*:?[ \t]*([^\n]{2,40}?)(?:\s{2,}|\n|$)/i,
+  /(?:EMV\s+)?Application\s+Kernel\s*:?[ \t]*([^\n]{2,40}?)(?:\s{2,}|\n|$)/i,
+  /Kernel\s+(?:ID|Identifier)\s*:?[ \t]*(\S{3,30})/i,
+  /Application\s+Version\s*:?[ \t]*([^\n]{2,40}?)(?:\s{2,}|\n|$)/i,
+  /Firmware\s+Version\s*:?[ \t]*(\S{3,30})/i,
+];
+
+function l2Kernel(t, found) {
+  let k = found;
+  for (const re of KERNEL_LABELS) { if (k) break; k = grab(t, re, 0.6); }
+  if (!k) return null;
+  const pick = (re) => { const m = t.match(re); return m ? clean(m[1]) : ''; };
+  const name = pick(/\(kernel\)\s+Name\s*:?[ \t]*([A-Za-z][\w.\-]{1,30})/i);
+  const sum = pick(/[Kk]ernel\s+[Cc]hecksum[ \t:]*([0-9A-F]{4,40})\b/);
+  const ep = pick(/(?:Application\s+Selection\s+Module|Entry\s*Point(?:\s+Version)?)\s*:?[ \t]*([A-Za-z][\w.\-]*\s+(?:version\s+)?v?\d[\d.]*)/i).replace(/\s+version\s+v?/i, ' v');
+  let v = k.value.replace(/\s+version\s+v?/i, ' v');
+  if (name && !v.includes(name)) v = `${name} ${v}`;
+  const extra = [sum && `checksum ${sum}`, ep && !v.includes(ep) && `entry point ${ep}`].filter(Boolean);
+  return field(extra.length ? `${v} (${extra.join(', ')})` : v, k.evidence, k.confidence);
+}
+
 // Device names printed after the usual labels ("Product Marketing Name",
 // "Product Commercial Name", "Model", ...), for letters without a rule of
 // their own or whose rule found none.
@@ -589,6 +617,9 @@ function parseLetter(seg) {
       expiryDate: g.expiry, expiryBasis: g.expiry ? 'Date found near an expiry label' : '', l1Reference: null,
     };
   }
+  // Kernel versions belong to L2 approvals only.
+  if (/^EMV L2/.test(r.category)) r.kernelVersion = l2Kernel(t, r.kernelVersion) || l2Kernel(t.replace(/[ \t]*\n[ \t]*/g, ' '), null);
+  else if (/^EMV L1/.test(r.category)) r.kernelVersion = null;
   r.restricted = restrictedFlag(t);
   r.renewalType = /restricted\s+renewal/i.test(t) ? 'Restricted Renewal' : /[-–]\s*Renewal\b/i.test(t) ? 'Renewal' : 'Initial';
   r.type = seg.type;
@@ -623,6 +654,122 @@ function parseLetter(seg) {
   return r;
 }
 
+// A product configuration bulletin is a table: one row per approved
+// interface (IFM for contact, PCD for contactless), each with its EMV L1 LoA
+// reference and expiry, and usually the TQM label and its expiry. Rows can
+// cover different devices, or different hardware versions of one device
+// ("Lane/5000 CT1" on one row, "CT2" on another). Each row becomes an L1
+// letter and a TQM letter for the devices it covers. A bulletin without such
+// a table stays a supporting document.
+const LOA_REF = /\b(\d{5}\s+\d{4}\s+\d{3}\s+\w{2,4}(?:\s+\w{2,4})?\s+[A-Z]{3,4})\b/g;
+
+function bulletinLetters(seg, info) {
+  const t = seg.text;
+  const lines = t.split('\n');
+  const lineAt = (i) => t.slice(0, i).split('\n').length - 1;
+  const rows = [];
+  let m, refs = 0;
+  LOA_REF.lastIndex = 0;
+  while ((m = LOA_REF.exec(t))) {
+    refs++;
+    const after = t.slice(m.index + m[0].length, m.index + m[0].length + 200);
+    const exp = findDates(after.slice(0, 80))[0];
+    if (!exp) continue;
+    const rest = after.slice(exp.index + exp.raw.length);
+    const lab = rest.match(/\b(TQM\d{3,6}\/\d{2})\b/);
+    const tqmDate = lab ? findDates(rest.slice(lab.index + lab[0].length, lab.index + lab[0].length + 30))[0] : null;
+    rows.push({ ref: clean(m[1]), expiry: exp.iso, label: lab && lab[1], tqmExpiry: tqmDate && tqmDate.iso, line: lineAt(m.index), evidence: clean(t.slice(m.index, m.index + m[0].length + exp.index + exp.raw.length)) });
+  }
+  // A reference whose date could not be read means the table did not come
+  // out row by row; a wrong pairing is worse than none.
+  if (!rows.length || rows.length < refs) return [info];
+
+  // Each printed line belongs to the row whose reference line is nearest
+  // (cells wrap above and below it). The table ends at the first blank line
+  // after the last row; the page footer repeats the device list.
+  const last = rows[rows.length - 1].line;
+  let end = lines.length;
+  for (let i = last + 1; i < lines.length; i++) if (!lines[i].trim()) { end = i; break; }
+  let start = 0;
+  for (let i = rows[0].line - 1; i >= 0; i--) if (/Management\)?\s*$|Expiry\s+date\s*$/i.test(lines[i])) { start = i + 1; break; }
+  const text = rows.map(() => []);
+  for (let i = start; i < end; i++) {
+    let best = 0;
+    rows.forEach((r, k) => { if (Math.abs(r.line - i) < Math.abs(rows[best].line - i)) best = k; });
+    text[best].push(lines[i]);
+  }
+  const rowText = text.map((x) => x.join('\n'));
+
+  // The row's hardware version marker (CT1, CT2 for contact; CL1... for contactless).
+  const cl = info.category === 'EMV L1 Contactless';
+  rows.forEach((r, k) => {
+    const counts = {};
+    for (const v of rowText[k].match(cl ? /\bCL\s?\d\b/g : /\bCT\s?\d\b/g) || []) { const key = v.replace(/\s/g, ''); counts[key] = (counts[key] || 0) + 1; }
+    r.version = Object.keys(counts).sort((a, b) => counts[b] - counts[a] || a.localeCompare(b))[0] || '';
+  });
+
+  const products = info.products.map((p) => p.value).sort((a, b) => b.length - a.length);
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&').replace(/\s+/g, '\\s+');
+  const assigned = rows.map(() => []);
+  const notes = rows.map(() => []);
+  for (const p of products) {
+    // Mentions of this device on each row, with longer names that contain it ("Lane/5000 LE") masked out.
+    const longer = products.filter((q) => q.length > p.length && q.toUpperCase().startsWith(p.toUpperCase()));
+    const masked = rowText.map((x) => longer.reduce((s, q) => s.replace(new RegExp(esc(q), 'gi'), '#'), x));
+    const re = new RegExp(`${esc(p)}(?![\\w/])(\\s?(${cl ? 'CL' : 'CT'})\\s?(\\d)\\b)?`, 'gi');
+    const plain = masked.map((x) => [...x.matchAll(re)].filter((h) => !h[1]).length);
+    const qualified = masked.map((x) => [...x.matchAll(re)].filter((h) => h[1]).map((h) => `${h[2].toUpperCase()}${h[3]}`));
+    const versions = [...new Set(qualified.flat())].sort();
+    let row;
+    if (rows.length === 1) row = 0;
+    else if (versions.length) {
+      // A name without a version suffix is the first hardware version.
+      row = rows.findIndex((r) => r.version === versions[0]);
+      if (row < 0) row = qualified.findIndex((q) => q.includes(versions[0]));
+      rows.forEach((r, k) => { if (k !== row && r.version && versions.includes(r.version)) notes[k].push(`${p} ${r.version} units are also covered by this row; ${p} itself is the ${versions[0]} row`); });
+    } else {
+      const most = Math.max(...plain);
+      row = most > 0 ? plain.indexOf(most) : 0;
+      if (most === 0) notes[0].push(`${p} could not be placed on a row of the bulletin table; check its row`);
+    }
+    assigned[row].push(p);
+  }
+
+  // Every row of a real table covers some device; an empty row means the
+  // text came out column by column, so the rows cannot be trusted.
+  if (assigned.some((a) => !a.length)) return [info];
+
+  const out = [];
+  const iface = info.category === 'EMV L1 Contactless' ? 'Contactless (PCD)' : 'Contact (IFM)';
+  rows.forEach((r, k) => {
+    const devs = info.products.filter((p) => assigned[k].includes(p.value));
+    const where = `${iface}${r.version ? ` ${r.version}` : ''}`;
+    const prod = (p, extra) => ({ ...p, evidence: r.evidence, confidence: 0.75, interface: where, source: 'bulletin', ...extra });
+    const common = {
+      ...info, informational: false, restricted: false, renewalType: 'Initial',
+      issueDate: null, kernelVersion: null, specVersion: null, l1Reference: null,
+      warnings: [...notes[k]], confidence: 85,
+    };
+    out.push({
+      ...common,
+      approvalNumber: field(r.ref, r.evidence, 0.8),
+      products: devs.map((p) => prod(p)),
+      expiryDate: field(r.expiry, r.evidence, 0.8),
+      expiryBasis: `Expiry date from the product configuration bulletin (${where})`,
+    });
+    if (r.label && r.tqmExpiry) {
+      out.push({
+        ...common, issuer: 'Mastercard', scheme: 'Mastercard TQM', category: 'TQM',
+        approvalNumber: field(r.label, `${r.label} ${r.tqmExpiry}`, 0.8),
+        products: devs.map((p) => prod(p, { label: r.label, expiry: r.tqmExpiry })),
+        expiryDate: field(r.tqmExpiry, `${r.label} ${r.tqmExpiry}`, 0.8),
+        expiryBasis: `TQM label expiry from the product configuration bulletin (${where})`,
+      });
+    }
+  });
+  return out.length ? out : [info];
+}
+
 // PDFs print the same characters many ways: unify dashes, spaces and quotes
 // so one pattern reads every letter.
 function normalizeText(t) {
@@ -637,7 +784,9 @@ function normalizeText(t) {
 /** Parse a whole document (array of page texts) into letters. */
 function parseDocument(pages) {
   if (typeof pages === 'string') pages = [pages];
-  return segmentLetters(pages.map(normalizeText)).map((seg, i) => ({ index: i, ...parseLetter(seg) }));
+  return segmentLetters(pages.map(normalizeText))
+    .flatMap((seg, segment) => (seg.type === 'bulletin' ? bulletinLetters(seg, parseLetter(seg)) : [parseLetter(seg)]).map((L) => ({ ...L, segment })))
+    .map((L, i) => ({ index: i, ...L }));
 }
 
 module.exports = { segmentLetters, parseLetter, parseDocument, ISSUERS, STARTS };

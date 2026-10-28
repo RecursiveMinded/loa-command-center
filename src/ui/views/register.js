@@ -19,14 +19,19 @@ const EMPTY = { scheme: '', category: '', platform: '', bundle: '', kernel: '', 
 export const CHANGED = [{ value: 'today', label: 'Changed today', days: 0 }, { value: 'week', label: 'Changed in 7 days', days: 7 }, { value: 'month', label: 'Changed in 30 days', days: 30 }];
 
 export const tagList = (r) => String(r.tags || '').split(',').map((t) => t.trim()).filter(Boolean);
-/** Hardware (reader) version of a record: its CLn tag, else the CLn in the device name. */
+/**
+ * Hardware version of a record: its CLn tag, else the CLn in the device name.
+ * A contactless or TQM approval on a name without a suffix belongs to the
+ * first version, CL1; PCI and contact approvals are shared by all versions.
+ */
 export const hwOf = (r) => {
   const t = tagList(r).find((x) => /^CL\d$/i.test(x));
   if (t) return t.toUpperCase();
   const m = String(r.device || '').toUpperCase().replace(/[^A-Z0-9]/g, '').match(/CL(\d)$/);
-  return m ? `CL${m[1]}` : '';
+  if (m) return `CL${m[1]}`;
+  return /Contactless|TQM/.test(r.category || '') ? 'CL1' : '';
 };
-const NO_HW = 'No CL (contact)';
+const NO_HW = 'Shared (PCI, contact)';
 
 const COLS = [
   ['device', 'Device'], ['scheme', 'Brand'], ['category', 'Approval type'], ['approval_number', 'Approval no.'],

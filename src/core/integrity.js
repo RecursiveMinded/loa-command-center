@@ -5,6 +5,7 @@
 
 const { daysBetween } = require('./dates');
 const { isEol } = require('./lifecycle');
+const { certHome } = require('./devices');
 
 const defaultNorm = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 const coversOf = (r) => String(r.covers || '').split(/[,;\n]/).map((x) => x.trim()).filter(Boolean);
@@ -93,22 +94,30 @@ function dataChecks(records, { norm = defaultNorm } = {}) {
     'The approval number is empty or a placeholder (such as "See LOA archive"). Acquirers need the exact number for their Level 3 work.', 'Drop the LOAs in the inbox, or add the numbers from them.',
     live.filter((r) => r.expiry_date && !realNumber(r.approval_number) && !isEol(r) && r.category !== 'Letter of Equivalency'));
 
+  // An L2 approval is for one kernel build; Level 3 partners need to know which.
+  add('l2-no-kernel', 'low', (n) => `${n} L2 approval${n === 1 ? ' has' : 's have'} no kernel version`,
+    'An L2 letter approves one kernel build (name and version). Without it, acquirers cannot match the approval to the software in the field, and a kernel upgrade cannot be planned.', 'Drop the L2 LOAs in the inbox to read the kernel version, or type it in.',
+    live.filter((r) => /^EMV L2/.test(r.category) && !isEol(r) && !String(r.kernel_version || '').trim()));
+
   // Foundations: L2 without L1, Mastercard L2 without TQM.
+  // Where each approval lives: the device (PCI, contact) or the hardware version (contactless, TQM; no suffix = CL1).
   const has = new Map();
-  for (const r of live) for (const d of [r.device, ...coversOf(r)]) { const k = norm(d); if (!has.has(k)) has.set(k, new Set()); has.get(k).add(r.category); }
+  const at = (d, category) => certHome(norm(d), category).key;
+  for (const r of live) for (const d of [r.device, ...coversOf(r)]) { const k = at(d, r.category); if (!has.has(k)) has.set(k, new Set()); has.get(k).add(r.category); }
+  const holds = (r, category) => (has.get(at(r.device, category)) || new Set()).has(category);
   add('l2-no-l1', 'medium', (n) => `${n} L2 approval${n === 1 ? ' has' : 's have'} no L1 approval on file for the same device`,
     'An L2 kernel approval rests on the L1 approval of the same interface (contact or contactless).', 'Add the L1 LOA, or link the device to the LOA that covers it.',
-    live.filter((r) => !isEol(r) && ((r.category === 'EMV L2 Contactless' && !has.get(norm(r.device)).has('EMV L1 Contactless'))
-      || (r.category === 'EMV L2 Contact' && !has.get(norm(r.device)).has('EMV L1 Contact')))));
+    live.filter((r) => !isEol(r) && ((r.category === 'EMV L2 Contactless' && !holds(r, 'EMV L1 Contactless'))
+      || (r.category === 'EMV L2 Contact' && !holds(r, 'EMV L1 Contact')))));
   add('mc-no-tqm', 'medium', (n) => `${n} Mastercard L2 approval${n === 1 ? ' has' : 's have'} no TQM on file for the device`,
     'A valid TQM statement is required to obtain and keep Mastercard L2 approvals.', 'Add the TQM statement for the device.',
-    live.filter((r) => !isEol(r) && r.category === 'EMV L2 Contactless' && r.scheme === 'Mastercard' && !has.get(norm(r.device)).has('TQM')));
+    live.filter((r) => !isEol(r) && r.category === 'EMV L2 Contactless' && r.scheme === 'Mastercard' && !holds(r, 'TQM')));
 
   // End of life that still has live approvals resting on it.
-  const eolL1 = new Set(live.filter((r) => isEol(r) && /^EMV L1/.test(r.category)).map((r) => `${norm(r.device)}|${r.category.replace('L1', 'L2')}`));
+  const eolL1 = new Set(live.filter((r) => isEol(r) && /^EMV L1/.test(r.category)).map((r) => `${at(r.device, r.category)}|${r.category.replace('L1', 'L2')}`));
   add('eol-l1-live-l2', 'low', (n) => `${n} L2 approval${n === 1 ? ' rests' : 's rest'} on an L1 approval marked end of life`,
     'The L1 approval will not be renewed, but the L2 approvals that depend on it are still tracked as live.', 'Mark them end of life too, or renew the L1.',
-    live.filter((r) => !isEol(r) && eolL1.has(`${norm(r.device)}|${r.category}`)));
+    live.filter((r) => !isEol(r) && eolL1.has(`${at(r.device, r.category)}|${r.category}`)));
 
   // Placed nowhere although the device is placed elsewhere.
   const placed = new Set(live.filter((r) => r.platform || r.bundle).map((r) => norm(r.device)));
