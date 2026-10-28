@@ -737,3 +737,15 @@ test('one LOA can certify a series of devices that share a reader', async () => 
   api.setReaderGroup('Contact reader A', []);
   assert.deepEqual(api.listReaderGroups(), {});
 });
+
+test('records with no bundle join their device\'s bundle on the Devices page', async () => {
+  const { api } = await fresh();
+  api.store.createRecord({ device: 'Lane/3000', category: 'PCI PTS', scheme: 'PCI SSC', platform: 'UPP', bundle: 'Bundle 6', expiry_date: '2031-04-30' });
+  api.store.createRecord({ device: 'Lane/3000', category: 'EMV L1 Contact', scheme: 'EMVCo', expiry_date: '2028-07-12' });
+  const cov = api.deviceCoverage();
+  assert.equal(cov.rows.length, 1, 'no separate Unassigned row');
+  assert.equal(cov.rows[0].cells.l1c.status, 'ok');
+  assert.equal(cov.rows[0].missing, 1); // only TQM
+  api.store.createRecord({ device: 'Desk/1700', category: 'EMV L1 Contact', scheme: 'EMVCo' });
+  assert.equal(api.deviceCoverage().rows.find((r) => r.device === 'Desk/1700').grp, 'Unassigned', 'a device with no bundle anywhere stays Unassigned');
+});
