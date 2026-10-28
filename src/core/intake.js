@@ -353,7 +353,9 @@ class Intake {
     }
     // A file dropped again before any of its letters was approved is read
     // again (a newer version may read it better); otherwise it is a duplicate.
-    const decided = existing && this.store.db.get("SELECT COUNT(*) AS n FROM inbox WHERE document_id=? AND status='applied'", [existing.id]).n;
+    // Decided = a letter of it was approved, or it was linked to a record by hand.
+    const decided = existing && (this.store.db.get("SELECT COUNT(*) AS n FROM inbox WHERE document_id=? AND status='applied'", [existing.id]).n
+      || this.store.db.get('SELECT COUNT(*) AS n FROM document_links WHERE document_id=?', [existing.id]).n);
     if (existing && decided) {
       // Some letters approved, others still waiting: read the waiting ones again.
       const waiting = this.store.listInbox().filter((x) => x.document_id === existing.id && (x.status === 'pending' || x.status === 'info'));
@@ -367,7 +369,9 @@ class Intake {
         return { filename, status: 'ok', documentId: existing.id, letters: items.length, pending: items.filter((x) => x.status === 'pending').length,
           info: items.filter((x) => x.status === 'info').length, items: r.items, ocrPages, reread: true };
       }
-      return { filename, status: 'duplicate', duplicateOf: existing.filename, documentId: existing.id, letters: 0 };
+      const linkedTo = this.store.db.all(`SELECT DISTINCT r.device, r.scheme, r.category FROM document_links l JOIN records r ON r.id = l.record_id
+        WHERE l.document_id=? ORDER BY r.device`, [existing.id]);
+      return { filename, status: 'duplicate', duplicateOf: existing.filename, documentId: existing.id, letters: 0, linkedTo };
     }
     const text = (pages || []).join('\n\f\n');
     if (text.replace(/[^A-Za-z0-9]/g, '').length < 40) {

@@ -72,7 +72,10 @@ const doneListeners = new Set();
 export function onQueueIdle(fn) { doneListeners.add(fn); return () => doneListeners.delete(fn); }
 
 function describe(res, ex) {
-  if (res.status === 'duplicate') return `Already imported as ${res.duplicateOf}`;
+  if (res.status === 'duplicate') {
+    const on = (res.linkedTo || []).map((r) => `${r.device} (${r.scheme} ${String(r.category).replace('EMV ', '')})`);
+    return `Duplicate, not added again: already imported as ${res.duplicateOf}${on.length ? `, on ${on.slice(0, 4).join(', ')}${on.length > 4 ? ` and ${on.length - 4} more` : ''}` : ', not linked to any record yet'}`;
+  }
   if (res.status === 'unreadable') return res.message || 'No readable text';
   const parts = [`${res.reread ? 'Read again: ' : ''}${res.letters} letter${res.letters === 1 ? '' : 's'} found`];
   if (res.pending) parts.push(`${res.pending} to review`);

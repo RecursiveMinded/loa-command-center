@@ -7,7 +7,7 @@ import { DocButtons, openDoc } from '../docs.js';
 const BLANK = {
   device: '', platform: '', bundle: '', family: '', category: 'EMV L1 Contact', scheme: '', kernel_version: '', approval_number: '',
   issue_date: '', expiry_date: '', expiry_basis: '', restricted: false, stage: '', disposition: '', owner: '', customer: '', market: '',
-  next_action: '', next_action_date: '', extension_used: false, notes: '', portal_date: '', portal_status: 'Not Tracked', change_ticket: '', tags: '', covers: '', archived: false,
+  next_action: '', next_action_date: '', extension_used: false, notes: '', portal_date: '', portal_status: 'Not Tracked', change_ticket: '', tags: '', covers: '', eol: '', renewal_path: '', test_lab: '', archived: false,
 };
 
 export function RecordDrawer({ id, app, onClose, tab: startTab }) {
@@ -125,11 +125,14 @@ export function RecordDrawer({ id, app, onClose, tab: startTab }) {
       <div class="row gap-l mt"><label class="check"><input type="checkbox" checked=${form.restricted} onChange=${set('restricted')} /> Restricted / final extension</label>
         <label class="check"><input type="checkbox" checked=${form.extension_used} onChange=${set('extension_used')} /> Extension already used</label></div>
       <${CoversField} value=${form.covers} device=${form.device} onChange=${(v) => setForm({ ...form, covers: v })} />
+      <${EolField} value=${form.eol} onChange=${(v) => setForm({ ...form, eol: v })} />
 
       <div class="section-title">Ownership and next step</div>
       <div class="grid3">
         <label class="field">Stage<${Select} value=${form.stage} onChange=${set('stage')} placeholder=${`Automatic (${r ? r.stageNow : 'Monitoring'})`} options=${tax.stages} /></label>
         <label class="field">Disposition<${Select} value=${form.disposition} onChange=${set('disposition')} placeholder="(none)" options=${tax.dispositions} /></label>
+        <label class="field">Renewal path<${Select} value=${form.renewal_path} onChange=${set('renewal_path')} placeholder="(not decided)" options=${tax.renewalPaths || []} /></label>
+        ${F('test_lab', 'Test lab')}
         ${F('owner', 'Owner')}${F('customer', 'Customer')}${F('market', 'Market')}${F('next_action_date', 'Next action date', 'date')}
         <label class="field" style="grid-column:span 2">Tags<input type="text" value=${form.tags} onInput=${set('tags')} placeholder="Comma separated, e.g. Retail, Program X, Customer A" /></label>
       </div>
@@ -216,6 +219,11 @@ function DeviceCerts({ p, current, app, reload }) {
     } catch (e) { toastError(e); }
   };
   const na = async (sec, row, v) => { try { await call('setCoverageNA', sec.key, row.slot, v); reload(); } catch (e) { toastError(e); } };
+  const eol = async (r) => {
+    const reason = r.eol ? '' : prompt('Not renewing this certification? Give a reason (e.g. replaced by the CL2 reader):', 'Not renewing');
+    if (reason === null) return;
+    try { await call('setEol', [r.id], reason); toast(reason ? 'Marked end of life' : 'Tracking it again', 'ok'); reload(); app.refresh(); } catch (e) { toastError(e); }
+  };
   return html`<p class="muted small">Each certification has its own approval number, dates and LOA. Click one to open it, or add a missing one.${p.platform || p.bundle ? ` Showing ${[p.platform, p.bundle].filter(Boolean).join(' · ')}.` : ''}</p>
     ${[...p.sections].sort((a, b) => (b.rows.some((x) => x.record && x.record.id === current) ? 1 : 0) - (a.rows.some((x) => x.record && x.record.id === current) ? 1 : 0)).map((sec) => html`<div class="section-title">${sec.device} <span class="faint">${sec.reader ? 'Contactless reader' : 'Terminal'}</span></div>
       <table class="t compact certs"><thead><tr><th>Certification</th><th>Approval no.</th><th>Issued</th><th>Expires</th><th>Status</th><th class="num">LOAs</th><th></th></tr></thead><tbody>
@@ -233,8 +241,25 @@ function DeviceCerts({ p, current, app, reload }) {
           <td class="small nowrap">${fmtDate(r.expiry_date) || html`<span class="faint">—</span>`}</td>
           <td><${HealthPill} r=${r} /></td>
           <td class="num">${r.doc_count || html`<span class="faint">—</span>`}</td>
-          <td class="nowrap" onClick=${(e) => e.stopPropagation()}><button class="btn sm ghost" onClick=${() => app.openRecord(r.id, 'documents')} title="Open its LOAs or add one"><${Icon} name="file" /> LOA</button></td></tr>`;
+          <td class="nowrap" onClick=${(e) => e.stopPropagation()}><button class="btn sm ghost" onClick=${() => app.openRecord(r.id, 'documents')} title="Open its LOAs or add one"><${Icon} name="file" /> LOA</button>
+            <button class="btn sm ghost" onClick=${() => eol(r)} title=${r.eol ? `End of life: ${r.eol}. Click to track it again.` : 'Not renewing: accept this expiration'}>${r.eol ? 'Undo EOL' : 'EOL'}</button></td></tr>`;
       })}</tbody></table>`)}`;
+}
+
+/**
+ * Accepting an expiration: the certification will not be renewed (end of
+ * life, e.g. the CL1 reader replaced by CL2). It then stops raising actions
+ * and no longer counts as a gap or a risk.
+ */
+function EolField({ value, onChange }) {
+  const on = !!String(value || '').trim();
+  return html`<div class=${`eolbox ${on ? 'on' : ''}`}>
+    <label class="check"><input type="checkbox" checked=${on} aria-label="Not renewing"
+      onChange=${(e) => onChange(e.target.checked ? 'Not renewing' : '')} /> <b>Not renewing: accept this expiration (end of life)</b></label>
+    ${on ? html`<label class="field mt">Reason<input type="text" aria-label="End of life reason" value=${value} onInput=${(e) => onChange(e.target.value || ' ')}
+        placeholder="e.g. Replaced by the CL2 reader; customers upgrade" /></label>`
+      : html`<div class="faint small">Tick this when the certification will be allowed to expire. It stops counting as a risk or a gap, and the plan stops asking for action.</div>`}
+  </div>`;
 }
 
 /**

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'preact/hooks';
 import { html, Icon, fmtWhen, plural, useLoad, Spinner, toast, toastError, Select, bytes } from '../lib.js';
-import { call, native, isDesktop } from '../api.js';
+import { call, native, isDesktop, saveAs } from '../api.js';
 import { extractPdf } from '../extract.js';
 import { useUpdate, checkForUpdates, installUpdate } from '../update.js';
 
@@ -132,6 +132,39 @@ function Ai({ s, save }) {
         <li>Open a Command Prompt and run <span class="mono">ollama pull gemma3:4b</span> (about 3 GB; use <span class="mono">gemma3:1b</span> on low-memory laptops).</li>
         <li>Come back here and press Test connection.</li></ol>
       <p class="muted small mt">The address must be on this computer or your local network. Internet AI services are not allowed, so your LOAs never leave your control.</p></div>` : null}
+    <${AiRules} s=${s} save=${save} />
+  </div>`;
+}
+
+const RULES_EXAMPLE = `# Our certification rules
+- CL1 readers are end of life: do not renew CL1 approvals once a CL2 version exists.
+- Only renew Interac on devices sold in Canada.
+- Treat Lane/5000, Lane/3600 and Desk/1700 as one reader series.
+- Escalate PCI PTS renewals to the hardware team 12 months ahead.`;
+
+/**
+ * The organisation's own rules, written in plain language (Markdown). The
+ * local AI reads them with every question, briefing and data review, on top of
+ * the industry background built into the app.
+ */
+function AiRules({ s, save }) {
+  const [text, setText] = useState(s.aiRules || '');
+  const file = useRef();
+  const load = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    try { setText(await f.text()); toast(`Loaded ${f.name}. Press Save to use it.`); } catch (err) { toastError(err); }
+  };
+  return html`<div class="card pad"><h3>Your rules and memory</h3>
+    <p class="muted small mt">Write the rules and context the assistant should always follow, in plain language or Markdown: which certifications you will not renew, how your devices group, who to escalate to. The assistant reads this with every answer, briefing and data review. The app already knows the industry basics (L1, L2 per brand, TQM, PCI PTS, CL readers, end of life).</p>
+    <textarea class="mono" rows="10" aria-label="Rules for the assistant" value=${text} placeholder=${RULES_EXAMPLE} onInput=${(e) => setText(e.target.value)} style="width:100%;margin-top:10px"></textarea>
+    <div class="row wrap mt"><button class="btn primary" onClick=${() => save({ aiRules: text }, 'Rules saved')}>Save</button>
+      <button class="btn" onClick=${() => file.current.click()}><${Icon} name="upload" /> Load .md file</button>
+      <input type="file" ref=${file} hidden accept=".md,.txt,.markdown" onChange=${load} />
+      <button class="btn" onClick=${() => saveAs('assistant-rules.md', text || RULES_EXAMPLE, [{ name: 'Markdown', extensions: ['md'] }]).catch(toastError)}><${Icon} name="download" /> Save as .md</button>
+      <span class="faint small">${text.length ? `${text.length} characters` : 'Empty'}</span></div>
+    ${s.ai && s.ai.provider === 'off' ? html`<p class="muted small mt">The local AI is off, so these rules are stored but not used yet. The rules engine follows what you mark on records (end of life, N/A, renewal path).</p>` : null}
   </div>`;
 }
 

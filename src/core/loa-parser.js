@@ -244,7 +244,7 @@ const ISSUERS = {
 
   discover: {
     issuer: 'Discover', scheme: 'Discover',
-    category: (t) => (/contactless/i.test(t) ? 'EMV L2 Contactless' : 'Other'),
+    category: (t) => (/contactless/i.test(t) ? 'EMV L2 Contactless' : 'EMV L2 Contact'),
     approval: (t) => grab(t, /Product\s+Reference\s+Number:\s*(\S+)/i, 0.85),
     products: (t) => {
       const p = grab(t, /Product:\s*(.+?)\s+Product\s+Reference/i);
@@ -307,7 +307,7 @@ const ISSUERS = {
 
   jcb: {
     issuer: 'JCB', scheme: 'JCB',
-    category: (t) => (/Contactless\s+IC\s+Terminal/i.test(t) ? 'EMV L2 Contactless' : 'Other'),
+    category: (t) => (/Contactless\s+IC\s+Terminal/i.test(t) ? 'EMV L2 Contactless' : 'EMV L2 Contact'),
     approval: (t) => grab(t, /JCB\s+Reference\s+Number\s*:?\s*(\S+)/i),
     products: (t) => {
       const p = grab(t, /Product\s+Marketing\s+Name\s*:?\s*(.+?)\s*(?:◆|JCB\s+Contactless|JCB\s+Contact|$)/i);
@@ -327,7 +327,7 @@ const ISSUERS = {
 
   mastercard: {
     issuer: 'Mastercard', scheme: 'Mastercard',
-    category: (t) => (/Contactless/i.test(t.slice(0, 2000)) ? 'EMV L2 Contactless' : 'Other'),
+    category: (t) => (/Contactless/i.test(t.slice(0, 2000)) ? 'EMV L2 Contactless' : 'EMV L2 Contact'),
     approval: (t) => grab(t, /LoA\s+Identifier:\s*(\S+)/i),
     products: (t) => {
       const p = grab(t, /Product\s+Commercial\s+Name\s*:?\s*(.+?)\s+Product\s+Technical/i);
@@ -407,7 +407,7 @@ const ISSUERS = {
 
   unionpay: {
     issuer: 'UnionPay', scheme: 'UnionPay',
-    category: (t) => (/contactless|quickpass/i.test(t) ? 'EMV L2 Contactless' : 'Other'),
+    category: (t) => (/contactless|quickpass/i.test(t) ? 'EMV L2 Contactless' : 'EMV L2 Contact'),
     approval: (t) => grab(t, /\b(QP-\d{2,6})\b/, 0.85) || grab(t, /\b(CUP\d{5,10})\b/, 0.75),
     products: (t) => {
       // The certificate prints its table as values then labels; the model
@@ -436,7 +436,7 @@ const ISSUERS = {
 
   visa: {
     issuer: 'Visa', scheme: 'Visa',
-    category: (t) => (/contactless|paywave|vcps/i.test(t) ? 'EMV L2 Contactless' : 'Other'),
+    category: (t) => (/contactless|paywave|vcps/i.test(t) ? 'EMV L2 Contactless' : 'EMV L2 Contact'),
     approval: (t) => grab(t, /(?:Approval|Reference|Letter)\s+(?:Number|No\.?|ID)\s*:?\s*([A-Z0-9][A-Z0-9.\-_/]{3,})/i, 0.8),
     products: (t) => {
       const p = grab(t, /(?:Product|Device|Terminal)\s+(?:Name|Model)\s*:?\s*(.+?)\s{2,}|\n/i, 0.7);
@@ -516,7 +516,7 @@ function genericParse(t) {
   const products = genericProducts(t);
   let category = 'Other';
   if (/level\s*1|\bL1\b/i.test(t)) category = /contactless|proximity/i.test(t) ? 'EMV L1 Contactless' : 'EMV L1 Contact';
-  else if (/level\s*2|\bL2\b|kernel/i.test(t)) category = /contactless/i.test(t) ? 'EMV L2 Contactless' : 'Other';
+  else if (/level\s*2|\bL2\b|kernel/i.test(t)) category = /contactless/i.test(t) ? 'EMV L2 Contactless' : 'EMV L2 Contact';
   else if (/pin\s+transaction\s+security|\bPTS\b/i.test(t)) category = 'PCI PTS';
   return { scheme, issuer: scheme, approval, expiry, products, category };
 }

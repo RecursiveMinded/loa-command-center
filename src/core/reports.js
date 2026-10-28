@@ -4,7 +4,7 @@
 // show file paths or raw source names, only verified business data.
 
 const { formatDate, todayIso } = require('./dates');
-const { daysRemaining, effectiveStage } = require('./lifecycle');
+const { daysRemaining, effectiveStage, isEol } = require('./lifecycle');
 const { timeline } = require('./engine');
 
 function esc(s) {
@@ -55,8 +55,8 @@ function summaryReport({ analysis, records, settings = {}, asOf = todayIso(), ti
     ['Stage', (r) => esc(r.stageNow)],
   ];
   const by = (a, b) => (a.days ?? 99999) - (b.days ?? 99999);
-  const due90 = rows.filter((r) => r.days != null && r.days >= 0 && r.days <= 90).sort(by);
-  const due365 = rows.filter((r) => r.days != null && r.days > 90 && r.days <= 365).sort(by);
+  const due90 = rows.filter((r) => !isEol(r) && r.days != null && r.days >= 0 && r.days <= 90).sort(by);
+  const due365 = rows.filter((r) => !isEol(r) && r.days != null && r.days > 90 && r.days <= 365).sort(by);
   const expired = rows.filter((r) => r.days != null && r.days < 0 && !['Market Approved Expiration', 'Retired'].includes(r.stageNow) && r.disposition !== 'Market Approved Expiration').sort(by);
   const restricted = rows.filter((r) => (r.restricted || r.extension_used) && r.days != null && r.days >= 0 && r.days <= 730).sort(by);
   const open = analysis.actions.filter((a) => a.status === 'open');
@@ -274,6 +274,92 @@ function exportCsv(records, asOf = todayIso()) {
   return '﻿' + lines.join('\r\n');
 }
 
+/**
+ * The briefing as an email-ready table: every certification that is expired
+ * without a decision or expires within the horizon, with a blank "Renewing?"
+ * column for the team to confirm which ones will not be renewed. Inline
+ * styles only, so it survives pasting into Outlook or Gmail.
+ */
+function briefingReport({ records, analysis, briefing = '', settings = {}, asOf = todayIso(), months = 12 }) {
+  const horizon = Math.round(months * 30.5);
+  const rows = recRows(records.filter((r) => !r.archived && !isEol(r)), asOf)
+    .filter((r) => r.days != null && r.days <= horizon && (r.days >= 0 || !['Market Approved Expiration', 'Retired'].includes(r.stageNow)))
+    .sort((a, b) => a.days - b.days || String(a.device).localeCompare(String(b.device), undefined, { numeric: true }));
+  const status = (d) => (d < 0 ? `Expired ${-d} d ago` : d === 0 ? 'Expires today' : `${d} days`);
+  const color = (d) => (d < 0 ? '#b42318' : d <= 90 ? '#b54708' : d <= 180 ? '#a15c07' : '#344054');
+  const cols = [
+    ['Device', (r) => `<b>${esc(r.device)}</b>`],
+    ['Platform / bundle', (r) => esc([r.platform, r.bundle].filter(Boolean).join(' · '))],
+    ['Certification', (r) => esc(r.category.replace(/^EMV /, ''))],
+    ['Brand', (r) => esc(r.scheme)],
+    ['Approval no.', (r) => esc(r.approval_number)],
+    ['Expires', (r) => esc(formatDate(r.expiry_date))],
+    ['Status', (r) => `<span style="color:${color(r.days)};font-weight:600">${esc(status(r.days))}</span>`],
+    ['Stage', (r) => esc(r.stageNow)],
+    ['Renewal path', (r) => esc(r.renewal_path)],
+    ['Renewing? (Yes / No, end of life)', () => ''],
+  ];
+  const th = 'style="text-align:left;padding:6px 8px;background:#142f4c;color:#fff;font-size:12px;border:1px solid #142f4c"';
+  const td = 'style="padding:5px 8px;border:1px solid #d0d5dd;font-size:12px;vertical-align:top"';
+  const s = analysis.summary;
+  const intro = esc(briefing).replace(/\n/g, '<br>');
+  const html = `<div style="font-family:Segoe UI,Arial,sans-serif;color:#101828">
+<p style="font-size:14px;margin:0 0 6px"><b>Certification briefing, ${esc(formatDate(asOf))}</b></p>
+<p style="font-size:12px;margin:0 0 10px;color:#475467">${s.expiredOpen} expired without a decision · ${s.due90} due in 90 days · ${s.due365} due in 12 months · ${rows.length} listed below (next ${months} months)</p>
+${intro ? `<p style="font-size:12px;margin:0 0 12px">${intro}</p>` : ''}
+<p style="font-size:12px;margin:0 0 8px">Please confirm in the last column which of these will <b>not</b> be renewed, so they can be marked end of life.</p>
+<table style="border-collapse:collapse;width:100%"><thead><tr>${cols.map((c) => `<th ${th}>${esc(c[0])}</th>`).join('')}</tr></thead>
+<tbody>${rows.map((r) => `<tr>${cols.map((c) => `<td ${td}>${c[1](r)}</td>`).join('')}</tr>`).join('\n')}</tbody></table>
+${settings.userName ? `<p style="font-size:12px;margin-top:12px">${esc(settings.userName)}</p>` : ''}</div>`;
+  const text = [
+    `Certification briefing, ${formatDate(asOf)}`, '',
+    cols.map((c) => c[0]).join('\t'),
+    ...rows.map((r) => [r.device, [r.platform, r.bundle].filter(Boolean).join(' · '), r.category.replace(/^EMV /, ''), r.scheme, r.approval_number || '',
+      formatDate(r.expiry_date), status(r.days), r.stageNow, r.renewal_path || '', ''].join('\t')),
+  ].join('\n');
+  return { html, text, ids: rows.map((r) => r.id), count: rows.length };
+}
+
+/**
+ * The Level 3 enablement sheet: one row per device with every L1, L2 and
+ * brand approval number and expiry, which acquirers need for their own
+ * certification. Built from the Devices coverage view.
+ */
+async function exportL3Sheet(cov, { asOf = todayIso() } = {}) {
+  const ExcelJS = require('exceljs');
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'LOA Command Center';
+  wb.created = new Date();
+  const ws = wb.addWorksheet('L3 approval numbers', { views: [{ state: 'frozen', ySplit: 1, xSplit: 3 }] });
+  const name = (c) => (c.group === 'L2 Contactless' ? `L2 ${c.label}` : c.group === 'Contactless reader' ? `${c.label} (reader)` : c.label);
+  const cols = [{ header: 'Platform', key: 'platform', width: 12 }, { header: 'Bundle', key: 'bundle', width: 14 }, { header: 'Device', key: 'device', width: 20 }];
+  for (const c of cov.columns) cols.push({ header: `${name(c)} approval`, key: `${c.key}#n`, width: 22 }, { header: `${name(c)} expires`, key: `${c.key}#d`, width: 12 });
+  ws.columns = cols;
+  for (const r of cov.rows) {
+    const row = { platform: r.platform, bundle: r.bundle, device: r.device };
+    let any = false;
+    for (const c of cov.columns) {
+      const cell = r.cells[c.key];
+      const rec = cell.record;
+      if (rec) {
+        any = true;
+        row[`${c.key}#n`] = `${rec.approval_number || ''}${rec.sharedFrom ? ` (via ${rec.sharedFrom})` : ''}${rec.eol ? ' (end of life)' : ''}`;
+        row[`${c.key}#d`] = rec.expiry_date || '';
+      } else if (cell.status === 'na') row[`${c.key}#n`] = 'N/A';
+    }
+    if (!any) continue;
+    const added = ws.addRow(row);
+    for (const c of cov.columns) {
+      const rec = r.cells[c.key].record;
+      if (rec && rec.expiry_date && rec.expiry_date < asOf) added.getCell(`${c.key}#d`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8D7D3' } };
+    }
+  }
+  ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF142F4C' } };
+  ws.autoFilter = { from: 'A1', to: { row: 1, column: cols.length } };
+  return Buffer.from(await wb.xlsx.writeBuffer());
+}
+
 /** Plain-text email body for the digest (no source paths, per policy). */
 function digestEmail(dg, analysis, { settings = {} } = {}) {
   const s = analysis.summary;
@@ -292,4 +378,4 @@ function digestEmail(dg, analysis, { settings = {} } = {}) {
   return lines.join('\n');
 }
 
-module.exports = { summaryReport, exportExcel, exportCsv, portalChanges, exportChangeRequest, digestEmail, timelineSvg, esc };
+module.exports = { summaryReport, briefingReport, exportL3Sheet, exportExcel, exportCsv, portalChanges, exportChangeRequest, digestEmail, timelineSvg, esc };

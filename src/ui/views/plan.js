@@ -6,6 +6,7 @@ const PRI = { 1: 'Critical', 2: 'High', 3: 'Medium', 4: 'Low' };
 const KINDS = {
   expired: 'Expired', renewal: 'Renewal', wave: 'Renewal wave', restricted: 'Final / restricted', chase: 'Chase LOA',
   followup: 'Overdue next step', portal: 'Portal update', replacement: 'Replacement', data: 'Data quality', evidence: 'Missing LOA', inbox: 'Inbox',
+  dependency: 'Dependency', radar: 'Escalation radar',
 };
 
 export function ActionItem({ a, app, onChange, compact }) {
