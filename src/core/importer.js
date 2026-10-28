@@ -55,7 +55,7 @@ function mapHeaders(headers) {
 function sheetHint(name) {
   const n = String(name || '');
   const cat = normalizeCategory(n);
-  return ['EMV L1 Contact', 'EMV L1 Contactless', 'EMV L2 Contactless', 'PCI PTS', 'TQM'].includes(cat) ? cat : '';
+  return ['EMV L1 Contact', 'EMV L1 Contactless', 'EMV L2 Contact', 'EMV L2 Contactless', 'PCI PTS', 'TQM'].includes(cat) ? cat : '';
 }
 
 function cellValue(v) {
@@ -135,7 +135,7 @@ function rowsToRecords(table, { sheetName = '', defaults = {} } = {}) {
     if (!category) category = scheme && !['EMVCo', 'PCI SSC'].includes(scheme) ? 'EMV L2 Contactless' : 'Other';
     if (category === 'TQM') scheme = 'Mastercard TQM';
     if (!scheme || scheme === rawScheme && /contact|level|emv\b/i.test(rawScheme)) {
-      scheme = category === 'PCI PTS' ? 'PCI SSC' : category.startsWith('EMV L1') ? 'EMVCo' : category === 'TQM' ? 'Mastercard TQM' : (scheme || 'Other');
+      scheme = category === 'PCI PTS' ? 'PCI SSC' : category.startsWith('EMV L1') || category === 'EMV L2 Contact' ? 'EMVCo' : category === 'TQM' ? 'Mastercard TQM' : (scheme || 'Other');
     }
     const rec = {
       platform: String(get('platform') || defaults.platform || '').trim(),

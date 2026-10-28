@@ -107,7 +107,7 @@ test('schedule: daily, weekly and monthly digests', () => {
 test('lifecycle: windows and replacement coverage', () => {
   assert.equal(windowFor(-1).key, 'expired');
   assert.equal(windowFor(25).key, 'd30');
-  assert.equal(windowFor(400).key, 'later');
+  assert.equal(windowFor(400).key, 'd545'); assert.equal(windowFor(600).key, 'later');
   assert.deepEqual(coverage('2026-12-31', '2026-12-01'), { kind: 'overlap', days: 31 });
   assert.equal(coverage('2026-12-31', '2027-01-10').kind, 'gap');
 });

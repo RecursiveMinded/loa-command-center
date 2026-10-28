@@ -73,7 +73,7 @@ function tablesToRecords(tables, ctx = {}) {
     }
   }
   if (ctx.l2Contact && ctx.l2Contact.expiry) {
-    out.push({ ...base, device: 'Kernel family', category: 'Other', scheme: 'EMVCo', tags: 'Contact kernel', kernel_version: ctx.l2Contact.version, portal_date: ctx.l2Contact.expiry, expiry_date: ctx.l2Contact.expiry });
+    out.push({ ...base, device: 'Kernel family', category: 'EMV L2 Contact', scheme: 'EMVCo', kernel_version: ctx.l2Contact.version, portal_date: ctx.l2Contact.expiry, expiry_date: ctx.l2Contact.expiry });
   }
   return out;
 }

@@ -684,16 +684,17 @@ test('one device keeps one spelling; reader variants stay separate devices', asy
   assert.equal(b.device, 'Lane/3000-CL1');
   const c = api.store.createRecord({ device: 'Lane/3000 CL2', category: 'EMV L2 Contactless', scheme: 'Visa' });
   assert.equal(c.device, 'Lane/3000 CL2', 'CL2 is a different reader');
-  // Older spelling variants are merged on upgrade, and L2 Contact records become Other.
+  // Older spelling variants are merged on upgrade, and records filed as Other
+  // with an "L2 Contact" tag (1.0.10-1.0.13) return to EMV L2 Contact.
   api.store.db.run("UPDATE records SET device='LANE3000CL1' WHERE id=?", [b.id]);
-  api.store.db.run("INSERT INTO records(id, rkey, device, category, scheme, created_at, updated_at) VALUES('x1','k-x1','NX9','EMV L2 Contact','Visa','2026-01-01','2026-01-01')");
+  api.store.db.run("INSERT INTO records(id, rkey, device, category, scheme, tags, created_at, updated_at) VALUES('x1','k-x1','NX9','Other','EMVCo','L2 Contact, Retail','2026-01-01','2026-01-01')");
   api.store.setSettings({ appVersion: '0.0.1' });
   api.upgradeBackup(null);
   assert.equal(api.store.getRecord(b.id).device, 'Lane/3000-CL1');
   const x = api.store.getRecord('x1');
-  assert.equal(x.category, 'Other');
-  assert.match(x.tags, /L2 Contact/);
-  assert.ok(!api.info().taxonomy.categories.includes('EMV L2 Contact'));
+  assert.equal(x.category, 'EMV L2 Contact');
+  assert.equal(x.tags, 'Retail');
+  assert.ok(api.info().taxonomy.categories.includes('EMV L2 Contact'));
 });
 
 test('a record shows every certification of its physical device', async () => {
@@ -745,7 +746,144 @@ test('records with no bundle join their device\'s bundle on the Devices page', a
   const cov = api.deviceCoverage();
   assert.equal(cov.rows.length, 1, 'no separate Unassigned row');
   assert.equal(cov.rows[0].cells.l1c.status, 'ok');
-  assert.equal(cov.rows[0].missing, 1); // only TQM
+  assert.equal(cov.rows[0].missing, 2); // L2 Contact and TQM
   api.store.createRecord({ device: 'Desk/1700', category: 'EMV L1 Contact', scheme: 'EMVCo' });
   assert.equal(api.deviceCoverage().rows.find((r) => r.device === 'Desk/1700').grp, 'Unassigned', 'a device with no bundle anywhere stays Unassigned');
+});
+
+test('an accepted expiration (end of life) raises no actions and is not a gap', async () => {
+  const { api } = await fresh();
+  const base = { platform: 'UPP', bundle: 'Bundle 6' };
+  const l1 = api.store.createRecord({ ...base, device: 'Lane/3000-CL1', category: 'EMV L1 Contactless', scheme: 'EMVCo', expiry_date: addDays(todayIso(), -10) });
+  const visa = api.store.createRecord({ ...base, device: 'Lane/3000-CL1', category: 'EMV L2 Contactless', scheme: 'Visa', expiry_date: addDays(todayIso(), 40) });
+  const keys = () => api.analysis().actions.map((a) => a.key);
+  assert.ok(keys().some((k) => k.startsWith(`expired:${l1.id}`)));
+  assert.ok(keys().some((k) => k.startsWith('depends:')), 'the Visa L2 rests on an expired L1');
+  assert.equal(api.setEol([l1.id, visa.id], 'Replaced by the CL2 reader'), 2);
+  const a = api.analysis();
+  assert.ok(!a.actions.some((x) => x.recordIds.includes(l1.id) && !x.key.startsWith('depends:')), 'no action for an end-of-life record');
+  assert.ok(!a.actions.some((x) => x.key.startsWith('depends:')), 'both ends of life: no dependency warning');
+  assert.equal(a.summary.eol, 2);
+  assert.equal(a.summary.due90, 0);
+  const r = api.listRecords().find((x) => x.id === l1.id);
+  assert.equal(r.health, 'retired');
+  assert.equal(r.stageNow, 'Retired');
+  const row = api.deviceCoverage().rows.find((x) => x.device === 'Lane/3000-CL1');
+  assert.equal(row.cells.l1cl.status, 'eol');
+  assert.ok(row.retired, 'every certification of the reader is end of life');
+  assert.equal(row.missing, 0, 'a retired reader has no gaps');
+  api.setEol([l1.id], '');
+  assert.equal(api.listRecords().find((x) => x.id === l1.id).health, 'expired');
+});
+
+test('dependency warnings: L1 before L2, TQM for Mastercard, PCI for production', async () => {
+  const { api } = await fresh();
+  const mk = (device, category, scheme, days) => api.store.createRecord({ device, category, scheme, expiry_date: addDays(todayIso(), days) });
+  mk('Move/5000-CL2', 'EMV L1 Contactless', 'EMVCo', 200);
+  mk('Move/5000-CL2', 'EMV L2 Contactless', 'Visa', 700);
+  mk('Move/5000-CL2', 'EMV L2 Contactless', 'Mastercard', 700);
+  mk('Move/5000-CL2', 'TQM', 'Mastercard TQM', -5);
+  mk('Move/5000', 'PCI PTS', 'PCI SSC', -1);
+  const acts = api.analysis().actions;
+  const l1 = acts.find((a) => a.kind === 'dependency' && /L1 Contactless/.test(a.title));
+  assert.ok(l1, 'L1 expiring before the L2 approvals that rest on it');
+  assert.match(l1.title, /2 approvals at risk/);
+  assert.equal(l1.priority, 3);
+  const tqm = acts.find((a) => a.kind === 'dependency' && /^TQM/.test(a.title));
+  assert.match(tqm.title, /has expired: 1 approval at risk/);
+  assert.equal(tqm.priority, 2);
+  assert.ok(acts.some((a) => a.key.startsWith('pci-production:')));
+});
+
+test('escalation radar groups approvals 18, 12, 6 and 3 months out', async () => {
+  const { api } = await fresh();
+  const mk = (device, days, extra = {}) => api.store.createRecord({ device, category: 'EMV L2 Contactless', scheme: 'Amex', expiry_date: addDays(todayIso(), days), ...extra });
+  mk('A1', 400); mk('A2', 500); mk('A3', 450, { renewal_path: 'Delta testing' });
+  mk('B1', 250); mk('C1', 120); mk('D1', 45); mk('D2', 50, { stage: 'Replacement Received' });
+  const radar = Object.fromEntries(api.analysis().actions.filter((a) => a.kind === 'radar').map((a) => [a.key.split(':')[1], a]));
+  assert.equal(radar.t18.recordIds.length, 2, 'a decided renewal path leaves the 18-month radar');
+  assert.equal(radar.t12.recordIds.length, 1);
+  assert.equal(radar.t6.recordIds.length, 1);
+  assert.equal(radar.t3.recordIds.length, 1, 'a received replacement needs no escalation');
+  assert.equal(api.listRecords().find((r) => r.device === 'A1').window, 'd545');
+});
+
+test('a reader version tag added by hand renames the device, and back', async () => {
+  const { api } = await fresh();
+  api.store.createRecord({ device: 'Lane/3000-CL2', category: 'EMV L1 Contactless', scheme: 'EMVCo' });
+  const r = api.store.createRecord({ device: 'Lane/3000', category: 'EMV L2 Contactless', scheme: 'Visa', tags: 'Retail' });
+  api.saveRecord(r.id, { tags: 'Retail, CL2' });
+  assert.equal(api.store.getRecord(r.id).device, 'Lane/3000-CL2');
+  api.bulkUpdate([r.id], {}, { remove: ['CL1', 'CL2', 'CL3'], add: ['CL3'] });
+  assert.equal(api.store.getRecord(r.id).device, 'Lane/3000-CL3');
+  api.saveRecord(r.id, { tags: 'Retail' });
+  assert.equal(api.store.getRecord(r.id).device, 'Lane/3000', 'removing the tag removes the suffix');
+  const n = api.store.createRecord({ device: 'Desk/1700 CL1', category: 'EMV L1 Contactless', scheme: 'EMVCo' });
+  assert.match(n.tags, /CL1/, 'the device name still tags the reader version');
+});
+
+test('a duplicate LOA dropped in the inbox can be mapped to another reader version', async () => {
+  const { api } = await fresh();
+  const a = api.store.createRecord({ device: 'Lane/5000-CL2', category: 'EMV L2 Contactless', scheme: 'Mastercard', platform: 'UPP', bundle: 'Bundle 6' });
+  const b = api.store.createRecord({ device: 'Lane/5000-CL3', category: 'EMV L2 Contactless', scheme: 'Mastercard', platform: 'UPP', bundle: 'Bundle 6' });
+  const bytes = Buffer.from('%PDF-1.4 mastercard letter');
+  const pages = ['Mastercard Letter of Approval\nProduct Name: Lane/5000-CL2\nApproval Number: MC-555\nExpiry Date: 11 March 2028\n' + 'x'.repeat(60)];
+  const first = api.attachNewDocument(a.id, { filename: 'Lane5000_MC.pdf', bytes, pages });
+  api.linkDocumentToRecord(a.id, first.documentId, { useValues: true, values: { approval_number: 'MC-555', expiry_date: '2028-03-11' } });
+  const res = api.ingestDocument({ filename: 'Lane5000_MC.pdf', bytes, pages });
+  assert.equal(res.status, 'duplicate');
+  assert.equal(res.linkedTo[0].device, 'Lane/5000-CL2');
+  const info = api.duplicateInfo(res.documentId);
+  assert.deepEqual(info.suggestions.map((s) => s.id), [b.id], 'the CL3 record of the same brand is suggested');
+  const m = api.mapDuplicate(res.documentId, { recordIds: [b.id], create: ['Lane/7000-CL2'] });
+  assert.equal(m.linked, 2);
+  assert.equal(api.store.getRecord(b.id).expiry_date, '2028-03-11');
+  const created = api.listRecords().find((r) => r.device === 'Lane/7000-CL2');
+  assert.equal(created.category, 'EMV L2 Contactless');
+  assert.equal(created.scheme, 'Mastercard');
+  assert.equal(created.approval_number, 'MC-555');
+});
+
+test('data checks flag conflicts and likely mistakes', async () => {
+  const { api } = await fresh();
+  api.store.createRecord({ device: 'Lane/3000', category: 'EMV L1 Contact', scheme: 'EMVCo', approval_number: 'L1C-1', issue_date: '2027-01-01', expiry_date: '2026-01-01' });
+  api.store.createRecord({ device: 'Lane/3000-CL1', category: 'EMV L2 Contactless', scheme: 'Mastercard', approval_number: 'MC-9', expiry_date: '2028-01-01' });
+  api.store.createRecord({ device: 'Lane/3600-CL1', category: 'EMV L2 Contactless', scheme: 'Mastercard', approval_number: 'MC-9', expiry_date: '2029-01-01' });
+  api.store.createRecord({ device: 'Lnae/3000', category: 'PCI PTS', scheme: 'PCI SSC', expiry_date: '2029-01-01', approval_number: '4-1234' });
+  const keys = api.dataChecks().map((i) => i.key);
+  for (const k of ['dates-order', 'number-dates', 'device-typo', 'l2-no-l1', 'mc-no-tqm']) assert.ok(keys.includes(k), k);
+  const review = await api.aiDataReview();
+  assert.equal(review.ai, false);
+  assert.match(review.text, /Data checks found/);
+});
+
+test('briefing export lists what is due, and the L3 sheet lists approval numbers', async () => {
+  const { api } = await fresh();
+  api.store.createRecord({ device: 'Lane/3000', category: 'EMV L1 Contact', scheme: 'EMVCo', approval_number: 'L1C-7', expiry_date: addDays(todayIso(), 60), platform: 'UPP', bundle: 'B6' });
+  const gone = api.store.createRecord({ device: 'Lane/3000-CL1', category: 'EMV L1 Contactless', scheme: 'EMVCo', expiry_date: addDays(todayIso(), 30), eol: 'Replaced by CL2' });
+  api.store.createRecord({ device: 'Lane/3000', category: 'PCI PTS', scheme: 'PCI SSC', expiry_date: addDays(todayIso(), 900), platform: 'UPP', bundle: 'B6' });
+  const rep = api.briefingReport({ briefing: 'Do the thing' });
+  assert.equal(rep.count, 1, 'end of life and far-off records are left out');
+  assert.ok(!rep.ids.includes(gone.id));
+  assert.match(rep.html, /Renewing\?/);
+  assert.match(rep.html, /L1C-7/);
+  assert.match(rep.text, /Lane\/3000\tUPP · B6\tL1 Contact/);
+  assert.equal(api.briefingReport({ months: 36 }).count, 2);
+  const ExcelJS = require('exceljs');
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(await api.exportL3Sheet({ platform: 'UPP' }));
+  const ws = wb.getWorksheet('L3 approval numbers');
+  const header = ws.getRow(1).values.filter(Boolean);
+  assert.ok(header.includes('L2 Contact approval'));
+  const vals = ws.getRow(2).values.filter(Boolean);
+  assert.ok(vals.includes('Lane/3000') && vals.includes('L1C-7'));
+});
+
+test('the assistant reads the industry background and the user rules file', async () => {
+  const { systemPrompt } = require('../src/core/ai');
+  const p = systemPrompt('- CL1 readers are end of life.');
+  assert.match(p, /L2 rests on L1/);
+  assert.match(p, /TQM/);
+  assert.match(p, /CL1 readers are end of life/);
+  assert.ok(!/organisation's own rules/.test(systemPrompt('')));
 });

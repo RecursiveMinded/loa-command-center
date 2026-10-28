@@ -40,6 +40,7 @@ export function Inbox({ app, params }) {
   const [recent, setRecent] = useState(recentIds);
   const [sel, setSel] = useState(() => new Set());
   const [find, setFind] = useState('');
+  const [dup, setDup] = useState(null);
   useEffect(() => onRecent(setRecent), []);
   useEffect(() => subscribe(setQ), []);
   const threshold = app.settings.autoApproveConfidence || 90;
@@ -53,6 +54,8 @@ export function Inbox({ app, params }) {
     // Spreadsheets dropped here are trackers to import, not letters to read.
     const xl = files.filter((f) => /\.(xlsx|xlsm|csv)$/i.test(f.name));
     if (xl.length) setSheets((q0) => [...q0, ...xl]);
+    // Once the previous drop is fully reviewed, a new drop starts a new "Bulk edit these" batch.
+    if (!app.counts.inbox && !q.items.some((i) => i.status === 'queued' || i.status === 'working')) clearRecent();
     const n = addFiles(files.filter((f) => !xl.includes(f)));
     if (!n && !xl.length) toast('No PDF, image or spreadsheet files found');
   };
@@ -98,7 +101,10 @@ export function Inbox({ app, params }) {
         <div class="grow"><div class="ellipsis"><b>${it.name}</b> <span class="faint small">${bytes(it.size)}</span></div>
           <div class=${`small ${it.status === 'error' || it.status === 'unreadable' ? '' : 'muted'}`} style=${it.status === 'error' || it.status === 'unreadable' ? 'color:var(--bad)' : ''}>${it.note}</div>
           ${it.status === 'working' ? html`<div class="bar mt" style="margin-top:4px"><i style=${`width:${Math.round(it.progress * 100)}%`}></i></div>` : null}</div>
+        ${it.status === 'duplicate' && it.result && it.result.documentId ? html`<button class="btn sm" onClick=${() => setDup(it.result.documentId)}
+          title="Link this LOA to another device or reader version, e.g. the CL2 record"><${Icon} name="link" /> Map to another device…</button>` : null}
       </div>`)}</div></div>` : null}
+    ${dup ? html`<${MapDuplicate} documentId=${dup} app=${app} onClose=${() => setDup(null)} />` : null}
 
     <div class="tabs mt-l">${tabs.map(([k, l]) => html`<button class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${l}${k === 'pending' && app.counts.inbox ? html`<span class="count">${app.counts.inbox}</span>` : null}</button>`)}</div>
     ${tab === 'documents' ? html`<${Documents} docs=${docs} app=${app} reload=${reloadDocs} />`
@@ -108,6 +114,45 @@ export function Inbox({ app, params }) {
             ${shown.map((it) => html`<${Review} key=${`${it.id}:${proposalSig(it)}:${JSON.stringify(it.parsed.recordDefaults || {})}`} it=${it} app=${app} threshold=${threshold} readOnly=${tab !== 'pending'}
               selected=${sel.has(it.id)} onSelect=${tab === 'pending' ? () => toggleSel(it.id) : null} onDone=${() => { reload(); app.refresh(); }} />`)}`}
     ${sheets.length ? html`<${SheetImport} file=${sheets[0]} app=${app} onClose=${() => setSheets((q0) => q0.slice(1))} />` : null}`;
+}
+
+/**
+ * A dropped LOA that is already in the app. It is never added twice, but it
+ * can be mapped to more records: another reader version of the same device
+ * (Lane/5000-CL3 next to Lane/5000-CL2), an existing record, or a new device.
+ */
+function MapDuplicate({ documentId, app, onClose }) {
+  const [info] = useLoad(() => call('duplicateInfo', documentId), [documentId]);
+  const [picks, setPicks] = useState(new Set());
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const known = useKnownDevices();
+  if (!info) return html`<${Modal} title="Duplicate LOA" onClose=${onClose}><div class="row"><${Spinner} /> Loading…</div><//>`;
+  const v = info.values;
+  const dates = v ? [v.approval_number, v.expiry_date && `expires ${fmtDate(v.expiry_date)}`].filter(Boolean).join(' · ') : '';
+  const toggle = (id) => { const n = new Set(picks); if (n.has(id)) n.delete(id); else n.add(id); setPicks(n); };
+  const save = async () => {
+    setBusy(true);
+    try {
+      const r = await call('mapDuplicate', documentId, { recordIds: [...picks], create: name.trim() ? [name.trim()] : [] });
+      addRecent(r.recordIds);
+      toast(`Linked to ${plural(r.linked, 'more record')}`, 'ok');
+      app.refresh();
+      onClose();
+    } catch (e) { toastError(e); } finally { setBusy(false); }
+  };
+  return html`<${Modal} title="Duplicate LOA: map it to another device" onClose=${onClose}>
+    <p><b>${info.document.filename}</b> is already in the app, so it was not added again.${info.linkedTo.length ? ' It is linked to:' : ' No record uses it yet.'}</p>
+    ${info.linkedTo.length ? html`<ul class="small">${info.linkedTo.map((x) => html`<li>${x.device} · ${x.scheme} ${x.category}${x.platform ? ` · ${[x.platform, x.bundle].filter(Boolean).join(' ')}` : ''}</li>`)}</ul>` : null}
+    ${dates ? html`<p class="muted small">The letter gives ${dates}. Records you link below get these values; their old approval stays in history.</p>` : null}
+    ${info.suggestions.length ? html`<h4 class="mt">Other versions of this device</h4>
+      <div class="col">${info.suggestions.map((x) => html`<label class="row small"><input type="checkbox" checked=${picks.has(x.id)} onChange=${() => toggle(x.id)} />
+        ${x.device} · ${x.scheme} ${x.category}${x.platform ? html` <span class="faint">${[x.platform, x.bundle].filter(Boolean).join(' ')}</span>` : null}</label>`)}</div>` : null}
+    ${info.linkedTo.length ? html`<h4 class="mt">Or add it to a device with no record yet</h4>
+      <input type="text" aria-label="Device name for a new record" placeholder="Device name, e.g. Lane/5000-CL3" value=${name} onInput=${(e) => setName(e.target.value)} />
+      <${DeviceSuggestions} known=${known} q=${name} skip=${[name]} onPick=${setName} />` : null}
+    <div class="row mt"><button class="btn primary" disabled=${busy || (!picks.size && !name.trim())} onClick=${save}><${Icon} name="link" /> Link LOA</button>
+      <button class="btn" onClick=${onClose}>Keep as is</button></div><//>`;
 }
 
 /** Changes when matching or the AI rebuilds a letter's proposals, so its card starts fresh. */

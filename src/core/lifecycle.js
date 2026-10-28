@@ -10,7 +10,8 @@ const WINDOWS = [
   { key: 'd90', label: '61–90 days', test: (d) => d <= 90 },
   { key: 'd180', label: '91–180 days', test: (d) => d <= 180 },
   { key: 'd365', label: '181–365 days', test: (d) => d <= 365 },
-  { key: 'later', label: 'Over 1 year', test: () => true },
+  { key: 'd545', label: '12–18 months', test: (d) => d <= 545 },
+  { key: 'later', label: 'Over 18 months', test: () => true },
 ];
 
 function windowFor(days) {
@@ -44,8 +45,16 @@ function recommendedStage(days) {
   return 'Monitoring';
 }
 
+/**
+ * A certification someone decided not to renew: its expiry is accepted (end of
+ * life, e.g. the CL1 reader replaced by CL2). It stops raising actions and
+ * stops counting as a gap or a risk.
+ */
+function isEol(record) { return !!String(record.eol || '').trim(); }
+
 /** Stage shown to the user: a manual stage sticks, otherwise it is calculated. */
 function effectiveStage(record, asOf) {
+  if (isEol(record)) return 'Retired';
   if (record.stage && MANUAL_STAGES.has(record.stage)) return record.stage;
   return recommendedStage(daysRemaining(record, asOf));
 }
@@ -64,7 +73,7 @@ function coverage(currentExpiry, replacementEffective) {
 function health(record, asOf) {
   const days = daysRemaining(record, asOf);
   const stage = effectiveStage(record, asOf);
-  if (record.archived) return 'retired';
+  if (record.archived || isEol(record)) return 'retired';
   if (days == null) return 'unknown';
   if (days < 0) {
     if (stage === 'Market Approved Expiration' || stage === 'Retired') return 'retired';
@@ -77,5 +86,5 @@ function health(record, asOf) {
 
 module.exports = {
   WINDOWS, windowFor, daysRemaining, effectiveExpiry, recommendedStage,
-  effectiveStage, coverage, health,
+  effectiveStage, coverage, health, isEol,
 };

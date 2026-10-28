@@ -9,7 +9,8 @@ export const DUE = [
   { value: 'd90', label: 'Due ≤ 90 days', test: (d) => d != null && d >= 0 && d <= 90 },
   { value: 'd180', label: 'Due ≤ 6 months', test: (d) => d != null && d >= 0 && d <= 180 },
   { value: 'd365', label: 'Due ≤ 12 months', test: (d) => d != null && d >= 0 && d <= 365 },
-  { value: 'later', label: 'More than 12 months', test: (d) => d != null && d > 365 },
+  { value: 'd545', label: 'Due ≤ 18 months', test: (d) => d != null && d >= 0 && d <= 545 },
+  { value: 'later', label: 'More than 18 months', test: (d) => d != null && d > 545 },
   { value: 'missing', label: 'No expiry date', test: (d) => d == null },
 ];
 
@@ -113,6 +114,15 @@ export function Register({ app, params }) {
     return out;
   }, [records, f, q, sort]);
 
+  // Selection follows the filters: rows filtered out of view are no longer selected,
+  // so a bulk edit only touches what is on screen.
+  useEffect(() => {
+    if (!records || !sel.size) return;
+    const shown = new Set(list.map((r) => r.id));
+    const kept = [...sel].filter((id) => shown.has(id));
+    if (kept.length !== sel.size) setSel(new Set(kept));
+  }, [list]);
+
   if (!records) return html`<div class="row"><${Spinner} /> Loading…</div>`;
   const live = records.filter((r) => !r.archived);
   const tags = unique(live.flatMap(tagList));
@@ -141,7 +151,7 @@ export function Register({ app, params }) {
       <button class="btn" onClick=${() => app.openReport({ ids: active || q || sel.size ? ids() : null, filterLabel: label() })}><${Icon} name="report" /> Report</button>
       <button class="btn primary" onClick=${() => app.openRecord(null)}><${Icon} name="plus" /> Add record</button></div></div>
 
-    <div class="chips">${['expired', 'critical', 'warning', 'good', 'unknown'].map((h) => html`<button class=${`chip ${f.health === h ? 'on' : ''}`} onClick=${() => setF({ ...f, health: f.health === h ? '' : h })}>
+    <div class="chips">${['expired', 'critical', 'warning', 'good', 'unknown', 'retired'].map((h) => html`<button class=${`chip ${f.health === h ? 'on' : ''}`} onClick=${() => setF({ ...f, health: f.health === h ? '' : h })}>
       <span class="sw" style=${`background:${HEALTH[h].color}`}></span>${HEALTH[h].label} <b>${healthCounts[h] || 0}</b></button>`)}</div>
 
     <div class="filters">
@@ -194,6 +204,7 @@ const BULK_FIELDS = [
   ['hw', 'Hardware version (CL)'], ['tags+', 'Add tag'], ['tags-', 'Remove tag'],
   ['owner', 'Owner'], ['stage', 'Stage'], ['disposition', 'Disposition'], ['next_action', 'Next action'], ['next_action_date', 'Next action date'],
   ['portal_status', 'Portal status'], ['customer', 'Customer'], ['market', 'Market'], ['change_ticket', 'Change ticket'],
+  ['eol', 'Not renewing (end of life)'], ['renewal_path', 'Renewal path'], ['test_lab', 'Test lab'],
 ];
 
 function BulkBar({ ids, tax, values, onDone, onClear, onEmail }) {
@@ -229,6 +240,8 @@ function BulkBar({ ids, tax, values, onDone, onClear, onEmail }) {
   const input = field === 'hw' ? html`<${Select} value=${value} onChange=${setValue} placeholder="None (contact)" options=${['CL1', 'CL2', 'CL3', 'CL4']} />`
     : field === 'stage' ? html`<${Select} value=${value} onChange=${setValue} placeholder="(automatic)" options=${tax.stages} />`
     : field === 'disposition' ? html`<${Select} value=${value} onChange=${setValue} placeholder="(none)" options=${tax.dispositions} />`
+    : field === 'renewal_path' ? html`<${Select} value=${value} onChange=${setValue} placeholder="(not decided)" options=${tax.renewalPaths || []} />`
+    : field === 'eol' ? html`<input type="text" value=${value} aria-label="Value" placeholder="Reason, e.g. Replaced by CL2 (blank tracks them again)" onInput=${(e) => setValue(e.target.value)} />`
       : field === 'portal_status' ? html`<${Select} value=${value} onChange=${setValue} options=${tax.portalStatuses} placeholder="Choose" />`
           : field === 'next_action_date' ? html`<input type="date" value=${value} onInput=${(e) => setValue(e.target.value)} />`
             : html`<input type="text" list=${list ? 'bulk-values' : null} value=${value} aria-label="Value"

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'preact/hooks';
-import { html, Icon, Ring, fmtDate, fmtMonth, fmtWhen, plural, useLoad, Spinner, toastError } from '../lib.js';
-import { call } from '../api.js';
+import { html, Icon, Ring, fmtDate, fmtMonth, fmtWhen, plural, useLoad, Spinner, toast, toastError, Modal, Select } from '../lib.js';
+import { call, saveAs, printHtml } from '../api.js';
 import { ActionItem } from './plan.js';
 
 const FREQ = { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' };
@@ -74,12 +74,39 @@ function Briefing({ app }) {
     try { setB(await call('aiBriefing')); } catch (e) { toastError(e); } finally { setLoading(false); }
   };
   useEffect(() => { load(); }, [app.version]);
+  const [exp, setExp] = useState(false);
   return html`<div class="card"><div class="hd"><div class="ai-head"><span class="spark"><${Icon} name="spark" /></span><h3>Briefing</h3>
       ${b ? html`<span class="tag">${b.ai ? 'Local AI' : 'Rules engine'}</span>` : null}</div>
       <div class="row"><button class="btn sm ghost icon" title="Refresh" onClick=${load}><${Icon} name="refresh" /></button>
-      <button class="btn sm" onClick=${app.openAi}>Ask</button></div></div>
+      <button class="btn sm" onClick=${app.openAi}>Ask</button>
+      <button class="btn sm" onClick=${() => setExp(true)} title="An email-ready table of what is expired or due, to confirm what will not be renewed"><${Icon} name="download" /> Export</button></div></div>
+    ${exp ? html`<${BriefingExport} briefing=${b ? b.text : ''} onClose=${() => setExp(false)} />` : null}
     <div class="bd">${loading ? html`<div class="row muted"><${Spinner} /> Thinking…</div>` : html`<div class="ai-box small">${b ? b.text : ''}</div>`}
       ${b && b.error ? html`<div class="muted small mt">Local AI unavailable (${b.error}); showing the rules-engine briefing.</div>` : null}</div></div>`;
+}
+
+/** The briefing as an email-ready table: copy into an email, save to Excel, or print. */
+function BriefingExport({ briefing, onClose }) {
+  const [months, setMonths] = useState('12');
+  const [rep] = useLoad(() => call('briefingReport', { briefing, months: Number(months) }), [months]);
+  const copy = async () => {
+    try {
+      if (window.ClipboardItem && navigator.clipboard.write) {
+        await navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([rep.html], { type: 'text/html' }), 'text/plain': new Blob([rep.text], { type: 'text/plain' }) })]);
+      } else await navigator.clipboard.writeText(rep.text);
+      toast('Copied. Paste it into an email.', 'ok');
+    } catch (e) { toastError(e); }
+  };
+  const excel = async () => { try { await saveAs('Certification briefing.xlsx', await call('exportExcel', { ids: rep.ids }), [{ name: 'Excel', extensions: ['xlsx'] }]); } catch (e) { toastError(e); } };
+  const print = () => printHtml(`<!doctype html><html><head><meta charset="utf-8"><title>Certification briefing</title></head><body style="margin:24px">${rep.html}</body></html>`);
+  return html`<${Modal} title="Export briefing" wide onClose=${onClose}>
+    <div class="row wrap"><span class="muted small">Show certifications expired or expiring in the next</span>
+      <${Select} value=${months} onChange=${setMonths} options=${[{ value: '6', label: '6 months' }, { value: '12', label: '12 months' }, { value: '18', label: '18 months' }]} />
+      <span class="grow"></span>
+      <button class="btn primary" disabled=${!rep} onClick=${copy}><${Icon} name="mail" /> Copy for email</button>
+      <button class="btn" disabled=${!rep} onClick=${excel}><${Icon} name="download" /> Excel</button>
+      <button class="btn" disabled=${!rep} onClick=${print}><${Icon} name="report" /> Print / PDF</button></div>
+    ${rep ? html`<div class="briefing-preview mt" dangerouslySetInnerHTML=${{ __html: rep.html }}></div>` : html`<div class="row mt"><${Spinner} /> Building…</div>`}<//>`;
 }
 
 function Welcome({ app }) {

@@ -5,7 +5,7 @@
 // The optional local LLM only rephrases and answers questions on top of this.
 
 const { todayIso, daysBetween, addDays, formatDate } = require('./dates');
-const { daysRemaining, effectiveStage, windowFor, health, WINDOWS } = require('./lifecycle');
+const { daysRemaining, effectiveStage, windowFor, health, isEol, WINDOWS } = require('./lifecycle');
 
 const IN_PROGRESS = new Set(['Renewal Requested', 'Pending New LOA', 'Replacement Received']);
 const RESOLVED_EXPIRY = new Set(['Market Approved Expiration', 'Retired']);
@@ -15,13 +15,15 @@ function label(r) {
   return [r.platform, r.device, r.scheme && r.scheme !== 'Other' ? r.scheme : '', r.category].filter(Boolean).join(' · ');
 }
 
-function analyze(records, { settings = {}, asOf = todayIso(), tasks = {}, inboxPending = 0, replacements = [] } = {}) {
+function analyze(records, { settings = {}, asOf = todayIso(), tasks = {}, inboxPending = 0, replacements = [], norm } = {}) {
   const lead = settings.leadTimes || {};
   const live = records.filter((r) => !r.archived);
-  const rows = live.map((r) => {
+  const all = live.map((r) => {
     const days = daysRemaining(r, asOf);
-    return { r, days, stage: effectiveStage(r, asOf), win: windowFor(days), health: health(r, asOf) };
+    return { r, days, stage: effectiveStage(r, asOf), win: windowFor(days), health: health(r, asOf), eol: isEol(r) };
   });
+  // Accepted expirations / end of life raise no actions.
+  const rows = all.filter((x) => !x.eol);
 
   const actions = [];
   const add = (a) => actions.push({ status: 'open', recordIds: [], ...a, priorityLabel: PRIORITY_LABEL[a.priority] });
@@ -165,7 +167,7 @@ function analyze(records, { settings = {}, asOf = todayIso(), tasks = {}, inboxP
   for (const rep of replacements) {
     if (rep.issue_date && rep.issue_date <= asOf) {
       const r = live.find((x) => x.id === rep.record_id);
-      if (!r) continue;
+      if (!r || isEol(r)) continue;
       add({
         key: `activate:${rep.id}`, kind: 'replacement', priority: 2,
         title: `Activate replacement LOA: ${label(r)}`,
@@ -174,6 +176,9 @@ function analyze(records, { settings = {}, asOf = todayIso(), tasks = {}, inboxP
       });
     }
   }
+
+  dependencyActions(all, { add, asOf, norm: norm || defaultNorm });
+  radarActions(rows, { add, asOf });
 
   // Grouped data-quality actions.
   const within = rows.filter((x) => x.days != null && x.days >= -365 && x.days <= 365);
@@ -209,10 +214,101 @@ function analyze(records, { settings = {}, asOf = todayIso(), tasks = {}, inboxP
 
   actions.sort((a, b) => a.priority - b.priority || String(a.due || '').localeCompare(String(b.due || '')) || (a.days ?? 9999) - (b.days ?? 9999));
 
-  return { asOf, actions, summary: summarize(rows, records, inboxPending) };
+  return { asOf, actions, summary: summarize(all, records, inboxPending) };
 }
 
 function pl(n, word) { return `${n} ${word}${n === 1 ? '' : 's'}`; }
+
+const defaultNorm = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const coversOf = (r) => String(r.covers || '').split(/[,;\n]/).map((x) => x.trim()).filter(Boolean);
+
+// What each approval rests on. An L2 kernel approval is anchored to the L1
+// approval of the same interface; Mastercard L2 also needs a valid TQM; and
+// without PCI PTS no new units can be built or injected with keys.
+const DEPENDS = [
+  { needs: 'EMV L1 Contactless', of: (r) => r.category === 'EMV L2 Contactless', what: 'L1 Contactless' },
+  { needs: 'EMV L1 Contact', of: (r) => r.category === 'EMV L2 Contact', what: 'L1 Contact' },
+  { needs: 'TQM', of: (r) => r.category === 'EMV L2 Contactless' && r.scheme === 'Mastercard', what: 'TQM' },
+];
+
+/**
+ * Dependency warnings: an approval whose foundation has expired, expires
+ * within a year, or was accepted as end of life is at risk even though its own
+ * date is fine. One action per foundation approval.
+ */
+function dependencyActions(all, { add, asOf, norm }) {
+  const byDevice = new Map();
+  const put = (k, x) => { if (!byDevice.has(k)) byDevice.set(k, []); byDevice.get(k).push(x); };
+  for (const x of all) {
+    put(norm(x.r.device), x);
+    for (const d of coversOf(x.r)) if (norm(d) !== norm(x.r.device)) put(norm(d), x);
+  }
+  const best = (list) => list.reduce((b, x) => (!b || (x.days ?? -1e9) > (b.days ?? -1e9) ? x : b), null);
+  const groups = new Map();
+  for (const x of all) {
+    if (x.eol || x.days == null || x.days < 0) continue;
+    for (const dep of DEPENDS) {
+      if (!dep.of(x.r)) continue;
+      const base = best((byDevice.get(norm(x.r.device)) || []).filter((y) => y.r.category === dep.needs));
+      if (!base || base.days == null) continue;
+      const lapsed = base.eol || base.days < 0;
+      const before = base.days <= 365 && base.days < x.days;
+      if (!lapsed && !before) continue;
+      const k = `${base.r.id}|${dep.what}`;
+      if (!groups.has(k)) groups.set(k, { base, dep, lapsed, list: [] });
+      groups.get(k).list.push(x);
+    }
+  }
+  for (const [k, g] of groups) {
+    const { base, dep, lapsed, list } = g;
+    const dev = base.r.device;
+    const kinds = list.map((x) => `${x.r.scheme} ${x.r.category.replace('EMV ', '')}`);
+    const state = base.eol ? 'was accepted as end of life' : lapsed ? `expired ${formatDate(base.r.expiry_date)}` : `expires ${formatDate(base.r.expiry_date)}, before the approvals that rest on it`;
+    add({
+      key: `depends:${k}:${base.r.expiry_date}:${base.eol ? 'eol' : ''}:${list.length}`, kind: 'dependency',
+      // The expired foundation already has its own critical action; this one explains the knock-on risk.
+      priority: base.eol ? 3 : lapsed || base.days <= 180 ? 2 : 3,
+      title: `${dep.what} for ${dev} ${base.eol ? 'is end of life' : lapsed ? 'has expired' : `expires in ${base.days} days`}: ${pl(list.length, 'approval')} at risk`,
+      why: `${kinds.slice(0, 8).join(', ')}${kinds.length > 8 ? '…' : ''} ${list.length === 1 ? 'depends' : 'depend'} on the ${dep.what} approval, which ${state}. ${dep.what === 'TQM' ? 'A valid TQM is required to keep Mastercard L2 approvals.' : 'An L2 approval is anchored to its L1 approval; renew the L1 first.'}${base.eol ? ' If these are end of life too, mark them so they stop counting.' : ''}`,
+      due: asOf, days: base.days, recordIds: [base.r.id, ...list.map((x) => x.r.id)],
+    });
+  }
+  // PCI PTS lapsed: units already in the field keep working, but no new ones can be built.
+  for (const x of all) {
+    if (x.eol || x.r.category !== 'PCI PTS' || x.days == null || x.days >= 0) continue;
+    if (x.stage === 'Market Approved Expiration') continue;
+    add({
+      key: `pci-production:${x.r.id}:${x.r.expiry_date}`, kind: 'dependency', priority: 1,
+      title: `No new production: PCI PTS for ${x.r.device} expired ${formatDate(x.r.expiry_date)}`,
+      why: 'Without a current PCI PTS approval no new units can be manufactured or injected with production keys, even while the EMV approvals are valid. Renew, or mark it end of life if the device is no longer built.',
+      due: asOf, days: x.days, recordIds: [x.r.id],
+    });
+  }
+}
+
+// Escalation points before expiry (months -> who to involve).
+const RADAR = [
+  { from: 366, to: 545, key: 't18', priority: 4, title: (n) => `18-month radar: ${pl(n, 'approval')} expire in 12 to 18 months`,
+    why: 'Recertification needs lab booking, a frozen kernel build and brand review. Decide now for each: administrative renewal, derivative, delta, full recertification, or end of life.' },
+  { from: 181, to: 365, key: 't12', priority: 3, title: (n) => `12 months out: confirm renewal budget for ${pl(n, 'approval')}`,
+    why: 'Escalate to Product Management for any without an agreed renewal path or budget, and book lab slots.' },
+  { from: 91, to: 180, key: 't6', priority: 2, title: (n) => `6 months out: tell Client Solutions about ${pl(n, 'approval')} with no new LOA yet`,
+    why: 'Give account teams and key customers time to plan deployments if a renewal slips.' },
+  { from: 0, to: 90, key: 't3', priority: 1, title: (n) => `3 months out: executive escalation for ${pl(n, 'approval')} with no new LOA`,
+    why: 'Decide on field continuation plans or sales restrictions in case the new LOA does not arrive before expiry.' },
+];
+const DONE_STAGES = new Set(['Replacement Received', 'Certified']);
+
+/** One grouped action per escalation point, so the 18-month horizon is visible without one action per record. */
+function radarActions(rows, { add, asOf }) {
+  for (const p of RADAR) {
+    const list = rows.filter((x) => x.days != null && x.days >= p.from && x.days <= p.to && !DONE_STAGES.has(x.stage)
+      && !RESOLVED_EXPIRY.has(x.stage) && x.r.disposition !== 'Market Approved Expiration'
+      && (p.key !== 't18' || !x.r.renewal_path) && (p.key !== 't12' || !x.r.renewal_path));
+    if (!list.length) continue;
+    add({ key: `radar:${p.key}:${list.length}`, kind: 'radar', priority: p.priority, title: p.title(list.length), why: p.why, due: asOf, recordIds: list.map((x) => x.r.id) });
+  }
+}
 
 function summarize(rows, all, inboxPending) {
   const byWindow = Object.fromEntries([...WINDOWS.map((w) => [w.key, 0]), ['missing', 0]]);
@@ -226,13 +322,13 @@ function summarize(rows, all, inboxPending) {
     byScheme[s] = byScheme[s] || { total: 0, expired: 0, due90: 0, due365: 0 };
     byScheme[s].total++;
     if (x.health === 'expired') byScheme[s].expired++;
-    if (x.days != null && x.days >= 0 && x.days <= 90) byScheme[s].due90++;
-    if (x.days != null && x.days >= 0 && x.days <= 365) byScheme[s].due365++;
+    if (!x.eol && x.days != null && x.days >= 0 && x.days <= 90) byScheme[s].due90++;
+    if (!x.eol && x.days != null && x.days >= 0 && x.days <= 365) byScheme[s].due365++;
     const p = x.r.platform || 'Unassigned';
     byPlatform[p] = byPlatform[p] || { total: 0, expired: 0, due365: 0 };
     byPlatform[p].total++;
     if (x.health === 'expired') byPlatform[p].expired++;
-    if (x.days != null && x.days >= 0 && x.days <= 365) byPlatform[p].due365++;
+    if (!x.eol && x.days != null && x.days >= 0 && x.days <= 365) byPlatform[p].due365++;
     byCategory[x.r.category] = (byCategory[x.r.category] || 0) + 1;
     if (x.r.owner) owned++;
     if (x.r.doc_count) withDoc++;
@@ -242,7 +338,9 @@ function summarize(rows, all, inboxPending) {
   }
   const total = rows.length;
   const expiredOpen = rows.filter((x) => x.health === 'expired').length;
-  const due90 = rows.filter((x) => x.days != null && x.days >= 0 && x.days <= 90).length;
+  const open = rows.filter((x) => !x.eol);
+  const due = (n) => open.filter((x) => x.days != null && x.days >= 0 && x.days <= n).length;
+  const due90 = due(90);
   // Health score: share of live records that are current, dated, owned and evidenced.
   const pct = (n) => (total ? Math.round((n / total) * 100) : 100);
   const score = total ? Math.round(
@@ -251,8 +349,8 @@ function summarize(rows, all, inboxPending) {
   return {
     total, active, expiredOpen, due90, dated, owned, withDoc, pendingLoa, inboxPending,
     archived: all.length - total,
-    due365: rows.filter((x) => x.days != null && x.days >= 0 && x.days <= 365).length,
-    due180: rows.filter((x) => x.days != null && x.days >= 0 && x.days <= 180).length,
+    due365: due(365), due180: due(180), due545: due(545),
+    eol: rows.length - open.length,
     missing: byWindow.missing,
     byWindow, byHealth, byScheme, byPlatform, byCategory,
     compliancePct: pct(active), evidencePct: pct(withDoc), ownerPct: pct(owned),

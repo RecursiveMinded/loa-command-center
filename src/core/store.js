@@ -10,7 +10,7 @@ const RECORD_FIELDS = [
   'vendor', 'platform', 'bundle', 'device', 'family', 'category', 'scheme', 'kernel_version',
   'approval_number', 'issue_date', 'expiry_date', 'expiry_basis', 'restricted', 'stage',
   'disposition', 'owner', 'customer', 'market', 'next_action', 'next_action_date',
-  'extension_used', 'notes', 'portal_date', 'portal_status', 'change_ticket', 'tags', 'covers', 'archived',
+  'extension_used', 'notes', 'portal_date', 'portal_status', 'change_ticket', 'tags', 'covers', 'eol', 'renewal_path', 'test_lab', 'archived',
   'source', 'verified_at', 'verified_by',
 ];
 const BOOL_FIELDS = new Set(['restricted', 'extension_used', 'archived']);
@@ -22,13 +22,14 @@ const DEFAULT_SETTINGS = {
   thresholds: [365, 180, 90, 60, 30],
   // Days before expiry that renewal work should start, per approval category.
   leadTimes: {
-    'EMV L1 Contact': 180, 'EMV L1 Contactless': 180,
+    'EMV L1 Contact': 180, 'EMV L1 Contactless': 180, 'EMV L2 Contact': 120,
     'EMV L2 Contactless': 120, 'PCI PTS': 270, TQM: 60, 'Letter of Equivalency': 0, Other: 90,
   },
   autoApproveConfidence: 90,
   noiseWords: DEFAULT_NOISE_WORDS,
   hideExpiredByDefault: true,
   ai: { provider: 'off', baseUrl: 'http://127.0.0.1:11434', model: 'gemma3:4b', apiKey: '' },
+  aiRules: '',
   runInBackground: true,
   startWithWindows: false,
   autoUpdate: true,
@@ -183,6 +184,15 @@ class Store {
     if (p.covers !== undefined) p.covers = this.coversList(p.covers, p.device || cur.device);
     // A renamed device carries its reader version (CL1, CL2...) as a tag.
     if (p.device !== undefined && p.device !== cur.device) p.tags = withReaderTag(p.tags !== undefined ? p.tags : cur.tags, p.device, true);
+    // ...and a reader version tag added or removed by hand renames the device to match (Lane/3000 + CL2 -> Lane/3000-CL2).
+    else if (p.tags !== undefined) {
+      const tagCl = splitTags(p.tags).map((t) => t.toUpperCase()).find((t) => /^CL\d$/.test(t)) || '';
+      const hadCl = splitTags(cur.tags).some((t) => /^CL\d$/i.test(t));
+      if (tagCl !== readerOf(cur.device) && (tagCl || hadCl)) {
+        const base = String(cur.device).replace(/[\s\-_/]*CL\d+$/i, '');
+        p.device = this.deviceSpelling(tagCl ? `${base}-${tagCl}` : base);
+      }
+    }
     const changed = [];
     for (const f of RECORD_FIELDS) {
       if (p[f] === undefined) continue;
@@ -365,15 +375,22 @@ class Store {
     return n;
   }
 
-  /** "EMV L2 Contact" is not a per-device approval; file old records as Other with a tag. */
-  migrateL2Contact({ actor = this.actor } = {}) {
+  /**
+   * L2 Contact is back as its own approval (one EMVCo contact kernel slot per
+   * terminal). Records that 1.0.10-1.0.13 filed as Other with an "L2 Contact"
+   * or "Contact kernel" tag return to it. Returns how many moved.
+   */
+  restoreL2Contact({ actor = this.actor } = {}) {
     let n = 0;
+    const marker = (t) => /^(l2 contact|contact kernel)$/i.test(t);
     this.db.tx(() => {
-      for (const r of this.db.all("SELECT id, tags FROM records WHERE category = 'EMV L2 Contact'")) {
+      for (const r of this.db.all("SELECT id, tags FROM records WHERE category = 'Other'")) {
+        const tags = splitTags(r.tags);
+        if (!tags.some(marker)) continue;
         try {
-          this.updateRecord(r.id, { category: 'Other', tags: joinTags([...splitTags(r.tags), 'L2 Contact']) }, { source: 'upgrade', actor });
+          this.updateRecord(r.id, { category: 'EMV L2 Contact', tags: joinTags(tags.filter((t) => !marker(t))) }, { source: 'upgrade', actor });
           n++;
-        } catch (_) { /* clash with an existing Other record: leave it */ }
+        } catch (_) { /* an L2 Contact record already exists for this device: leave it */ }
       }
     });
     return n;

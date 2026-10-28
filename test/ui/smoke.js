@@ -118,6 +118,11 @@ function pdfFromPages(pages) {
     await p.click('.drawer >> text=Save changes');
     await p.waitForSelector('text=Saved', { timeout: 5000 });
     check(true, 'one LOA can also certify other devices (covers list saved)');
+    await p.check('.drawer input[aria-label="Not renewing"]');
+    await p.fill('.drawer input[aria-label="End of life reason"]', 'Replaced by CL2');
+    await p.click('.drawer >> text=Save changes');
+    await p.waitForSelector('.drawer .pill.retired:has-text("End of life")', { timeout: 5000 });
+    check(true, 'a certification can be marked end of life (accepted expiration)');
     await p.keyboard.press('Escape');
     // A letter with no device found: the AI fills it in, then Dismiss still works.
     await p.click('nav >> text=LOA inbox');
@@ -168,6 +173,7 @@ function pdfFromPages(pages) {
     p.once('dialog', (d) => d.accept());
     await p.click('.bulkbar button:has-text("Delete 1")');
     await p.waitForSelector('text=Moved 1 record to the Archive', { timeout: 5000 });
+    await p.waitForFunction((n) => document.querySelectorAll('table.t tbody tr').length === n, before - 1, { timeout: 5000 }).catch(() => {});
     const after = await p.$$eval('table.t tbody tr', (els) => els.length);
     check(after === before - 1, `bulk delete removes the selected record (${before} -> ${after})`);
     if (await p.locator('button:has-text("Clear filters")').count()) await p.click('button:has-text("Clear filters")');
@@ -206,6 +212,14 @@ function pdfFromPages(pages) {
     await p.click('.inbox-bulk button:has-text("Approve 1")');
     await p.waitForSelector('text=Approved 1 letter', { timeout: 10000 });
     check(true, 'bulk platform and approve from the LOA inbox');
+    // The same file dropped in the inbox again: a duplicate that can be mapped to another device.
+    const [chd] = await Promise.all([p.waitForEvent('filechooser'), p.click('text=Choose files')]);
+    await chd.setFiles(named);
+    await p.waitForSelector('.qitem >> text=/Duplicate, not added again/', { timeout: 30000 });
+    await p.click('.qitem button:has-text("Map to another device")');
+    await p.waitForSelector('.modal >> text=Duplicate LOA: map it to another device', { timeout: 5000 });
+    await p.click('.modal >> text=Keep as is');
+    check(true, 'duplicate LOA in the inbox is rejected with a way to map it to another device');
     // Platform alias renames existing records after confirming.
     await p.click('nav >> text=Settings');
     await p.click('text=Matching');
@@ -218,6 +232,25 @@ function pdfFromPages(pages) {
     check(true, 'platform alias renames existing records');
     const st = await p.evaluate(() => window.__loaSelfTest());
     check(st.ok, `PDF reader and OCR self test ${JSON.stringify(st)}`);
+    await p.click('nav >> text=Today');
+    await p.click('.card:has-text("Briefing") button:has-text("Export")');
+    await p.waitForSelector('.modal .briefing-preview table', { timeout: 10000 });
+    check(true, `briefing export table (${await p.locator('.modal .briefing-preview tbody tr').count()} rows)`);
+    await p.keyboard.press('Escape');
+    await p.click('nav >> text=Ask AI');
+    await p.click('.drawer button.chip:has-text("Check my data")');
+    await p.waitForSelector('.drawer .msg.bot >> text=/Data checks found|nothing to clean up/', { timeout: 10000 });
+    check(true, `Ask AI data check (${await p.locator('.drawer .issue').count()} findings)`);
+    await p.keyboard.press('Escape');
+    await p.click('nav >> text=Devices');
+    const [l3] = await Promise.all([p.waitForEvent('download', { timeout: 10000 }), p.click('button:has-text("L3 sheet")')]);
+    check(/L3 approval numbers/.test(l3.suggestedFilename()), `L3 sheet download: ${l3.suggestedFilename()}`);
+    await p.click('nav >> text=Settings');
+    await p.click('.tabs >> text=AI assistant');
+    await p.fill('textarea[aria-label="Rules for the assistant"]', '- CL1 readers are end of life.');
+    await p.click('.card:has-text("Your rules and memory") button:has-text("Save")');
+    await p.waitForSelector('text=Rules saved', { timeout: 5000 });
+    check(true, 'rules file for the assistant saved');
     await p.click('.topbar >> text=Summary report');
     await p.waitForSelector('iframe.report');
     check(true, 'summary report');

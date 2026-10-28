@@ -84,7 +84,7 @@ export const HEALTH = {
   warning: { label: 'Due ≤ 12 mo', color: 'var(--warn)' },
   good: { label: 'Current', color: 'var(--good)' },
   unknown: { label: 'No date', color: 'var(--none)' },
-  retired: { label: 'Retired', color: 'var(--none)' },
+  retired: { label: 'End of life', color: 'var(--none)' },
 };
 
 export function HealthPill({ r }) {

@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from 'preact/hooks';
-import { html, Icon, Drawer, Spinner, toastError } from '../lib.js';
+import { html, Icon, Drawer, Spinner, toastError, plural } from '../lib.js';
 import { call } from '../api.js';
 
+const CHECK = 'Check my data for problems and conflicts';
 const SUGGEST = [
+  CHECK,
   'What should I do this week?',
   'Which approvals expire in the next 90 days?',
   'Which Visa approvals expire next year?',
@@ -25,8 +27,9 @@ export function Assistant({ app, onClose }) {
     setMsgs((m) => [...m, { me: true, text: question }]);
     setBusy(true);
     try {
-      const r = await call('aiAsk', question);
-      setMsgs((m) => [...m, { text: r.text, ai: r.ai }]);
+      // Data clean-up runs the app's integrity checks; the model (if on) prioritises them.
+      const r = question === CHECK || /\b(clean ?up|integrity|conflict|data (check|quality|problem))/i.test(question) ? await call('aiDataReview') : await call('aiAsk', question);
+      setMsgs((m) => [...m, { text: r.text, ai: r.ai, issues: r.issues }]);
     } catch (e) { toastError(e); } finally { setBusy(false); }
   };
   const mode = status && status.available ? `Local AI: ${app.settings.ai.model}` : 'Rules engine (AI off)';
@@ -36,7 +39,9 @@ export function Assistant({ app, onClose }) {
       <button class="btn primary" disabled=${busy}>Ask</button></form>`}>
     ${!msgs.length ? html`<div><p class="muted">Ask in plain English. Answers come only from your own records${status && status.available ? ', summarised by the model on your computer' : ''}.</p>
       <div class="suggest mt">${SUGGEST.map((s) => html`<button class="chip" onClick=${() => ask(s)}>${s}</button>`)}</div></div>` : null}
-    <div class="msgs">${msgs.map((m) => html`<div class=${`msg ${m.me ? 'me' : 'bot'}`}>${m.text}</div>`)}
+    <div class="msgs">${msgs.map((m) => html`<div class=${`msg ${m.me ? 'me' : 'bot'}`}>${m.text}
+      ${m.issues && m.issues.length ? html`<div class="issues">${m.issues.map((i) => html`<div class="issue"><span class=${`pill ${i.severity === 'high' ? 'expired' : i.severity === 'medium' ? 'critical' : 'warning'}`}>${i.severity}</span>
+        <span class="grow">${i.title}</span><button class="btn sm" onClick=${() => { onClose(); app.go('register', { filter: { ids: i.recordIds, idsLabel: i.title } }); }}>Show ${plural(i.recordIds.length, 'record')}</button></div>`)}</div>` : null}</div>`)}
       ${busy ? html`<div class="msg bot row"><${Spinner} /> Thinking…</div>` : null}<div ref=${end}></div></div>
   <//>`;
 }

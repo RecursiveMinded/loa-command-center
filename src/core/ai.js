@@ -15,7 +15,27 @@ Rules:
 - Use ONLY the data provided in the conversation. If something is not in the data, say you do not know.
 - Never invent dates, approval numbers, owners, or devices.
 - Be brief and practical: lead with what to do, then why. Use short bullet points.
-- Distinguish expired, due soon, renewal in progress, and restricted/final approvals.`;
+- Distinguish expired, due soon, renewal in progress, restricted/final, and end-of-life (accepted, not renewing) approvals.`;
+
+// Industry background, so answers and clean-up advice follow how payment
+// device certification actually works.
+const INDUSTRY = `How payment device certification works:
+- Level 1 (EMVCo) covers the physical interfaces: L1 Contact (card slot, ISO 7816, usually ~4 years) and L1 Contactless (RF reader, ISO 14443, usually ~3 years). Hardware changes such as an antenna or NFC chip swap can need new testing.
+- Level 2 covers the kernel software: one EMVCo L2 Contact approval per terminal (~3 years) and an L2 Contactless approval from each card brand (Visa, Mastercard, Amex, Discover, JCB, UnionPay, Interac), each with its own expiry, usually 2-3 years.
+- L2 rests on L1 for the same interface: if the L1 expires or is not renewed, the L2 approvals that depend on it are at risk.
+- Mastercard TQM (Terminal Quality Management) is a hardware/manufacturing conformity statement per device; a valid TQM is required to obtain and keep Mastercard L2 approvals.
+- PCI PTS covers tamper security and key management. If it expires, no new units can be manufactured or key-injected, even while EMV approvals are valid. PTS versions (v4, v5, v6, v7) have their own sunset dates.
+- A contactless reader version (CL1, CL2, CL3) is a different physical reader with its own L1 Contactless, TQM and L2 Contactless approvals. One LOA can certify a series of devices sharing the same reader.
+- An expired LOA closes the device to new deployments; units already in the field are usually grandfathered. A certification can be accepted as end of life when it will not be renewed (e.g. CL1 replaced by CL2).
+- Renewal paths: administrative renewal (no changes), derivative/family, delta testing (minor changes), full recertification (major changes), or end of life.
+- Plan on an 18-month horizon: decide the renewal path 12-18 months out, escalate to Product Management at 12 months, to Client Solutions/account teams at 6 months, and to executives at 3 months.
+- Level 3 (acquirer/processor integration) is done by partners and relies on the vendor's L1 and L2 approval numbers.`;
+
+/** The system prompt: the rules, the industry background, and the organisation's own rules file. */
+function systemPrompt(rules) {
+  const own = String(rules || '').trim();
+  return `${SYSTEM}\n\n${INDUSTRY}${own ? `\n\nThe organisation's own rules and context (follow these; they override general practice):\n${own.slice(0, 8000)}` : ''}`;
+}
 
 function isLocalUrl(u) {
   try {
@@ -78,7 +98,7 @@ class LocalAI {
   async chat(messages, { json = false, temperature = 0.2 } = {}) {
     const c = this.cfg();
     if (c.provider === 'off') throw new Error('AI assistant is off. Turn it on in Settings.');
-    const all = [{ role: 'system', content: SYSTEM }, ...messages];
+    const all = [{ role: 'system', content: systemPrompt(this.getSettings().aiRules) }, ...messages];
     if (c.provider === 'ollama') {
       const r = await this.request('/api/chat', { model: c.model, messages: all, stream: false, format: json ? 'json' : undefined, options: { temperature } });
       return (r.message && r.message.content) || '';
@@ -110,6 +130,22 @@ class LocalAI {
     }
   }
 
+  /**
+   * Data clean-up: the deterministic checks, explained and prioritised by the
+   * model when it is on. Without AI the checks are listed as they are.
+   */
+  async dataReview(issues, analysis) {
+    const list = issues.map((i) => `- [${i.severity}] ${i.title}. ${i.detail} Fix: ${i.fix} Examples: ${i.examples.join('; ')}`).join('\n');
+    const fallback = issues.length ? `Data checks found ${issues.length} thing${issues.length === 1 ? '' : 's'} to look at:\n${issues.map((i) => `• ${i.title}. ${i.fix}`).join('\n')}` : 'The data checks found nothing to clean up.';
+    if (this.cfg().provider === 'off' || !issues.length) return { text: fallback, ai: false };
+    try {
+      const text = await this.chat([{ role: 'user', content: `${portfolioContext(analysis)}\n\nData integrity findings from the app's checks:\n${list}\n\nAct as the certification data steward. Recommend the clean-up in order of risk: what to fix first and why, which findings may be legitimate (say so), and any conflict that needs a decision. Use only these findings; do not invent records. Under 220 words.` }]);
+      return { text: text.trim() || fallback, ai: true };
+    } catch (e) {
+      return { text: fallback, ai: false, error: e.message };
+    }
+  }
+
   async draftEmail(records, { purpose = 'renewal', asOf, to = '' } = {}) {
     const list = records.map((r) => `- ${r.device}${r.platform ? ` (${r.platform}${r.bundle ? ` ${r.bundle}` : ''})` : ''}: ${r.scheme} ${r.category}, approval ${r.approval_number || 'n/a'}, expires ${formatDate(r.expiry_date) || 'unknown'}`).join('\n');
     const fallback = templateEmail(records, purpose, list, to);
@@ -128,7 +164,7 @@ class LocalAI {
    * help locate facts but can never introduce them.
    */
   async assistExtract(letterText, missing) {
-    const prompt = `From this Letter of Approval text, return JSON with keys: issuer, category (one of: EMV L1 Contact, EMV L1 Contactless, EMV L2 Contactless, PCI PTS, TQM, Other), approval_number, products (array of device names), issue_date, expiry_date. Copy values exactly as written in the text. Use null when absent.\n\nTEXT:\n${letterText.slice(0, 6000)}`;
+    const prompt = `From this Letter of Approval text, return JSON with keys: issuer, category (one of: EMV L1 Contact, EMV L1 Contactless, EMV L2 Contact, EMV L2 Contactless, PCI PTS, TQM, Other), approval_number, products (array of device names), issue_date, expiry_date. Copy values exactly as written in the text. Use null when absent.\n\nTEXT:\n${letterText.slice(0, 6000)}`;
     const raw = await this.chat([{ role: 'user', content: prompt }], { json: true, temperature: 0 });
     let obj;
     try { obj = JSON.parse(raw.replace(/^```json|```$/g, '').trim()); } catch (_) { throw new Error('The AI answer was not valid JSON'); }
@@ -167,7 +203,7 @@ ${acts || '- none'}`;
 
 function recordLine(r, asOf) {
   const d = daysRemaining(r, asOf);
-  return [r.device, r.platform, r.scheme, r.category, r.expiry_date || 'no date', d == null ? '' : d, r.owner || 'unassigned', r.stage || 'auto'].join(' | ');
+  return [r.device, r.platform, r.scheme, r.category, r.expiry_date || 'no date', d == null ? '' : d, r.owner || 'unassigned', r.eol ? `end of life (${r.eol})` : r.stage || 'auto'].join(' | ');
 }
 
 function relevantRecords(q, records, asOf, limit = 60) {
@@ -218,4 +254,4 @@ ${list}
 Thank you,`;
 }
 
-module.exports = { LocalAI, portfolioContext, relevantRecords, templateBriefing, isLocalUrl, SYSTEM };
+module.exports = { LocalAI, portfolioContext, relevantRecords, templateBriefing, isLocalUrl, SYSTEM, INDUSTRY, systemPrompt };

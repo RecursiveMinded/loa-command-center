@@ -54,7 +54,7 @@ class AppApi {
   info() {
     return { version: VERSION, dataDir: this.dataDir, archiveDir: this.archiveDir, backupDir: this.backupDir, taxonomy: {
       categories: taxonomy.CATEGORIES, schemes: taxonomy.SCHEMES, stages: taxonomy.STAGES,
-      dispositions: taxonomy.DISPOSITIONS, portalStatuses: taxonomy.PORTAL_STATUSES,
+      dispositions: taxonomy.DISPOSITIONS, portalStatuses: taxonomy.PORTAL_STATUSES, renewalPaths: taxonomy.RENEWAL_PATHS,
     } };
   }
 
@@ -112,6 +112,11 @@ class AppApi {
     if (p.archived) return { changed: this.store.archiveRecords(ids, { reason: 'Archived' }), skipped: [] };
     delete p.archived;
     return this.store.bulkUpdate(ids, p, { source: 'manual' }, tags);
+  }
+
+  /** Accept the expiration of certifications (end of life, not renewing), or track them again with an empty reason. */
+  setEol(ids, reason = 'Not renewing') {
+    return this.store.bulkUpdate(ids || [], { eol: String(reason || '').trim() }, { source: 'manual' }).changed;
   }
 
   // ----------------------------------------------------------------- archive
@@ -181,7 +186,8 @@ class AppApi {
     for (const r of recs) for (const h of homes(r, r.device).length ? homes(r, r.device) : [r]) add(h, r.device, false);
     // One LOA can certify a series of devices sharing a reader: it counts for each.
     for (const r of recs) for (const dev of coveredDevices(r)) if (n(dev) !== n(r.device)) for (const h of homes(r, dev).length ? homes(r, dev) : [r]) add(h, dev, true);
-    const better = (a, b) => (!b || (a.days ?? -1e9) > (b.days ?? -1e9) ? a : b);
+    // A live approval beats one accepted as end of life, then the later expiry wins.
+    const better = (a, b) => (!b || (!!b.eol > !!a.eol) || (!!a.eol === !!b.eol && (a.days ?? -1e9) > (b.days ?? -1e9)) ? a : b);
     const rows = [];
     let missing = 0;
     for (const d of devices.values()) {
@@ -189,21 +195,30 @@ class AppApi {
       const hasCless = d.records.some((r) => /Contactless/.test(r.category));
       // A device with a built-in reader but no CL suffix needs both sets.
       const slots = isReader ? reader : hasCless ? [...contact, ...reader] : contact;
+      // Every certification of this device is end of life: its gaps no longer matter.
+      const retired = d.records.length > 0 && d.records.every((r) => r.eol);
       const cells = {};
       for (const slot of [...contact, ...reader]) {
         const hits = d.records.filter((r) => r.category === slot.category && (!slot.scheme || String(r.scheme).toLowerCase() === slot.scheme.toLowerCase()));
         const rec = hits.reduce((b, r) => better(r, b), null);
         const needed = slots.includes(slot);
-        const isNa = (na[d.key] || []).includes(slot.key);
-        const status = rec ? (rec.expiry_date ? 'ok' : 'nodate') : isNa ? 'na' : needed ? 'missing' : 'none';
+        const isNa = retired || (na[d.key] || []).includes(slot.key);
+        const status = rec ? (rec.eol ? 'eol' : rec.expiry_date ? 'ok' : 'nodate') : isNa ? 'na' : needed ? 'missing' : 'none';
         if (status === 'missing') missing++;
-        cells[slot.key] = { status, record: rec ? { id: rec.id, expiry_date: rec.expiry_date, days: rec.days, health: rec.health, approval_number: rec.approval_number, scheme: rec.scheme, sharedFrom: rec.sharedFrom || '' } : null };
+        cells[slot.key] = { status, record: rec ? { id: rec.id, expiry_date: rec.expiry_date, days: rec.days, health: rec.health, approval_number: rec.approval_number, scheme: rec.scheme, eol: rec.eol || '', category: rec.category, sharedFrom: rec.sharedFrom || '' } : null };
       }
-      rows.push({ grp: d.grp, platform: d.platform, bundle: d.bundle, device: d.device, key: d.key, reader: isReader,
+      rows.push({ grp: d.grp, platform: d.platform, bundle: d.bundle, device: d.device, key: d.key, reader: isReader, retired,
         missing: Object.values(cells).filter((c) => c.status === 'missing').length, cells });
     }
     rows.sort((a, b) => a.grp.localeCompare(b.grp, undefined, { numeric: true }) || a.device.localeCompare(b.device, undefined, { numeric: true }));
     return { columns: [...contact, ...reader].map(({ key, label, group }) => ({ key, label, group })), rows, missing, brands };
+  }
+
+  /** Level 3 enablement sheet (Excel): every device's approval numbers, optionally for one platform and bundle. */
+  exportL3Sheet({ platform = '', bundle = '' } = {}) {
+    const cov = this.deviceCoverage();
+    cov.rows = cov.rows.filter((r) => (!platform || r.platform === platform) && (!bundle || r.bundle === bundle));
+    return reports.exportL3Sheet(cov);
   }
 
   /** The certifications a contact device and a contactless reader need. */
@@ -213,6 +228,7 @@ class AppApi {
     const contact = [
       { key: 'pci', label: 'PCI', group: 'Contact device', category: 'PCI PTS' },
       { key: 'l1c', label: 'L1 Contact', group: 'Contact device', category: 'EMV L1 Contact' },
+      { key: 'l2c', label: 'L2 Contact', group: 'Contact device', category: 'EMV L2 Contact' },
       { key: 'tqm', label: 'TQM', group: 'Contact device', category: 'TQM' },
     ];
     const reader = [
@@ -248,7 +264,8 @@ class AppApi {
     for (const r of same) put(r, r.device, false);
     for (const r of same) for (const dev of coveredDevices(r)) if (n(dev) !== n(r.device)) put(r, dev, true);
     const sum = (r) => ({ id: r.id, category: r.category, scheme: r.scheme, approval_number: r.approval_number, issue_date: r.issue_date, expiry_date: r.expiry_date,
-      kernel_version: r.kernel_version, days: r.days, health: r.health, doc_count: r.doc_count, covers: r.covers || '', sharedFrom: r.sharedFrom || '' });
+      kernel_version: r.kernel_version, days: r.days, health: r.health, doc_count: r.doc_count, covers: r.covers || '', eol: r.eol || '', renewal_path: r.renewal_path || '', sharedFrom: r.sharedFrom || '' });
+    const st = (r) => (r.eol ? 'eol' : r.expiry_date ? 'ok' : 'nodate');
     const sections = [...byDev.values()].sort((a, b) => a.key.length - b.key.length || a.key.localeCompare(b.key)).map((d) => {
       const isReader = /CL\d+$/.test(d.key);
       const hasCless = d.records.some((r) => /Contactless/.test(r.category));
@@ -258,10 +275,10 @@ class AppApi {
       for (const slot of slots) {
         const hits = d.records.filter((r) => r.category === slot.category && (!slot.scheme || String(r.scheme).toLowerCase() === slot.scheme.toLowerCase()));
         hits.forEach((r) => used.add(r.id));
-        if (hits.length) for (const r of hits) rows.push({ slot: slot.key, label: slot.scheme ? `L2 Contactless · ${slot.label}` : slot.label, status: r.expiry_date ? 'ok' : 'nodate', record: sum(r) });
+        if (hits.length) for (const r of hits) rows.push({ slot: slot.key, label: slot.scheme ? `L2 Contactless · ${slot.label}` : slot.label, status: st(r), record: sum(r) });
         else rows.push({ slot: slot.key, label: slot.scheme ? `L2 Contactless · ${slot.label}` : slot.label, status: (na[d.key] || []).includes(slot.key) ? 'na' : 'missing', record: null });
       }
-      for (const r of d.records) if (!used.has(r.id)) rows.push({ slot: '', label: `${r.category}${r.scheme && r.scheme !== 'EMVCo' ? ` · ${r.scheme}` : ''}`, status: r.expiry_date ? 'ok' : 'nodate', record: sum(r) });
+      for (const r of d.records) if (!used.has(r.id)) rows.push({ slot: '', label: `${r.category}${r.scheme && r.scheme !== 'EMVCo' ? ` · ${r.scheme}` : ''}`, status: st(r), record: sum(r) });
       return { device: d.device, key: d.key, reader: isReader, rows };
     });
     return { platform: rec.platform || '', bundle: rec.bundle || '', sections };
@@ -298,7 +315,7 @@ class AppApi {
 
   /** Create the empty record for one missing certification and return its id. */
   createSlot({ device, platform, bundle, slot }) {
-    const SLOT = { pci: ['PCI PTS', 'PCI SSC'], l1c: ['EMV L1 Contact', 'EMVCo'], tqm: ['TQM', 'Mastercard TQM'], l1cl: ['EMV L1 Contactless', 'EMVCo'], tqmcl: ['TQM', 'Mastercard TQM'] };
+    const SLOT = { pci: ['PCI PTS', 'PCI SSC'], l1c: ['EMV L1 Contact', 'EMVCo'], l2c: ['EMV L2 Contact', 'EMVCo'], tqm: ['TQM', 'Mastercard TQM'], l1cl: ['EMV L1 Contactless', 'EMVCo'], tqmcl: ['TQM', 'Mastercard TQM'] };
     const [category, scheme] = String(slot).startsWith('l2:') ? ['EMV L2 Contactless', slot.slice(3)] : SLOT[slot] || [];
     if (!category) return null;
     return this.store.createRecord({ device, platform, bundle, category, scheme }, { source: 'manual', note: 'Created from device certifications' }).id;
@@ -379,7 +396,7 @@ class AppApi {
     const replacements = this.db.all("SELECT * FROM approvals WHERE role='replacement'");
     const inboxPending = this.db.get("SELECT COUNT(*) AS n FROM inbox WHERE status='pending'").n;
     return engine.analyze(this.store.listRecords(), {
-      settings: this.store.getSettings(), asOf, tasks: this.store.taskStates(), inboxPending, replacements,
+      settings: this.store.getSettings(), asOf, tasks: this.store.taskStates(), inboxPending, replacements, norm: this.store.norm(),
     });
   }
 
@@ -536,6 +553,54 @@ class AppApi {
     return this.getRecord(recordId);
   }
 
+  /**
+   * A file dropped in the inbox that is already in the app: which records it
+   * is linked to, and the records it could also belong to (other reader
+   * versions of the same device with the same approval type and brand).
+   */
+  duplicateInfo(documentId) {
+    const doc = this.store.getDocument(documentId);
+    if (!doc) throw new Error('LOA not found');
+    const base = String(doc.sha256 || '').split(':')[0];
+    const ids = this.db.all('SELECT id FROM documents WHERE sha256=? OR sha256 LIKE ?', [base, `${base}:%`]).map((d) => d.id);
+    const linked = this.db.all(`SELECT DISTINCT r.id, r.device, r.scheme, r.category, r.platform, r.bundle FROM document_links l JOIN records r ON r.id = l.record_id
+      WHERE l.document_id IN (${ids.map(() => '?').join(',')}) ORDER BY r.device`, ids);
+    const { splitVariant } = require('./devices');
+    const n = this.store.norm();
+    const bases = new Set(linked.map((r) => splitVariant(n(r.device)).base));
+    const kinds = new Set(linked.map((r) => `${r.category}|${String(r.scheme).toLowerCase()}`));
+    const mine = new Set(linked.map((r) => r.id));
+    const suggestions = this.store.listRecords().filter((r) => !mine.has(r.id) && bases.has(splitVariant(n(r.device)).base)
+      && kinds.has(`${r.category}|${String(r.scheme).toLowerCase()}`))
+      .map((r) => ({ id: r.id, device: r.device, scheme: r.scheme, category: r.category, platform: r.platform || '', bundle: r.bundle || '' }));
+    return { document: { id: doc.id, filename: doc.filename }, linkedTo: linked, suggestions, values: linked.length ? this.letterValues(ids, linked[0].id) : this.letterValues(ids, null) };
+  }
+
+  /**
+   * Map an LOA that is already in the app to more records: existing ones
+   * (recordIds) and new ones for other device names (create: [device]),
+   * copying the approval type, brand, platform and bundle of a record it is
+   * already on. The letter's approval number and dates are applied.
+   */
+  mapDuplicate(documentId, { recordIds = [], create = [] } = {}) {
+    const info = this.duplicateInfo(documentId);
+    const from = info.linkedTo[0] ? this.store.getRecord(info.linkedTo[0].id) : null;
+    let n = 0;
+    const out = [];
+    for (const id of recordIds) { this.linkDocumentToRecord(id, documentId, { useValues: true, values: info.values }); out.push(id); n++; }
+    for (const device of create.map((d) => String(d).trim()).filter(Boolean)) {
+      if (!from) throw new Error('This LOA is not on any record yet; open it from the inbox instead');
+      const k = this.store.norm()(device);
+      const have = this.store.listRecords().find((x) => this.store.norm()(x.device) === k && x.category === from.category && String(x.scheme).toLowerCase() === String(from.scheme).toLowerCase());
+      if (have) { this.linkDocumentToRecord(have.id, documentId, { useValues: true, values: info.values }); out.push(have.id); n++; continue; }
+      const r = this.store.createRecord({ device, category: from.category, scheme: from.scheme, platform: from.platform, bundle: from.bundle,
+        kernel_version: from.kernel_version }, { source: 'loa', note: `Created from LOA ${info.document.filename}` });
+      this.linkDocumentToRecord(r.id, documentId, { useValues: true, values: info.values });
+      out.push(r.id); n++;
+    }
+    return { linked: n, recordIds: out };
+  }
+
   /** Save a new LOA file and link it to this record (it does not go through the LOA inbox). */
   attachNewDocument(recordId, { filename, bytes, pages = [], ocrPages = 0 }) {
     const { sha256, archiveFile } = require('./intake');
@@ -660,7 +725,7 @@ class AppApi {
     const asOf = todayIso();
     let records = this.store.listRecords();
     if (ids && ids.length) { const set = new Set(ids); records = records.filter((r) => set.has(r.id)); }
-    const analysis = engine.analyze(records, { settings: this.store.getSettings(), asOf, tasks: this.store.taskStates(), replacements: this.db.all("SELECT * FROM approvals WHERE role='replacement'") });
+    const analysis = engine.analyze(records, { settings: this.store.getSettings(), asOf, tasks: this.store.taskStates(), replacements: this.db.all("SELECT * FROM approvals WHERE role='replacement'"), norm: this.store.norm() });
     return reports.summaryReport({ analysis, records, settings: this.store.getSettings(), asOf, filterLabel });
   }
 
@@ -708,7 +773,21 @@ class AppApi {
 
   aiBriefing() { return this.ai.briefing(this.analysis()); }
 
+  /** The briefing's records as an email-ready table (HTML and tab-separated text). */
+  briefingReport({ briefing = '', months = 12 } = {}) {
+    return reports.briefingReport({ records: this.store.listRecords(), analysis: this.analysis(), briefing, settings: this.store.getSettings(), months });
+  }
+
   aiAsk(question) { return this.ai.ask(question, this.analysis(), this.store.listRecords()); }
+
+  /** Data integrity spot checks (dates, conflicting approval numbers, typos, missing foundations...). */
+  dataChecks() { return require('./integrity').dataChecks(this.listRecords(), { norm: this.store.norm() }); }
+
+  /** The data checks with clean-up recommendations from the local AI when it is on. */
+  async aiDataReview() {
+    const issues = this.dataChecks();
+    return { ...(await this.ai.dataReview(issues, this.analysis())), issues };
+  }
 
   aiDraftEmail(ids, opts = {}) {
     const set = new Set(ids || []);
@@ -742,7 +821,7 @@ class AppApi {
     this.store.setSettings({ appVersion: VERSION });
     this.store.tagReaders();
     this.store.migrateArchivedFlag();
-    this.store.migrateL2Contact();
+    this.store.restoreL2Contact();
     this.store.unifyDeviceSpellings();
     // A new version may read letters better; refresh what is waiting for review.
     if (this.store.listInbox({ status: 'pending' }).length || this.store.listInbox({ status: 'info' }).length) this.intake.reread();
@@ -809,7 +888,7 @@ const PUBLIC_METHODS = [
   'listArchive', 'archiveCount', 'expiredRecords', 'archiveExpired', 'restoreArchived', 'purgeArchived',
   'activateReplacement', 'deviceCoverage', 'deviceProfile', 'listReaderGroups', 'setReaderGroup', 'setCoverageNA', 'createMissing', 'createSlot', 'listTags', 'knownDevices', 'listAliases', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
   'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
-  'documentText', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
+  'documentText', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'setEol', 'dataChecks', 'aiDataReview', 'briefingReport', 'exportL3Sheet', 'duplicateInfo', 'mapDuplicate', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
   'aiDraftEmail', 'backup', 'listBackups', 'restore', 'health',
 ];
