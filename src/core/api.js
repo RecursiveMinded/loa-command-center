@@ -168,9 +168,19 @@ class AppApi {
       if (!shared) d.device = r.device; // a device's own records name it
       d.records.push(shared ? { ...r, sharedFrom: r.device } : r);
     };
-    for (const r of recs) add(r, r.device, false);
+    // Records with no platform or bundle (often created from an LOA) join the
+    // device's real bundle rather than repeating its gaps in "Unassigned".
+    const placed = (r) => r.platform || r.bundle;
+    const groupsOf = new Map();
+    for (const r of recs) if (placed(r)) {
+      const k = n(r.device);
+      if (!groupsOf.has(k)) groupsOf.set(k, new Map());
+      groupsOf.get(k).set(`${r.platform}|${r.bundle}`, { platform: r.platform || '', bundle: r.bundle || '' });
+    }
+    const homes = (r, device) => (placed(r) ? [r] : [...((groupsOf.get(n(device)) || new Map()).values())].map((g) => ({ ...r, ...g })));
+    for (const r of recs) for (const h of homes(r, r.device).length ? homes(r, r.device) : [r]) add(h, r.device, false);
     // One LOA can certify a series of devices sharing a reader: it counts for each.
-    for (const r of recs) for (const dev of coveredDevices(r)) if (n(dev) !== n(r.device)) add(r, dev, true);
+    for (const r of recs) for (const dev of coveredDevices(r)) if (n(dev) !== n(r.device)) for (const h of homes(r, dev).length ? homes(r, dev) : [r]) add(h, dev, true);
     const better = (a, b) => (!b || (a.days ?? -1e9) > (b.days ?? -1e9) ? a : b);
     const rows = [];
     let missing = 0;
@@ -225,7 +235,8 @@ class AppApi {
     const n = this.store.norm();
     const { contact, reader, na } = this.coverageSlots();
     const base = splitVariant(n(rec.device)).base;
-    const same = this.listRecords().filter((r) => (r.platform || '') === (rec.platform || '') && (r.bundle || '') === (rec.bundle || ''));
+    // The record's platform and bundle, plus records not placed in any bundle.
+    const same = this.listRecords().filter((r) => ((r.platform || '') === (rec.platform || '') && (r.bundle || '') === (rec.bundle || '')) || (!r.platform && !r.bundle));
     const byDev = new Map();
     const put = (r, device, shared) => {
       const k = n(device);

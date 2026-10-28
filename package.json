@@ -1,7 +1,7 @@
 {
   "name": "loa-command-center",
   "productName": "LOA Command Center",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "description": "Track Letters of Approval and payment terminal certifications: drop in LOAs, get a renewal action plan, reports and reminders.",
   "author": "LOA Command Center",
   "license": "UNLICENSED",
