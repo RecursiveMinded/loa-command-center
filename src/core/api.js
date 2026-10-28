@@ -20,6 +20,9 @@ const schedule = require('./schedule');
 
 const VERSION = require('../../package.json').version;
 // Card brands whose L2 contactless approval a reader needs (US market by default; editable in Settings).
+/** Other devices a record's LOA also certifies (its "Covers devices" list). */
+function coveredDevices(r) { return String(r.covers || '').split(/[,;\n]/).map((x) => x.trim()).filter(Boolean); }
+
 const DEFAULT_BRANDS = ['Visa', 'Mastercard', 'Amex', 'Discover', 'UnionPay', 'JCB', 'Interac'];
 
 class AppApi {
@@ -154,13 +157,20 @@ class AppApi {
     const { contact, reader, brands, na } = this.coverageSlots();
     const n = this.store.norm();
     const devices = new Map();
-    for (const r of this.listRecords()) {
-      const key = n(r.device);
+    const recs = this.listRecords();
+    const add = (r, device, shared) => {
+      const key = n(device);
+      if (!key) return;
       const grp = [r.platform, r.bundle].filter(Boolean).join(' · ') || 'Unassigned';
       const k = `${grp}||${key}`;
-      if (!devices.has(k)) devices.set(k, { grp, platform: r.platform || '', bundle: r.bundle || '', device: r.device, key, records: [] });
-      devices.get(k).records.push(r);
-    }
+      if (!devices.has(k)) devices.set(k, { grp, platform: r.platform || '', bundle: r.bundle || '', device, key, records: [] });
+      const d = devices.get(k);
+      if (!shared) d.device = r.device; // a device's own records name it
+      d.records.push(shared ? { ...r, sharedFrom: r.device } : r);
+    };
+    for (const r of recs) add(r, r.device, false);
+    // One LOA can certify a series of devices sharing a reader: it counts for each.
+    for (const r of recs) for (const dev of coveredDevices(r)) if (n(dev) !== n(r.device)) add(r, dev, true);
     const better = (a, b) => (!b || (a.days ?? -1e9) > (b.days ?? -1e9) ? a : b);
     const rows = [];
     let missing = 0;
@@ -177,7 +187,7 @@ class AppApi {
         const isNa = (na[d.key] || []).includes(slot.key);
         const status = rec ? (rec.expiry_date ? 'ok' : 'nodate') : isNa ? 'na' : needed ? 'missing' : 'none';
         if (status === 'missing') missing++;
-        cells[slot.key] = { status, record: rec ? { id: rec.id, expiry_date: rec.expiry_date, days: rec.days, health: rec.health, approval_number: rec.approval_number, scheme: rec.scheme } : null };
+        cells[slot.key] = { status, record: rec ? { id: rec.id, expiry_date: rec.expiry_date, days: rec.days, health: rec.health, approval_number: rec.approval_number, scheme: rec.scheme, sharedFrom: rec.sharedFrom || '' } : null };
       }
       rows.push({ grp: d.grp, platform: d.platform, bundle: d.bundle, device: d.device, key: d.key, reader: isReader,
         missing: Object.values(cells).filter((c) => c.status === 'missing').length, cells });
@@ -215,15 +225,19 @@ class AppApi {
     const n = this.store.norm();
     const { contact, reader, na } = this.coverageSlots();
     const base = splitVariant(n(rec.device)).base;
-    const all = this.listRecords().filter((r) => (r.platform || '') === (rec.platform || '') && (r.bundle || '') === (rec.bundle || '') && splitVariant(n(r.device)).base === base);
+    const same = this.listRecords().filter((r) => (r.platform || '') === (rec.platform || '') && (r.bundle || '') === (rec.bundle || ''));
     const byDev = new Map();
-    for (const r of all) {
-      const k = n(r.device);
-      if (!byDev.has(k)) byDev.set(k, { key: k, device: r.device, records: [] });
-      byDev.get(k).records.push(r);
-    }
+    const put = (r, device, shared) => {
+      const k = n(device);
+      if (splitVariant(k).base !== base) return;
+      if (!byDev.has(k)) byDev.set(k, { key: k, device, records: [] });
+      if (!shared) byDev.get(k).device = r.device;
+      byDev.get(k).records.push(shared ? { ...r, sharedFrom: r.device } : r);
+    };
+    for (const r of same) put(r, r.device, false);
+    for (const r of same) for (const dev of coveredDevices(r)) if (n(dev) !== n(r.device)) put(r, dev, true);
     const sum = (r) => ({ id: r.id, category: r.category, scheme: r.scheme, approval_number: r.approval_number, issue_date: r.issue_date, expiry_date: r.expiry_date,
-      kernel_version: r.kernel_version, days: r.days, health: r.health, doc_count: r.doc_count });
+      kernel_version: r.kernel_version, days: r.days, health: r.health, doc_count: r.doc_count, covers: r.covers || '', sharedFrom: r.sharedFrom || '' });
     const sections = [...byDev.values()].sort((a, b) => a.key.length - b.key.length || a.key.localeCompare(b.key)).map((d) => {
       const isReader = /CL\d+$/.test(d.key);
       const hasCless = d.records.some((r) => /Contactless/.test(r.category));
@@ -240,6 +254,18 @@ class AppApi {
       return { device: d.device, key: d.key, reader: isReader, rows };
     });
     return { platform: rec.platform || '', bundle: rec.bundle || '', sections };
+  }
+
+  /** Saved device series that share one reader, e.g. { "Reader A": ["Lane/5000", "Lane/3600", "Desk/1700"] }. */
+  listReaderGroups() { return this.store.getSettings().readerGroups || {}; }
+  setReaderGroup(name, devices) {
+    const g = { ...this.listReaderGroups() };
+    const nm = String(name || '').trim();
+    if (!nm) throw new Error('Name the group first');
+    const list = [...new Set((devices || []).map((d) => String(d).trim()).filter(Boolean))];
+    if (list.length) g[nm] = list; else delete g[nm];
+    this.store.setSettings({ readerGroups: g });
+    return g;
   }
 
   /** Mark a required certification as not applicable to a device (e.g. no contact reader), or undo that. */
@@ -770,7 +796,7 @@ class AppApi {
 const PUBLIC_METHODS = [
   'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'deleteRecords', 'bulkUpdate',
   'listArchive', 'archiveCount', 'expiredRecords', 'archiveExpired', 'restoreArchived', 'purgeArchived',
-  'activateReplacement', 'deviceCoverage', 'deviceProfile', 'setCoverageNA', 'createMissing', 'createSlot', 'listTags', 'knownDevices', 'listAliases', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
+  'activateReplacement', 'deviceCoverage', 'deviceProfile', 'listReaderGroups', 'setReaderGroup', 'setCoverageNA', 'createMissing', 'createSlot', 'listTags', 'knownDevices', 'listAliases', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
   'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
   'documentText', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',

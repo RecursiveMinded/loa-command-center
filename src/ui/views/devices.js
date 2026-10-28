@@ -50,8 +50,8 @@ export function Devices({ app }) {
           const cell = row.cells[c.key];
           const r = cell.record;
           if (r) {
-            return html`<td><span class=${`cell ${r.health}`} title=${`${row.device} · ${c.group} ${c.label}\n${r.approval_number || ''}\nExpires ${fmtDate(r.expiry_date) || 'unknown'}`} onClick=${() => app.openRecord(r.id)}>
-              ${r.expiry_date ? fmtDate(r.expiry_date).replace(/^(\w+) \d+, (\d+)$/, '$1 $2') : 'No date'}<small>${r.expiry_date ? daysLabel(r.days) : 'add LOA'}</small></span></td>`;
+            return html`<td><span class=${`cell ${r.health}${r.sharedFrom ? ' shared' : ''}`} title=${`${row.device} · ${c.group} ${c.label}\n${r.approval_number || ''}\nExpires ${fmtDate(r.expiry_date) || 'unknown'}${r.sharedFrom ? `\nCertified by the ${r.sharedFrom} LOA` : ''}`} onClick=${() => app.openRecord(r.id)}>
+              ${r.expiry_date ? fmtDate(r.expiry_date).replace(/^(\w+) \d+, (\d+)$/, '$1 $2') : 'No date'}<small>${r.sharedFrom ? `via ${r.sharedFrom}` : r.expiry_date ? daysLabel(r.days) : 'add LOA'}</small></span></td>`;
           }
           if (cell.status === 'missing') {
             return html`<td><span class="cell miss" title=${`${row.device} has no ${c.group} ${c.label} record`}>Missing<small>

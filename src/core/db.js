@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS records (
@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS records (
   portal_status TEXT DEFAULT 'Not Tracked',
   change_ticket TEXT DEFAULT '',
   tags TEXT DEFAULT '',
+  covers TEXT DEFAULT '',
   archived INTEGER DEFAULT 0,
   source TEXT DEFAULT 'manual',
   verified_at TEXT,
@@ -184,6 +185,8 @@ class Database {
     const v = this.get("SELECT value FROM settings WHERE key='schema_version'");
     // v2: free-form tags on records (platform groups, programs, customers…).
     if (!this.all('PRAGMA table_info(records)').some((c) => c.name === 'tags')) this.db.exec("ALTER TABLE records ADD COLUMN tags TEXT DEFAULT ''");
+    // v4: other devices one LOA also certifies (a series sharing one reader).
+    if (!this.all('PRAGMA table_info(records)').some((c) => c.name === 'covers')) this.db.exec("ALTER TABLE records ADD COLUMN covers TEXT DEFAULT ''");
     const ver = JSON.stringify(SCHEMA_VERSION);
     if (!v) this.run("INSERT INTO settings(key,value) VALUES('schema_version', ?)", [ver]);
     else if (v.value !== ver) this.run("UPDATE settings SET value=? WHERE key='schema_version'", [ver]);

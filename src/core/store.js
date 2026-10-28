@@ -10,7 +10,7 @@ const RECORD_FIELDS = [
   'vendor', 'platform', 'bundle', 'device', 'family', 'category', 'scheme', 'kernel_version',
   'approval_number', 'issue_date', 'expiry_date', 'expiry_basis', 'restricted', 'stage',
   'disposition', 'owner', 'customer', 'market', 'next_action', 'next_action_date',
-  'extension_used', 'notes', 'portal_date', 'portal_status', 'change_ticket', 'tags', 'archived',
+  'extension_used', 'notes', 'portal_date', 'portal_status', 'change_ticket', 'tags', 'covers', 'archived',
   'source', 'verified_at', 'verified_by',
 ];
 const BOOL_FIELDS = new Set(['restricted', 'extension_used', 'archived']);
@@ -148,6 +148,7 @@ class Store {
     rec.scheme = normalizeScheme(rec.scheme || '');
     for (const f of ALIAS_FIELDS) if (rec[f]) rec[f] = this.aliasValue(f, rec[f]);
     rec.device = this.deviceSpelling(rec.device);
+    if (rec.covers) rec.covers = this.coversList(rec.covers, rec.device);
     rec.tags = withReaderTag(rec.tags, rec.device);
     if (!rec.tags) delete rec.tags;
     const rkey = this.recordKey(rec);
@@ -179,6 +180,7 @@ class Store {
     if (p.category !== undefined) p.category = normalizeCategory(p.category);
     if (p.scheme !== undefined) p.scheme = normalizeScheme(p.scheme);
     for (const f of ALIAS_FIELDS) if (p[f]) p[f] = this.aliasValue(f, p[f]);
+    if (p.covers !== undefined) p.covers = this.coversList(p.covers, p.device || cur.device);
     // A renamed device carries its reader version (CL1, CL2...) as a tag.
     if (p.device !== undefined && p.device !== cur.device) p.tags = withReaderTag(p.tags !== undefined ? p.tags : cur.tags, p.device, true);
     const changed = [];
@@ -323,6 +325,20 @@ class Store {
     for (const r of this.db.all('SELECT device FROM records')) if (this.norm()(r.device) === key) counts.set(r.device, (counts.get(r.device) || 0) + 1);
     if (!counts.size || counts.has(name)) return counts.size > 1 ? bestSpelling(counts) : name;
     return bestSpelling(counts);
+  }
+
+  /** Tidy a "Covers devices" list: known spellings, no repeats, not the record's own device. */
+  coversList(value, own) {
+    const n = this.norm();
+    const seen = new Set([n(own)]);
+    const out = [];
+    for (const d of String(value || '').split(/[,;\n]/).map((x) => x.trim()).filter(Boolean)) {
+      const name = this.deviceSpelling(d);
+      if (seen.has(n(name))) continue;
+      seen.add(n(name));
+      out.push(name);
+    }
+    return out.join(', ');
   }
 
   /** Rename spelling variants of one device to its most used spelling. Returns how many records changed. */
