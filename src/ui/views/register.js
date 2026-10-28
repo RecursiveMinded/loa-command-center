@@ -59,7 +59,7 @@ export function applyFilter(records, f, q) {
     if (f.month && String(r.expiry_date || '').slice(0, 7) !== f.month) return false;
     if (due && !due.test(r.days)) return false;
     if (words.length) {
-      const hay = [r.device, r.family, r.platform, r.bundle, r.tags, r.scheme, r.category, r.approval_number, r.owner, r.customer, r.market, r.notes, r.kernel_version, r.next_action, r.change_ticket].join(' ').toLowerCase();
+      const hay = [r.device, r.covers, r.family, r.platform, r.bundle, r.tags, r.scheme, r.category, r.approval_number, r.owner, r.customer, r.market, r.notes, r.kernel_version, r.next_action, r.change_ticket].join(' ').toLowerCase();
       if (!words.every((w) => hay.includes(w))) return false;
     }
     return true;
@@ -170,6 +170,7 @@ export function Register({ app, params }) {
       <tbody>${list.slice(0, limit).map((r) => html`<tr key=${r.id} class=${`click ${sel.has(r.id) ? 'sel' : ''}`} onClick=${() => app.openRecord(r.id)}>
         <td class="chk" onClick=${(e) => e.stopPropagation()}><input type="checkbox" aria-label="Select" checked=${sel.has(r.id)} onChange=${() => toggle(r.id)} /></td>
         <td><div class="dev">${r.device}${r.archived ? html` <span class="tag">Archived</span>` : null}</div><div class="faint small">${[r.platform, r.bundle, r.kernel_version].filter(Boolean).join(' · ')}</div>
+          ${r.covers ? html`<div class="small muted" title="This LOA also certifies these devices">Also covers ${r.covers}</div>` : null}
           ${r.tags ? html`<div class="tagrow">${tagList(r).map((t) => html`<span class="utag" onClick=${(e) => { e.stopPropagation(); setF({ ...f, tag: t }); }} title="Show records with this tag">${t}</span>`)}</div>` : null}</td>
         <td>${r.scheme}</td><td class="nowrap">${r.category}</td>
         <td class="small ellipsis" style="max-width:170px" title=${r.approval_number}>${r.approval_number}</td>

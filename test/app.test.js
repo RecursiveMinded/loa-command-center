@@ -716,3 +716,24 @@ test('a record shows every certification of its physical device', async () => {
   assert.equal(api.store.getRecord(rid).category, 'TQM');
   assert.equal(api.deviceProfile(cl3.id).sections[0].rows.find((r) => r.slot === 'tqm').record.id, rid);
 });
+
+test('one LOA can certify a series of devices that share a reader', async () => {
+  const { api } = await fresh();
+  const base = { platform: 'UPP', bundle: 'Bundle 6', category: 'EMV L1 Contact', scheme: 'EMVCo' };
+  api.store.createRecord({ ...base, device: 'Lane/3600', category: 'PCI PTS', scheme: 'PCI SSC', expiry_date: '2031-04-30' });
+  const a = api.store.createRecord({ ...base, device: 'Lane/5000', expiry_date: '2028-07-12', covers: 'Lane 3600, Desk/1700, lane/5000' });
+  assert.equal(api.store.getRecord(a.id).covers, 'Lane/3600, Desk/1700', 'own device dropped, known spelling used');
+  const cov = api.deviceCoverage();
+  const l3600 = cov.rows.find((r) => r.device === 'Lane/3600');
+  assert.equal(l3600.cells.l1c.status, 'ok');
+  assert.equal(l3600.cells.l1c.record.sharedFrom, 'Lane/5000');
+  const desk = cov.rows.find((r) => r.device === 'Desk/1700');
+  assert.ok(desk, 'a covered device with no records of its own still appears');
+  assert.equal(desk.cells.l1c.record.id, a.id);
+  const p3600 = api.deviceProfile(api.listRecords().find((r) => r.device === 'Lane/3600').id);
+  assert.equal(p3600.sections[0].rows.find((r) => r.slot === 'l1c').record.sharedFrom, 'Lane/5000');
+  api.setReaderGroup('Contact reader A', ['Lane/5000', 'Lane/3600', 'Desk/1700']);
+  assert.deepEqual(api.listReaderGroups()['Contact reader A'], ['Lane/5000', 'Lane/3600', 'Desk/1700']);
+  api.setReaderGroup('Contact reader A', []);
+  assert.deepEqual(api.listReaderGroups(), {});
+});

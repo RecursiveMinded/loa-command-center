@@ -111,6 +111,13 @@ function pdfFromPages(pages) {
     await p.click('.drawer .tabs >> text=/All certifications/');
     await p.waitForSelector('.drawer table.certs', { timeout: 5000 });
     check(true, `record shows all certifications of its device (${await p.locator('.drawer table.certs tbody tr').count()} rows)`);
+    await p.click('.drawer .tabs >> text=Details');
+    await p.fill('input[aria-label="Add a covered device"]', 'Desk/1700');
+    await p.click('.drawer .covers + .row >> text=Add');
+    await p.waitForSelector('.drawer .tagrow.covers >> text=Desk/1700');
+    await p.click('.drawer >> text=Save changes');
+    await p.waitForSelector('text=Saved', { timeout: 5000 });
+    check(true, 'one LOA can also certify other devices (covers list saved)');
     await p.keyboard.press('Escape');
     // A letter with no device found: the AI fills it in, then Dismiss still works.
     await p.click('nav >> text=LOA inbox');

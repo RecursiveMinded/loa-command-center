@@ -277,7 +277,25 @@ function Matching({ s, save, app }) {
       help="Different spellings of one kernel bundle. New and imported records use your name, and existing records can be renamed."
       list=${fields && fields.bundle} onSave=${async (a, v, apply) => done(await call('setFieldAlias', 'bundle', a, v, { apply }))}
       onRemove=${async (k) => { await call('setFieldAlias', 'bundle', k, ''); reloadFields(); }} />
+    <${ReaderGroups} options=${values('device')} />
   </div>`;
+}
+
+/** Device series that share one physical reader, so one LOA certifies all of them. */
+function ReaderGroups({ options }) {
+  const [groups, reload] = useLoad(() => call('listReaderGroups'), []);
+  const [name, setName] = useState(''); const [devs, setDevs] = useState('');
+  const save = async () => {
+    try { await call('setReaderGroup', name, devs.split(',')); toast(`Saved reader group "${name}"`, 'ok'); setName(''); setDevs(''); reload(); } catch (e) { toastError(e); }
+  };
+  return html`<div class="card pad"><h3>Reader groups</h3>
+    <p class="muted small">Devices that share the same physical reader, so one LOA (for example L1 Contact) certifies all of them. Pick a group in a record's "This LOA also certifies" section.</p>
+    ${groups && Object.keys(groups).length ? html`<table class="t compact mt"><tbody>${Object.entries(groups).map(([k, v]) => html`<tr><td><b>${k}</b></td><td class="small">${v.join(', ')}</td>
+      <td><button class="btn sm ghost" onClick=${async () => { await call('setReaderGroup', k, []); reload(); }}>Remove</button></td></tr>`)}</tbody></table>` : null}
+    <div class="row wrap mt"><input type="text" placeholder="Group name, e.g. Contact reader A" value=${name} onInput=${(e) => setName(e.target.value)} style="max-width:220px" />
+      <input type="text" list="rg-devices" placeholder="Devices, comma separated: Lane/5000, Lane/3600, Desk/1700" value=${devs} onInput=${(e) => setDevs(e.target.value)} style="flex:1;min-width:260px" />
+      <datalist id="rg-devices">${options.map((o) => html`<option value=${o} />`)}</datalist>
+      <button class="btn primary" disabled=${!name.trim() || !devs.trim()} onClick=${save}>Save group</button></div></div>`;
 }
 
 /** One alias list: add "other spelling -> your name", optionally renaming the records that use the other spelling. */

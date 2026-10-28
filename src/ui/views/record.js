@@ -7,7 +7,7 @@ import { DocButtons, openDoc } from '../docs.js';
 const BLANK = {
   device: '', platform: '', bundle: '', family: '', category: 'EMV L1 Contact', scheme: '', kernel_version: '', approval_number: '',
   issue_date: '', expiry_date: '', expiry_basis: '', restricted: false, stage: '', disposition: '', owner: '', customer: '', market: '',
-  next_action: '', next_action_date: '', extension_used: false, notes: '', portal_date: '', portal_status: 'Not Tracked', change_ticket: '', tags: '', archived: false,
+  next_action: '', next_action_date: '', extension_used: false, notes: '', portal_date: '', portal_status: 'Not Tracked', change_ticket: '', tags: '', covers: '', archived: false,
 };
 
 export function RecordDrawer({ id, app, onClose, tab: startTab }) {
@@ -124,6 +124,7 @@ export function RecordDrawer({ id, app, onClose, tab: startTab }) {
       </div>
       <div class="row gap-l mt"><label class="check"><input type="checkbox" checked=${form.restricted} onChange=${set('restricted')} /> Restricted / final extension</label>
         <label class="check"><input type="checkbox" checked=${form.extension_used} onChange=${set('extension_used')} /> Extension already used</label></div>
+      <${CoversField} value=${form.covers} device=${form.device} onChange=${(v) => setForm({ ...form, covers: v })} />
 
       <div class="section-title">Ownership and next step</div>
       <div class="grid3">
@@ -226,7 +227,7 @@ function DeviceCerts({ p, current, app, reload }) {
               : html`<button class="btn sm" onClick=${() => add(sec, row)}><${Icon} name="plus" /> Add</button> <button class="btn sm ghost" onClick=${() => na(sec, row, true)} title="Not needed (waiver or no reader)">N/A</button>`}</td></tr>`;
         }
         return html`<tr class=${`click ${r.id === current ? 'sel' : ''}`} onClick=${() => r.id !== current && app.openRecord(r.id)}>
-          <td>${row.label}${r.kernel_version && r.category === 'PCI PTS' ? html` <span class="faint">${r.kernel_version}</span>` : null}</td>
+          <td>${row.label}${r.kernel_version && r.category === 'PCI PTS' ? html` <span class="faint">${r.kernel_version}</span>` : null}${r.sharedFrom ? html` <span class="tag" title=${`Certified by the ${r.sharedFrom} LOA, which covers this device too`}>via ${r.sharedFrom}</span>` : null}</td>
           <td class="small ellipsis" style="max-width:180px" title=${r.approval_number}>${r.approval_number || html`<span class="faint">—</span>`}</td>
           <td class="small nowrap">${fmtDate(r.issue_date) || html`<span class="faint">—</span>`}</td>
           <td class="small nowrap">${fmtDate(r.expiry_date) || html`<span class="faint">—</span>`}</td>
@@ -234,4 +235,42 @@ function DeviceCerts({ p, current, app, reload }) {
           <td class="num">${r.doc_count || html`<span class="faint">—</span>`}</td>
           <td class="nowrap" onClick=${(e) => e.stopPropagation()}><button class="btn sm ghost" onClick=${() => app.openRecord(r.id, 'documents')} title="Open its LOAs or add one"><${Icon} name="file" /> LOA</button></td></tr>`;
       })}</tbody></table>`)}`;
+}
+
+/**
+ * Other devices this certification also covers: one LOA can certify a series
+ * of devices that share the same physical reader (e.g. Lane/5000, Lane/3600
+ * and Desk/1700). Saved reader groups fill the list in one click.
+ */
+function CoversField({ value, device, onChange }) {
+  const [known, setKnown] = useState([]);
+  const [groups, setGroups] = useState({});
+  useEffect(() => {
+    call('knownDevices').then((d) => setKnown(d.map((x) => x.device))).catch(() => {});
+    call('listReaderGroups').then(setGroups).catch(() => {});
+  }, []);
+  const list = String(value || '').split(',').map((x) => x.trim()).filter(Boolean);
+  const merge = (names) => onChange([...new Set([...list, ...names])].filter((d) => d.toLowerCase() !== String(device || '').toLowerCase()).join(', '));
+  const [adding, setAdding] = useState('');
+  const addOne = () => { if (adding.trim()) { merge(adding.split(',').map((x) => x.trim()).filter(Boolean)); setAdding(''); } };
+  const saveGroup = async () => {
+    const all = [device, ...list].filter(Boolean);
+    if (all.length < 2) return toast('Add the other devices first');
+    const name = prompt('Name this reader group (e.g. the reader model):', '');
+    if (!name) return;
+    try { setGroups(await call('setReaderGroup', name, all)); toast(`Saved reader group "${name}"`, 'ok'); } catch (e) { toastError(e); }
+  };
+  return html`<div class="section-title">This LOA also certifies</div>
+    <p class="muted small">Devices that share this physical reader and are certified by the same letter. The certification and its expiry count for each of them.</p>
+    <div class="tagrow covers">${list.map((d) => html`<span class="utag">${d} <button class="linkbtn" aria-label=${`Remove ${d}`} onClick=${() => onChange(list.filter((x) => x !== d).join(', '))}>×</button></span>`)}
+      ${!list.length ? html`<span class="faint small">Only ${device || 'this device'}</span>` : null}</div>
+    <div class="row wrap mt">
+      <input type="text" list="covers-devices" aria-label="Add a covered device" placeholder="Add a device, e.g. Lane/3600" value=${adding}
+        onInput=${(e) => setAdding(e.target.value)} onKeyDown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); addOne(); } }} style="max-width:260px" />
+      <datalist id="covers-devices">${known.map((d) => html`<option value=${d} />`)}</datalist>
+      <button class="btn sm" onClick=${addOne}><${Icon} name="plus" /> Add</button>
+      ${Object.keys(groups).length ? html`<select aria-label="Use a reader group" value="" onChange=${(e) => { const g = groups[e.target.value]; if (g) merge(g); e.target.value = ''; }}>
+        <option value="">Use a reader group…</option>${Object.entries(groups).map(([k, v]) => html`<option value=${k}>${k} (${v.join(', ')})</option>`)}</select>` : null}
+      <button class="btn sm ghost" onClick=${saveGroup} title="Save this device list to reuse on other LOAs">Save as reader group</button>
+    </div>`;
 }
