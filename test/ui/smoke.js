@@ -43,6 +43,13 @@ function pdfFromPages(pages) {
   const family = path.join(tmp, 'New family.pdf');
   fs.writeFileSync(family, pdfFromPages([L.discover.replace('Flex/3XXX', 'Zeta/7XXX')]));
   // A letter that does not name its device; the file name does.
+  // An approval email with the LOA attached and a logo inline.
+  const eml = path.join(tmp, 'PCI approval.eml');
+  const att = pdfFromPages([L.pci]).toString('base64').replace(/.{76}/g, '$&\r\n');
+  fs.writeFileSync(eml, ['From: Lab <lab@example.com>', 'To: you@example.com', 'Subject: PCI approval NX100', 'Date: Mon, 2 Jun 2025 10:00:00 +0000', 'MIME-Version: 1.0',
+    'Content-Type: multipart/mixed; boundary="b1"', '', '--b1', 'Content-Type: text/plain; charset=utf-8', '', 'Hello, please find the approval letter attached.', '',
+    '--b1', 'Content-Type: image/png', 'Content-Disposition: inline; filename="logo.png"', 'Content-ID: <logo>', 'Content-Transfer-Encoding: base64', '', 'iVBORw0KGgo=', '',
+    '--b1', 'Content-Type: application/pdf; name="NX100 PTS letter.pdf"', 'Content-Disposition: attachment; filename="NX100 PTS letter.pdf"', 'Content-Transfer-Encoding: base64', '', att, '--b1--', ''].join('\r\n'));
   const named = path.join(tmp, 'P400CL1_Discover_L2.pdf');
   fs.writeFileSync(named, pdfFromPages([L.discover.replace('Product: Flex/3XXX CL1 ', '').replace('Discover', 'Discover Global Network')]));
   const server = spawn(process.execPath, [path.join(__dirname, '..', '..', 'dev', 'server.js'), path.join(tmp, 'data'), String(PORT)], { stdio: 'inherit', env: { ...process.env, LOA_FAKE_AI: 'Flex/3500-CL1' } });
@@ -221,6 +228,27 @@ function pdfFromPages(pages) {
     await p.waitForSelector('.modal >> text=Duplicate LOA: map it to another device', { timeout: 5000 });
     await p.click('.modal >> text=Keep as is');
     check(true, 'duplicate LOA in the inbox is rejected with a way to map it to another device');
+    // An email: its PDF attachment is read, the logo and the "please find attached" text are not.
+    await p.fill('input[aria-label="Find letters"]', '');
+    const [che] = await Promise.all([p.waitForEvent('filechooser'), p.click('text=Choose files')]);
+    await che.setFiles(eml);
+    await p.waitForSelector('.qitem >> text=/Email "PCI approval NX100": 1 file added/', { timeout: 30000 });
+    await p.waitForSelector('.card.review:has-text("NX100 PTS letter.pdf")', { timeout: 60000 });
+    check(true, 'email dropped: its LOA attachment is read');
+    if (process.env.LOA_MSG) {
+      const [chm] = await Promise.all([p.waitForEvent('filechooser'), p.click('text=Choose files')]);
+      await chm.setFiles(process.env.LOA_MSG.split(','));
+      await p.waitForSelector('.qitem >> text=/Email ".*": \\d+ files? added/', { timeout: 30000 });
+      const notes = await p.$$eval('.qitem', (els) => els.map((e) => e.textContent).filter((t) => /Email|From email/.test(t)));
+      check(notes.length > 0, `Outlook .msg read: ${notes.slice(0, 4).join(' | ')}`);
+    }
+    // Pasted text is read like a dropped letter.
+    await p.click('button:has-text("Paste text")');
+    await p.fill('textarea[aria-label="Pasted text"]', L.mastercardKernel);
+    await p.fill('input[aria-label="Name for the pasted text"]', 'Mastercard email');
+    await p.click('.modal button:has-text("Read text")');
+    await p.waitForSelector('.card.review:has-text("Mastercard email.txt")', { timeout: 30000 });
+    check(true, 'pasted text is read into a review card');
     // Platform alias renames existing records after confirming.
     await p.click('nav >> text=Settings');
     await p.click('text=Matching');

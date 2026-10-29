@@ -154,4 +154,4 @@ export async function extractFile(name, bytes, opts = {}) {
   throw new Error(`Unsupported file type .${ext}`);
 }
 
-export const LOA_EXTENSIONS = ['pdf', 'png', 'jpg', 'jpeg', 'tif', 'tiff', 'bmp', 'webp', 'txt'];
+export const LOA_EXTENSIONS = ['pdf', 'png', 'jpg', 'jpeg', 'tif', 'tiff', 'bmp', 'webp', 'txt', 'eml', 'msg'];
