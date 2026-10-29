@@ -50,6 +50,12 @@ function pdfFromPages(pages) {
     'Content-Type: multipart/mixed; boundary="b1"', '', '--b1', 'Content-Type: text/plain; charset=utf-8', '', 'Hello, please find the approval letter attached.', '',
     '--b1', 'Content-Type: image/png', 'Content-Disposition: inline; filename="logo.png"', 'Content-ID: <logo>', 'Content-Transfer-Encoding: base64', '', 'iVBORw0KGgo=', '',
     '--b1', 'Content-Type: application/pdf; name="NX100 PTS letter.pdf"', 'Content-Disposition: attachment; filename="NX100 PTS letter.pdf"', 'Content-Transfer-Encoding: base64', '', att, '--b1--', ''].join('\r\n'));
+  // A kernel bundle page (as text) for a bundle the register does not have yet.
+  const bundlePage = path.join(tmp, 'NWP bundle 9.txt');
+  fs.writeFileSync(bundlePage, ['Kernel Bundle 9', 'This kernel bundle for NWP uses the EMV Contact kernel v4.10, which expires on 01/01/28 located here.',
+    'PCI', 'Terminal   Version   Exp Date', 'NX100   v6   04/30/31', 'NX200   v6   04/30/31',
+    'EMV Contact', 'Terminal   Bulletin   L1 Contact   TQM', 'NX100   -   07/12/28   02/01/27',
+    'EMV Contactless', 'Terminal   Visa   Mastercard', 'NX100-CL1   12/03/28   03/11/28'].join('\n'));
   const named = path.join(tmp, 'P400CL1_Discover_L2.pdf');
   fs.writeFileSync(named, pdfFromPages([L.discover.replace('Product: Flex/3XXX CL1 ', '').replace('Discover', 'Discover Global Network')]));
   const server = spawn(process.execPath, [path.join(__dirname, '..', '..', 'dev', 'server.js'), path.join(tmp, 'data'), String(PORT)], { stdio: 'inherit', env: { ...process.env, LOA_FAKE_AI: 'Flex/3500-CL1' } });
@@ -68,7 +74,7 @@ function pdfFromPages(pages) {
     await p.click('text=Try sample data');
     await p.waitForSelector('text=Portfolio health');
     check(true, 'dashboard with sample data');
-    for (const v of ['Action plan', 'Certifications', 'Devices', 'Matrix', 'Reports', 'Archive', 'Settings']) {
+    for (const v of ['Action plan', 'Certifications', 'Devices', 'Bundles', 'Reports', 'Archive', 'Settings']) {
       await p.click(`nav >> text=${v}`);
       await p.waitForSelector(`h1:has-text("${v === 'Certifications' ? 'Certifications' : v}")`);
       check(true, `${v} screen`);
@@ -286,6 +292,23 @@ function pdfFromPages(pages) {
     await p.click('.topbar >> text=Summary report');
     await p.waitForSelector('iframe.report');
     check(true, 'summary report');
+    await p.keyboard.press('Escape');
+    // Bundles: read the website page, fix the differences, then a mistake is stopped while editing.
+    await p.click('nav >> text=Bundles');
+    const [chb] = await Promise.all([p.waitForEvent('filechooser'), p.click('button:has-text("Check against website page")')]);
+    await chb.setFiles(bundlePage);
+    await p.waitForSelector('.modal >> text=/7 dates on the page/', { timeout: 15000 });
+    await p.click('.modal button:has-text("Make it match the website")');
+    await p.waitForSelector('text=/Now 7 dates here, 7 on the page/', { timeout: 10000 });
+    await p.waitForSelector('text=Matches the website page', { timeout: 5000 });
+    check(true, 'bundle page read and the register made to match it (7 dates)');
+    await p.click('.card:has-text("EMV Contact") table .cell:has-text("07/12/28")');
+    await p.fill('.drawer label.field:has-text("Expires") input', '2027-01-01');
+    await p.click('.drawer button:has-text("Save changes")');
+    await p.waitForSelector('.modal >> text=Check before saving', { timeout: 5000 });
+    check(await p.locator('.modal >> text=/website shows/').count() > 0, 'editing a date that disagrees with the website pops up a warning');
+    await p.click('.modal button:has-text("Go back and fix")');
+    await p.click('.drawer button:has-text("Close")');
     check(!errors.length, `no page errors${errors.length ? `: ${errors.join(' | ')}` : ''}`);
   } catch (e) {
     check(false, e.message.split('\n')[0]);

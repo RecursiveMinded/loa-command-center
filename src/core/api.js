@@ -25,6 +25,40 @@ function coveredDevices(r) { return String(r.covers || '').split(/[,;\n]/).map((
 
 const DEFAULT_BRANDS = ['Visa', 'Mastercard', 'Amex', 'Discover', 'UnionPay', 'JCB', 'Interac'];
 
+/** Edit distance (one swap of neighbouring letters counts as one). */
+function editDistance(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)));
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+    }
+  }
+  return d[a.length][b.length];
+}
+
+/** Counts of a bundle check, for lists and banners. */
+function summarizeCheck(c) {
+  return {
+    pageDates: c.pageDates, recordDates: c.recordDates, ok: c.ok,
+    same: c.same.length, pageNewer: c.pageNewer.length, recordNewer: c.recordNewer.length, missing: c.missing.length,
+    extra: c.extra.length, undated: c.undated.length, duplicates: c.duplicates.reduce((n, d) => n + d.others.length, 0),
+  };
+}
+
+/** The rows of a bundle check, small enough to send to the screen. */
+function checkDetails(c) {
+  const rec = (r) => ({ id: r.id, device: r.device, category: r.category, scheme: r.scheme, kernel_version: r.kernel_version || '', expiry_date: r.expiry_date || null, approval_number: r.approval_number || '', doc_count: r.doc_count || 0, notes: r.notes || '' });
+  const pg = (p) => ({ device: p.device, category: p.category, scheme: p.scheme, kernel_version: p.kernel_version || '', expiry_date: p.expiry_date });
+  return {
+    missing: c.missing.map(pg),
+    pageNewer: c.pageNewer.map((x) => ({ record: rec(x.record), page: x.page.expiry_date })),
+    recordNewer: c.recordNewer.map((x) => ({ record: rec(x.record), page: x.page.expiry_date })),
+    duplicates: c.duplicates.map((d) => ({ keep: rec(d.keep), others: d.others.map(rec) })),
+    undated: c.undated.map(rec), extra: c.extra.map(rec),
+  };
+}
+
 class AppApi {
   static async create({ dataDir, actor = '' }) {
     fs.mkdirSync(dataDir, { recursive: true });
@@ -282,7 +316,268 @@ class AppApi {
   exportL3Sheet({ platform = '', bundle = '' } = {}) {
     const cov = this.deviceCoverage();
     cov.rows = cov.rows.filter((r) => (!platform || r.platform === platform) && (!bundle || r.bundle === bundle));
+    // The EMV L2 contact kernel is one approval for the whole bundle: every device of the bundle lists it.
+    const { bundleKey } = require('./bundles');
+    const kernel = new Map();
+    for (const g of this.bundleGroups().values()) {
+      const k = g.records.filter((r) => r.category === 'EMV L2 Contact').sort((a, b) => String(b.expiry_date || '').localeCompare(String(a.expiry_date || '')))[0];
+      if (k) kernel.set(g.key, k);
+    }
+    const i = cov.columns.findIndex((c) => c.key === 'l1c');
+    cov.columns.splice(i + 1, 0, { key: 'l2c', label: 'L2 Contact', group: 'Bundle' });
+    for (const r of cov.rows) {
+      const k = r.reader ? null : kernel.get(bundleKey(r.platform, r.bundle));
+      r.cells.l2c = { status: k ? 'ok' : 'none', record: k ? { id: k.id, expiry_date: k.expiry_date, approval_number: k.approval_number || (k.kernel_version ? `Kernel ${k.kernel_version}` : ''), eol: k.eol || '' } : null };
+    }
     return reports.exportL3Sheet(cov);
+  }
+
+  // ---------------------------------------------------------------- bundles
+  /** Records grouped by bundle ("UPP" + "Kernel Bundle 6" = "UPP" + "UPP Bundle 6"). */
+  bundleGroups() {
+    const { bundleKey } = require('./bundles');
+    const groups = new Map();
+    for (const r of this.listRecords()) {
+      if (!r.platform && !r.bundle) continue;
+      const k = bundleKey(r.platform, r.bundle);
+      if (!groups.has(k)) groups.set(k, { key: k, names: {}, platforms: {}, records: [] });
+      const g = groups.get(k);
+      g.records.push(r);
+      g.names[r.bundle || ''] = (g.names[r.bundle || ''] || 0) + 1;
+      g.platforms[r.platform || ''] = (g.platforms[r.platform || ''] || 0) + 1;
+    }
+    const top = (o) => Object.entries(o).sort((a, b) => b[1] - a[1])[0][0];
+    for (const g of groups.values()) { g.bundle = top(g.names); g.platform = top(g.platforms); }
+    return groups;
+  }
+
+  /** Every bundle: how many dates it holds, and how it compares with its published page. */
+  listBundles() {
+    const { bundleCheck } = require('./bundles');
+    const pages = this.store.getSettings().bundlePages || {};
+    const norm = this.store.norm();
+    const out = [];
+    const groups = this.bundleGroups();
+    for (const k of Object.keys(pages)) if (!groups.has(k)) groups.set(k, { key: k, bundle: pages[k].bundle, platform: pages[k].platform, records: [] });
+    for (const g of groups.values()) {
+      const page = pages[g.key];
+      const check = page ? bundleCheck(page.rows, g.records, { norm }) : null;
+      out.push({
+        key: g.key, platform: g.platform, bundle: g.bundle, records: g.records.length,
+        dates: g.records.filter((r) => r.expiry_date && require('./bundles').cellOf(r, norm)).length,
+        page: page ? { filename: page.filename, at: page.at, dates: check.pageDates } : null,
+        issues: check ? summarizeCheck(check) : null,
+      });
+    }
+    return out.sort((a, b) => a.platform.localeCompare(b.platform) || a.bundle.localeCompare(b.bundle, undefined, { numeric: true }));
+  }
+
+  /** One bundle laid out like its published page, with each cell's difference from that page. */
+  bundleView(key) {
+    const { layout, bundleCheck, cellOf } = require('./bundles');
+    const norm = this.store.norm();
+    const g = this.bundleGroups().get(key);
+    const page = (this.store.getSettings().bundlePages || {})[key];
+    const records = g ? g.records : [];
+    const brands = this.coverageSlots().brands;
+    const view = layout(records, { norm, brands });
+    const check = page ? bundleCheck(page.rows, records, { norm }) : null;
+    const diff = {};
+    if (check) {
+      for (const x of check.pageNewer) diff[x.record.id] = { kind: 'pageNewer', page: x.page.expiry_date };
+      for (const x of check.recordNewer) diff[x.record.id] = { kind: 'recordNewer', page: x.page.expiry_date };
+      for (const r of check.extra) diff[r.id] = { kind: 'extra' };
+    }
+    const cell = (r) => (r ? { id: r.id, expiry_date: r.expiry_date, health: r.health, days: r.days, approval_number: r.approval_number, eol: r.eol || '', kernel_version: r.kernel_version || '', doc_count: r.doc_count, diff: diff[r.id] || null } : null);
+    const rows = (list) => list.map((row) => ({ row: row.row, device: row.device, version: row.version, cells: Object.fromEntries(Object.entries(row.cells).map(([k, r]) => [k, cell(r)])) }));
+    const sections = Object.fromEntries(Object.entries(view.sections).map(([k, v]) => [k, rows(v)]));
+    // Dates on the page that the register does not have yet sit in their cells, marked missing.
+    const missing = check ? check.missing.map((p) => ({ ...cellOf(p, norm), device: p.device, scheme: p.scheme, category: p.category, expiry_date: p.expiry_date, kernel_version: p.kernel_version || '' })) : [];
+    let l2missing = null;
+    for (const m of missing) {
+      if (m.section === 'l2contact') { l2missing = m; continue; }
+      const list = sections[m.section];
+      let row = list.find((x) => x.row === m.row);
+      if (!row) { row = { row: m.row, device: m.section === 'contact' ? m.device.replace(/[\s\-_/]*CL\d+\s*$/i, '') : m.device, version: m.version || '', cells: {} }; list.push(row); }
+      row.cells[m.col] = { missing: true, page: m.expiry_date };
+      if (m.section === 'l2contactless' && !view.brands.some((b) => b.key === m.col)) view.brands.push({ key: m.col, label: m.scheme });
+    }
+    for (const list of Object.values(sections)) list.sort((a, b) => a.device.localeCompare(b.device, undefined, { numeric: true }) || String(a.version).localeCompare(String(b.version), undefined, { numeric: true }));
+    return {
+      key, platform: g ? g.platform : page ? page.platform : '', bundle: g ? g.bundle : page ? page.bundle : '',
+      sections, l2missing,
+      l2contact: cell(view.l2contact), l2contactKernel: view.l2contact ? view.l2contact.kernel_version || '' : (page && page.ctx && page.ctx.l2Contact ? page.ctx.l2Contact.version : ''),
+      brands: view.brands, dates: view.dates, duplicates: view.duplicates.length,
+      page: page ? { filename: page.filename, at: page.at, dates: check.pageDates, blanks: check.pageBlanks } : null,
+      issues: check ? summarizeCheck(check) : null, missing,
+    };
+  }
+
+  /**
+   * Read a bundle's published page (saved HTML, or a PDF's positioned lines)
+   * and compare it with the register. The page is kept so the comparison
+   * stays visible; nothing in the register changes until cleanBundle.
+   */
+  readBundlePage({ filename = 'page', text, bytes, lines }) {
+    const { bundleKey, bundleCheck } = require('./bundles');
+    const lower = filename.toLowerCase();
+    let parsed;
+    if (bytes && /\.(html?|mhtml?|mht)$/.test(lower)) parsed = portal.parseHtml(Buffer.from(bytes).toString('latin1'));
+    else if (lines && lines.length) parsed = portal.parsePdfLines(lines, text);
+    else parsed = portal.parsePlainText(text || '');
+    const ctx = parsed.ctx || {};
+    if (!ctx.platform && !ctx.bundle) throw new Error('The page does not say which platform and bundle it is for. Check that it is a kernel bundle page.');
+    const key = bundleKey(ctx.platform, ctx.bundle);
+    const g = this.bundleGroups().get(key);
+    const rows = parsed.records.map((r) => ({ device: r.device, category: r.category, scheme: r.scheme, kernel_version: r.kernel_version || '', expiry_date: r.expiry_date || null }));
+    const pages = { ...(this.store.getSettings().bundlePages || {}) };
+    pages[key] = { filename, at: new Date().toISOString(), platform: g ? g.platform : ctx.platform, bundle: g ? g.bundle : ctx.bundle, ctx: { l2Contact: ctx.l2Contact || null }, rows };
+    this.store.setSettings({ bundlePages: pages });
+    const check = bundleCheck(rows, g ? g.records : [], { norm: this.store.norm() });
+    return { key, filename: pages[key].filename, platform: pages[key].platform, bundle: pages[key].bundle, ...summarizeCheck(check), details: checkDetails(check) };
+  }
+
+  /** The differences between a bundle and its page, listed for review. */
+  bundleDifferences(key) {
+    const { bundleCheck } = require('./bundles');
+    const page = (this.store.getSettings().bundlePages || {})[key];
+    if (!page) return null;
+    const g = this.bundleGroups().get(key);
+    const check = bundleCheck(page.rows, g ? g.records : [], { norm: this.store.norm() });
+    return { key, platform: page.platform, bundle: page.bundle, filename: page.filename, at: page.at, ...summarizeCheck(check), details: checkDetails(check) };
+  }
+
+  /**
+   * Make a bundle match its published page. `fix` picks what to do:
+   *   missing      add a record for each date on the page the register lacks
+   *   pageNewer    take the page's later date (the record is out of date)
+   *   recordNewer  keep the record's later date and mark the website as needing the change
+   *   duplicates   keep the best record of each cell (LOAs move to it), archive the rest
+   *   undated      archive records with no expiry date (placeholders such as "waiver required")
+   *   extra        archive dated records whose cell is not on the page
+   */
+  cleanBundle(key, fix = {}) {
+    const { bundleCheck } = require('./bundles');
+    const page = (this.store.getSettings().bundlePages || {})[key];
+    if (!page) throw new Error('Read the bundle page first');
+    const g = this.bundleGroups().get(key);
+    const check = bundleCheck(page.rows, g ? g.records : [], { norm: this.store.norm() });
+    const src = `Website page: ${page.filename}`;
+    const platform = g ? g.platform : page.platform, bundle = g ? g.bundle : page.bundle;
+    const done = { added: 0, updated: 0, flagged: 0, merged: 0, archived: 0 };
+    this.backup('before-bundle-cleanup');
+    this.db.tx(() => {
+      if (fix.duplicates) {
+        for (const d of check.duplicates) {
+          for (const o of d.others) {
+            for (const doc of this.store.documentsFor(o.id)) this.store.linkDocument(doc.id, d.keep.id);
+          }
+          done.merged += this.store.archiveRecords(d.others.map((o) => o.id), { reason: `Duplicate of record ${d.keep.id} (bundle clean-up)` });
+        }
+      }
+      if (fix.missing) {
+        for (const p of check.missing) {
+          this.store.createRecord({ ...p, platform, bundle, portal_date: p.expiry_date, portal_status: 'In Sync', expiry_basis: 'Published on the bundle page' }, { source: src, note: 'Added from the bundle page' });
+          done.added++;
+        }
+      }
+      if (fix.pageNewer) {
+        for (const x of check.pageNewer) {
+          this.store.updateRecord(x.record.id, { expiry_date: x.page.expiry_date, portal_date: x.page.expiry_date, portal_status: 'In Sync', expiry_basis: 'Published on the bundle page' }, { source: src });
+          done.updated++;
+        }
+      }
+      if (fix.recordNewer) {
+        for (const x of check.recordNewer) {
+          this.store.updateRecord(x.record.id, { portal_date: x.page.expiry_date, portal_status: 'Change Needed' }, { source: src });
+          done.flagged++;
+        }
+      }
+      if (fix.undated) done.archived += this.store.archiveRecords(check.undated.map((r) => r.id), { reason: 'No expiry date; not a date on the bundle page (bundle clean-up)' });
+      if (fix.extra) done.archived += this.store.archiveRecords(check.extra.map((r) => r.id), { reason: 'Not on the bundle page (bundle clean-up)' });
+      for (const x of check.same) if (x.record.portal_date !== x.page.expiry_date) this.store.updateRecord(x.record.id, { portal_date: x.page.expiry_date, portal_status: 'In Sync' }, { source: src });
+      // The page names each brand's L2 kernel version: fill it where the record has none.
+      for (const x of [...check.same, ...check.pageNewer, ...check.recordNewer]) {
+        if (!x.record.kernel_version && x.page.kernel_version && /^EMV L2/.test(x.record.category)) this.store.updateRecord(x.record.id, { kernel_version: x.page.kernel_version }, { source: src });
+      }
+    });
+    return { ...done, after: this.bundleDifferences(key) };
+  }
+
+  /** The bundle laid out like the website, as a printable page or an Excel file. */
+  bundleReport(key, { format = 'html' } = {}) {
+    const v = this.bundleView(key);
+    if (format === 'xlsx') return reports.bundleWorkbook(v);
+    return reports.bundleReport(v, { company: this.store.getSettings().companyName || '' });
+  }
+
+  /**
+   * Checks run while a record is being added or edited, before it is saved.
+   * Returns [{ level: 'stop'|'warn', title, detail, recordId? }]: 'stop' is a
+   * mistake that should not be saved as is (a duplicate, impossible dates),
+   * 'warn' asks for a second look.
+   */
+  checkRecord(id, patch = {}) {
+    const { bundleKey, cellOf } = require('./bundles');
+    const { formatDate, daysBetween } = require('./dates');
+    const cur = id ? this.store.getRecord(id) : null;
+    const r = { ...(cur || {}), ...patch, category: taxonomy.normalizeCategory(patch.category || (cur && cur.category) || ''), scheme: taxonomy.normalizeScheme(patch.scheme || (cur && cur.scheme) || '') };
+    const out = [];
+    const norm = this.store.norm();
+    const live = this.listRecords().filter((x) => x.id !== id);
+    const bk = bundleKey(r.platform, r.bundle);
+    const where = [r.platform, r.bundle].filter(Boolean).join(' ') || 'the register';
+    const label = (x) => `${x.device} · ${x.scheme} ${x.category}${x.category === 'PCI PTS' && x.kernel_version ? ` ${x.kernel_version}` : ''}`;
+    const cell = cellOf(r, norm);
+    // Only what this save changes is checked, so an old issue does not block an unrelated edit.
+    const keyChanged = !cur || ['device', 'category', 'scheme', 'platform', 'bundle', 'kernel_version'].some((k) => k in patch);
+    const dateChanged = !cur || 'expiry_date' in patch || 'issue_date' in patch;
+
+    // One cell, one record.
+    const twin = keyChanged && live.find((x) => {
+      if (r.platform || r.bundle) { if (bundleKey(x.platform, x.bundle) !== bk) return false; }
+      else if (x.platform || x.bundle) return false;
+      const c = cellOf(x, norm);
+      return cell && c ? c.key === cell.key : norm(x.device) === norm(r.device) && x.category === r.category && String(x.scheme).toLowerCase() === String(r.scheme).toLowerCase();
+    });
+    if (twin) {
+      out.push({ level: 'stop', title: `Duplicate: ${where} already has ${label(twin)}`,
+        detail: `${twin.expiry_date ? `It expires ${formatDate(twin.expiry_date)}` : 'It has no expiry date'}${twin.approval_number ? `, approval ${twin.approval_number}` : ''}. Update that record instead of adding a second one${r.category === 'EMV L2 Contact' ? ': the EMV L2 contact kernel is one approval for the whole bundle' : ''}.`, recordId: twin.id });
+    }
+    if (dateChanged && r.issue_date && r.expiry_date && r.expiry_date < r.issue_date) out.push({ level: 'stop', title: 'The expiry date is before the issue date', detail: 'One of the two dates is mistyped or swapped.' });
+    if (r.expiry_date && cur && cur.expiry_date && r.expiry_date < cur.expiry_date && patch.expiry_date !== undefined) {
+      out.push({ level: 'warn', title: `This moves the expiry earlier, from ${formatDate(cur.expiry_date)} to ${formatDate(r.expiry_date)}`, detail: 'A renewal normally extends the date. Check the LOA if this is not a correction.' });
+    }
+    if (dateChanged && r.issue_date && r.expiry_date && r.expiry_date >= r.issue_date && r.category !== 'Letter of Equivalency') {
+      const span = daysBetween(r.issue_date, r.expiry_date);
+      if (span < 180 || span > 7 * 366) out.push({ level: 'warn', title: `Unusual validity: ${Math.round(span / 36.5) / 10} years`, detail: 'EMV and PCI approvals normally run 2 to 6 years.' });
+    }
+    // What the published bundle page says for this cell.
+    const page = (this.store.getSettings().bundlePages || {})[bk];
+    if (page && cell && r.expiry_date && (keyChanged || dateChanged)) {
+      const p = page.rows.find((x) => x.expiry_date && (cellOf(x, norm) || {}).key === cell.key);
+      if (!p) out.push({ level: 'warn', title: `Not on the ${page.bundle} page`, detail: `The published page (${page.filename}) has no ${r.category} ${r.category === 'EMV L2 Contactless' ? `${r.scheme} ` : ''}date for ${r.device}. Check the device name, version and bundle.` });
+      else if (p.expiry_date !== r.expiry_date) out.push({ level: 'warn', title: `The website shows ${formatDate(p.expiry_date)} for this approval`, detail: p.expiry_date > r.expiry_date ? 'The page has a later date: this record may be out of date.' : 'Your date is later: the website will need updating (it will appear in the Website change request).' });
+    }
+    // The same approval number with another date elsewhere.
+    const num = String(r.approval_number || '').replace(/\s+/g, '').toUpperCase();
+    if (num.length >= 4 && /\d/.test(num) && r.expiry_date && (dateChanged || 'approval_number' in patch)) {
+      const other = live.find((x) => x.category === r.category && String(x.approval_number || '').replace(/\s+/g, '').toUpperCase() === num && x.expiry_date && x.expiry_date !== r.expiry_date);
+      if (other) out.push({ level: 'warn', title: `Approval ${r.approval_number} has another expiry on ${other.device}`, detail: `There it expires ${formatDate(other.expiry_date)}. One approval number has one expiry date: one of the two is out of date.`, recordId: other.id });
+    }
+    // A device name spelled differently from the rest of the register.
+    if (r.device && (!cur || 'device' in patch)) {
+      const k = norm(r.device);
+      const names = [...new Set(live.map((x) => x.device))];
+      const same = names.find((d) => norm(d) === k && d !== r.device);
+      if (same && !names.includes(r.device)) out.push({ level: 'warn', title: `Spelled "${same}" elsewhere`, detail: `Use the same spelling so this record joins the device's other certifications.` });
+      else if (!names.some((d) => norm(d) === k)) {
+        const near = names.find((d) => { const b = norm(d); return Math.abs(b.length - k.length) <= 1 && b.length >= 5 && editDistance(b, k) === 1 && (b.match(/^[A-Z]*/) || [''])[0].length >= 3; });
+        out.push({ level: 'warn', title: near ? `New device name. Did you mean ${near}?` : `${r.device} is a new device name`, detail: near ? 'Names one letter apart are usually the same device.' : `No other record uses this name${r.platform ? ` in ${r.platform}` : ''}.` });
+      }
+    }
+    if (keyChanged && r.kernel_version && /^EMV L1/.test(r.category)) out.push({ level: 'warn', title: 'Kernel versions belong to L2 approvals', detail: 'An L1 approval covers the hardware interface, not a kernel build. Leave the kernel empty on L1 records.' });
+    return out;
   }
 
   /** The certifications a contact device and a contactless reader need. */
@@ -292,7 +587,6 @@ class AppApi {
     const contact = [
       { key: 'pci', label: 'PCI', group: 'Device (all versions)', category: 'PCI PTS' },
       { key: 'l1c', label: 'L1 Contact', group: 'Device (all versions)', category: 'EMV L1 Contact' },
-      { key: 'l2c', label: 'L2 Contact', group: 'Device (all versions)', category: 'EMV L2 Contact' },
       { key: 'tqm', label: 'TQM', group: 'Device (all versions)', category: 'TQM' },
     ];
     const reader = [
@@ -955,7 +1249,7 @@ class AppApi {
 const PUBLIC_METHODS = [
   'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'deleteRecords', 'bulkUpdate',
   'listArchive', 'archiveCount', 'expiredRecords', 'archiveExpired', 'restoreArchived', 'purgeArchived',
-  'activateReplacement', 'deviceCoverage', 'deviceProfile', 'listReaderGroups', 'setReaderGroup', 'listFamilyNotes', 'setCoverageNA', 'createMissing', 'createSlot', 'listTags', 'knownDevices', 'listAliases', 'listLearned', 'forgetLearned', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
+  'activateReplacement', 'deviceCoverage', 'deviceProfile', 'listBundles', 'bundleView', 'readBundlePage', 'bundleDifferences', 'cleanBundle', 'bundleReport', 'checkRecord', 'listReaderGroups', 'setReaderGroup', 'listFamilyNotes', 'setCoverageNA', 'createMissing', 'createSlot', 'listTags', 'knownDevices', 'listAliases', 'listLearned', 'forgetLearned', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
   'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
   'documentText', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'setEol', 'dataChecks', 'aiDataReview', 'briefingReport', 'exportL3Sheet', 'duplicateInfo', 'mapDuplicate', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',

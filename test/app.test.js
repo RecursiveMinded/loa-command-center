@@ -668,7 +668,7 @@ test('device coverage lists the required certifications per device', async () =>
   assert.equal(lane.cells.pci.status, 'ok');
   assert.equal(lane.cells.tqm.status, 'none', 'with a contactless side, TQM is held per hardware version');
   assert.equal(lane.cells['l2:Visa'].status, 'none', 'the shared part needs no L2 contactless');
-  assert.equal(lane.missing, 1, 'only L2 Contact');
+  assert.equal(lane.missing, 0, 'L2 Contact is one kernel for the bundle, not a per-device gap');
   assert.equal(cl1.cells['l2:Visa'].status, 'ok');
   assert.equal(cl1.cells['l2:Amex'].status, 'missing');
   assert.equal(cl1.missing, 6); // TQM + Amex, Discover, UnionPay, JCB, Interac
@@ -749,7 +749,7 @@ test('records with no bundle join their device\'s bundle on the Devices page', a
   const cov = api.deviceCoverage();
   assert.equal(cov.rows.length, 1, 'no separate Unassigned row');
   assert.equal(cov.rows[0].cells.l1c.status, 'ok');
-  assert.equal(cov.rows[0].missing, 2); // L2 Contact and TQM
+  assert.equal(cov.rows[0].missing, 1); // TQM
   api.store.createRecord({ device: 'Desk/1700', category: 'EMV L1 Contact', scheme: 'EMVCo' });
   assert.equal(api.deviceCoverage().rows.find((r) => r.device === 'Desk/1700').grp, 'Unassigned', 'a device with no bundle anywhere stays Unassigned');
 });
@@ -971,4 +971,54 @@ test('corrections on review cards are learned and applied to later letters', asy
   api.forgetLearned('device', api.listLearned().find((x) => x.kind === 'device').from);
   assert.ok(!Object.values(api.listAliases()).includes('Pad/900'));
   assert.equal(api.listLearned().length, 1);
+});
+
+test('a bundle page: every date becomes one record, and the register is checked against it', async () => {
+  const { api } = await fresh();
+  const page = [
+    'Kernel Bundle 9',
+    'This kernel bundle for NWP uses the EMV Contact kernel v4.10, which expires on 01/01/28 located here.',
+    'Specification   Card Version   Kernel Version',
+    'Visa Paywave   2.2   070803',
+    'Mastercard Paypass   4.0   100100',
+    'PCI',
+    'Terminal   Version   Exp Date',
+    'NX100   v6   04/30/31',
+    'EMV Contact',
+    'Terminal   Bulletin   L1 Contact   TQM',
+    'NX100   -   07/12/28   02/01/27',
+    'EMV Contactless',
+    'Terminal   Bulletin   L1 Contactless   TQM',
+    'NX100-CL1   -   12/31/27   02/01/27',
+    'EMV Contactless',
+    'Terminal   Visa   Mastercard',
+    'NX100-CL1   12/03/28   03/11/28',
+  ].join('\n');
+  // The register: an older L1 date, a placeholder with no date, a twin record, and a bundle name spelled differently.
+  const mk = (x) => api.store.createRecord({ platform: 'NWP', bundle: 'NWP Bundle 9', ...x });
+  mk({ device: 'NX100', category: 'EMV L1 Contact', scheme: 'EMVCo', expiry_date: '2026-07-12' });
+  mk({ device: 'NX100-CL1', category: 'EMV L2 Contactless', scheme: 'Visa', expiry_date: '2028-12-03' });
+  mk({ device: 'NX100', category: 'EMV L2 Contactless', scheme: 'Visa', expiry_date: '2028-12-03' });
+  mk({ device: 'NX100-CL1', category: 'EMV L2 Contactless', scheme: 'Amex', notes: 'Waiver required' });
+  const r = api.readBundlePage({ filename: 'bundle9.txt', text: page });
+  assert.equal(r.key, 'NWP|9', 'Kernel Bundle 9 and NWP Bundle 9 are one bundle');
+  assert.equal(r.pageDates, 8, 'PCI, L1 contact + TQM, L1 contactless + TQM, two brands, the L2 contact kernel');
+  assert.deepEqual([r.missing, r.pageNewer, r.duplicates, r.undated, r.same], [6, 1, 1, 1, 1]);
+  const done = api.cleanBundle(r.key, { missing: true, pageNewer: true, duplicates: true, undated: true });
+  assert.equal(done.after.ok, true);
+  assert.equal(done.after.recordDates, 8, 'one record per date on the page');
+  const v = api.bundleView(r.key);
+  assert.equal(v.l2contactKernel, '4.10');
+  assert.equal(v.sections.l2contactless[0].cells.visa.kernel_version, '070803', 'brand kernel taken from the page');
+  assert.equal(v.sections.contact[0].cells.l1.expiry_date, '2028-07-12');
+  assert.match(api.bundleReport(r.key).html, /12\/03\/28/);
+  // L2 Contact is one kernel for the bundle: a second one is a duplicate.
+  const issues = api.checkRecord(null, { device: 'NX100', category: 'EMV L2 Contact', scheme: 'EMVCo', platform: 'NWP', bundle: 'NWP Bundle 9', expiry_date: '2028-01-01' });
+  assert.equal(issues[0].level, 'stop');
+  assert.match(issues[0].title, /Duplicate/);
+  // A date that disagrees with the page is flagged while editing.
+  const l1 = api.listRecords().find((x) => x.category === 'EMV L1 Contact');
+  const w = api.checkRecord(l1.id, { expiry_date: '2027-01-01' });
+  assert.ok(w.some((i) => /earlier/.test(i.title)) && w.some((i) => /website shows/.test(i.title)));
+  assert.deepEqual(api.checkRecord(l1.id, { notes: 'hello' }), [], 'an unrelated edit is not blocked');
 });

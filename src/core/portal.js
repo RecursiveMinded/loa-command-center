@@ -26,6 +26,26 @@ function classifyHeader(cells) {
   return null;
 }
 
+// The page's specification table names each brand's L2 kernel version:
+//   "Visa Paywave   2.2   070803"            (Card Version, Kernel Version)
+//   "Visa Paywave   0302  002.00.012"        (Kernel Version, App Version)
+function kernelTable(t) {
+  const out = {};
+  const head = t.match(/Specification\s+(Card\s+Version\s+Kernel\s+Version|Kernel\s+Version\s+App\s+Version)/i);
+  if (!head) return out;
+  const kernelLast = /^Card/i.test(head[1]);
+  const lines = t.slice(head.index + head[0].length).split(/\n/).slice(0, 40);
+  for (const line of lines) {
+    const m = line.trim().match(/^([A-Za-z][A-Za-z ]+?)\s+(\d[\d./ ]*)$/);
+    if (!m) { if (/Terminal|Certifications/i.test(line)) break; continue; }
+    const brand = normalizeScheme(m[1].replace(/\s+(paywave|paypass|expresspay|dpas|d-pas|quickpay|quickpass|speedy|flash)$/i, '').trim());
+    const nums = m[2].trim().split(/\s+/);
+    const kernel = kernelLast ? nums[nums.length - 1] : (nums.length > 1 ? nums.slice(0, -1) : nums).join(' ');
+    if (kernel) out[brand] = kernel;
+  }
+  return out;
+}
+
 function contextFromText(text) {
   const t = String(text || '');
   const bundle = (t.match(/Kernel\s+Bundle\s+(\d+[A-Za-z]?)/i) || [])[1];
@@ -35,6 +55,7 @@ function contextFromText(text) {
     bundle: bundle ? `Kernel Bundle ${bundle}` : '',
     platform: plat || '',
     l2Contact: l2c ? { version: l2c[1], expiry: parseDate(l2c[2]) } : null,
+    kernels: kernelTable(t),
   };
 }
 
@@ -51,13 +72,16 @@ function tablesToRecords(tables, ctx = {}) {
       if (hdr) { spec = hdr; pciMode = hdr.kind === 'versioned'; continue; }
       if (!spec || !cells[0] || /^terminal$/i.test(cells[0])) continue;
       const device = cells[0];
+      // A device name is short and has a model number; a sentence that lands in the first column is not a row.
+      if (device.length > 32 || device.split(/\s+/).length > 4 || !/\d/.test(device)) continue;
       if (/n\/?a/i.test(cells.slice(1).join(' ')) && !findDates(cells.slice(1).join(' ')).length) continue;
       if (spec.kind === 'brands') {
         const headerCells = table.find((r) => classifyHeader(r.map(cleanCell)))?.map(cleanCell) || [];
         for (const ci of spec.brandCols) {
           const d = parseDate(cells[ci]);
           if (!d) continue;
-          out.push({ ...base, device, category: 'EMV L2 Contactless', scheme: normalizeScheme(headerCells[ci] || ''), portal_date: d, expiry_date: d });
+          const scheme = normalizeScheme(headerCells[ci] || '');
+          out.push({ ...base, device, category: 'EMV L2 Contactless', scheme, kernel_version: (ctx.kernels || {})[scheme] || '', portal_date: d, expiry_date: d });
         }
       } else if (spec.kind === 'l1') {
         const l1 = parseDate(cells[spec.l1]);
@@ -73,7 +97,7 @@ function tablesToRecords(tables, ctx = {}) {
     }
   }
   if (ctx.l2Contact && ctx.l2Contact.expiry) {
-    out.push({ ...base, device: 'Kernel family', category: 'EMV L2 Contact', scheme: 'EMVCo', kernel_version: ctx.l2Contact.version, portal_date: ctx.l2Contact.expiry, expiry_date: ctx.l2Contact.expiry });
+    out.push({ ...base, device: 'All devices', category: 'EMV L2 Contact', scheme: 'EMVCo', kernel_version: ctx.l2Contact.version, portal_date: ctx.l2Contact.expiry, expiry_date: ctx.l2Contact.expiry });
   }
   return out;
 }

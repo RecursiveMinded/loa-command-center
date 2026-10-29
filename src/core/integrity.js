@@ -73,6 +73,8 @@ function dataChecks(records, { norm = defaultNorm } = {}) {
       const num = (k) => (k.match(/\d{3,5}/) || [''])[0];
       if (!num(a) || num(a) !== num(b) || Math.abs(a.length - b.length) > 1) continue;
       if ((a.match(/CL\d$/) || [''])[0] !== (b.match(/CL\d$/) || [''])[0]) continue;
+      // Short letter prefixes are model ranges, not words (DX4000 and EX4000 are two devices).
+      if ((a.match(/^[A-Z]*/) || [''])[0].length < 3) continue;
       if (distance(a, b) === 1) typo.push(...names.get(a), ...names.get(b));
     }
   }
@@ -107,8 +109,8 @@ function dataChecks(records, { norm = defaultNorm } = {}) {
   const holds = (r, category) => (has.get(at(r.device, category)) || new Set()).has(category);
   add('l2-no-l1', 'medium', (n) => `${n} L2 approval${n === 1 ? ' has' : 's have'} no L1 approval on file for the same device`,
     'An L2 kernel approval rests on the L1 approval of the same interface (contact or contactless).', 'Add the L1 LOA, or link the device to the LOA that covers it.',
-    live.filter((r) => !isEol(r) && ((r.category === 'EMV L2 Contactless' && !holds(r, 'EMV L1 Contactless'))
-      || (r.category === 'EMV L2 Contact' && !holds(r, 'EMV L1 Contact')))));
+    // The EMV L2 contact kernel is one approval for the whole bundle, not tied to one device's L1.
+    live.filter((r) => !isEol(r) && r.category === 'EMV L2 Contactless' && !holds(r, 'EMV L1 Contactless')));
   add('mc-no-tqm', 'medium', (n) => `${n} Mastercard L2 approval${n === 1 ? ' has' : 's have'} no TQM on file for the device`,
     'A valid TQM statement is required to obtain and keep Mastercard L2 approvals.', 'Add the TQM statement for the device.',
     live.filter((r) => !isEol(r) && r.category === 'EMV L2 Contactless' && r.scheme === 'Mastercard' && !holds(r, 'TQM')));

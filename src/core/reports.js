@@ -360,6 +360,64 @@ async function exportL3Sheet(cov, { asOf = todayIso() } = {}) {
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
+// ---------------------------------------------------------------------------
+// Bundle report: the register laid out like the published kernel bundle page,
+// so the two can be compared side by side.
+// ---------------------------------------------------------------------------
+
+const mdy = (iso) => (iso ? `${iso.slice(5, 7)}/${iso.slice(8, 10)}/${iso.slice(2, 4)}` : '');
+
+function bundleTables(v) {
+  const cellOf = (c) => (c ? (c.eol ? `${mdy(c.expiry_date)} (EOL)` : mdy(c.expiry_date)) : '');
+  return [
+    { title: 'PCI', head: ['Terminal', 'Version', 'Exp Date'], rows: v.sections.pci.map((r) => [r.device, r.version, cellOf(r.cells.date)]), cells: v.sections.pci.map((r) => [null, null, r.cells.date]) },
+    { title: 'EMV Contact', head: ['Terminal', 'L1 Contact', 'TQM'], rows: v.sections.contact.map((r) => [r.device, cellOf(r.cells.l1), cellOf(r.cells.tqm)]), cells: v.sections.contact.map((r) => [null, r.cells.l1, r.cells.tqm]) },
+    { title: 'EMV Contactless', head: ['Terminal', 'L1 Contactless', 'TQM'], rows: v.sections.contactless.map((r) => [r.device, cellOf(r.cells.l1), cellOf(r.cells.tqm)]), cells: v.sections.contactless.map((r) => [null, r.cells.l1, r.cells.tqm]) },
+    { title: 'Level 2 · EMV Contactless', head: ['Terminal', ...v.brands.map((b) => b.label)], rows: v.sections.l2contactless.map((r) => [r.device, ...v.brands.map((b) => cellOf(r.cells[b.key]))]), cells: v.sections.l2contactless.map((r) => [null, ...v.brands.map((b) => r.cells[b.key])]) },
+  ];
+}
+
+function bundleReport(v, { company = '', asOf = todayIso() } = {}) {
+  const tables = bundleTables(v);
+  const l2 = v.l2contact;
+  const kernel = `${v.l2contactKernel ? `the EMV Contact kernel v${esc(v.l2contactKernel)}` : 'an EMV Contact kernel'}${l2 && l2.expiry_date ? `, which expires on ${mdy(l2.expiry_date)}` : ', with no expiry date on file'}`;
+  const tone = (c) => (!c || !c.expiry_date ? '' : c.eol ? 'color:#6b7280' : c.expiry_date < asOf ? 'background:#fde2e1;color:#8a1c1c' : '');
+  const body = tables.map((t) => `<h2>${esc(t.title)}</h2>
+    <table><thead><tr>${t.head.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>
+    ${t.rows.map((row, i) => `<tr>${row.map((c, j) => `<td style="${j ? 'text-align:center;' : ''}${tone(t.cells[i][j])}">${esc(c)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${t.head.length}">None</td></tr>`}
+    </tbody></table>`).join('');
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(v.platform)} ${esc(v.bundle)}</title>
+  <style>body{font:13px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;color:#1f2937;margin:32px;max-width:1100px}
+  h1{font-size:22px;margin:0 0 4px}h2{font-size:15px;margin:22px 0 6px}.muted{color:#6b7280}
+  table{border-collapse:collapse;width:100%;margin-bottom:6px}th,td{border:1px solid #d1d5db;padding:5px 8px}th{background:#f3f4f6;text-align:center}
+  td:first-child,th:first-child{text-align:left;white-space:nowrap}@media print{body{margin:12mm}}</style></head><body>
+  <h1>${esc(v.bundle)}${v.platform && !String(v.bundle).toUpperCase().includes(String(v.platform).toUpperCase()) ? ` · ${esc(v.platform)}` : ''}</h1>
+  <div class="muted">${company ? `${esc(company)} · ` : ''}From the certification register, ${formatDate(asOf)} · ${v.dates} expiry date${v.dates === 1 ? '' : 's'}${v.page ? ` · the published page (${esc(v.page.filename)}) shows ${v.page.dates}` : ''}</div>
+  <p>This kernel bundle uses ${kernel}. The EMV Contact Level 2 kernel is one approval shared by every device in the bundle.</p>
+  <h2 style="margin-top:18px">Terminal &amp; Level 1 Certifications</h2>${body}
+  <p class="muted">Blank cell: no approval on file. Red: expired.</p></body></html>`;
+  return { html, dates: v.dates };
+}
+
+async function bundleWorkbook(v) {
+  const ExcelJS = require('exceljs');
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'LOA Command Center';
+  wb.created = new Date();
+  for (const t of bundleTables(v)) {
+    const ws = wb.addWorksheet(t.title.replace(/[^\w &-]/g, ' ').slice(0, 31));
+    ws.addRow(t.head);
+    for (const r of t.rows) ws.addRow(r);
+    ws.getRow(1).font = { bold: true };
+    ws.columns.forEach((c, i) => { c.width = i ? 14 : 20; });
+  }
+  const ws = wb.addWorksheet('EMV Contact L2');
+  ws.addRow(['Kernel', 'Exp Date']);
+  ws.addRow([v.l2contactKernel || '', v.l2contact ? mdy(v.l2contact.expiry_date) : '']);
+  ws.getRow(1).font = { bold: true };
+  return Buffer.from(await wb.xlsx.writeBuffer());
+}
+
 /** Plain-text email body for the digest (no source paths, per policy). */
 function digestEmail(dg, analysis, { settings = {} } = {}) {
   const s = analysis.summary;
@@ -378,4 +436,4 @@ function digestEmail(dg, analysis, { settings = {} } = {}) {
   return lines.join('\n');
 }
 
-module.exports = { summaryReport, briefingReport, exportL3Sheet, exportExcel, exportCsv, portalChanges, exportChangeRequest, digestEmail, timelineSvg, esc };
+module.exports = { summaryReport, briefingReport, bundleReport, bundleWorkbook, exportL3Sheet, exportExcel, exportCsv, portalChanges, exportChangeRequest, digestEmail, timelineSvg, esc };
