@@ -6,6 +6,7 @@
 
 const { todayIso, daysBetween, addDays, formatDate } = require('./dates');
 const { daysRemaining, effectiveStage, windowFor, health, isEol, WINDOWS } = require('./lifecycle');
+const { certHome } = require('./devices');
 
 const IN_PROGRESS = new Set(['Renewal Requested', 'Pending New LOA', 'Replacement Received']);
 const RESOLVED_EXPIRY = new Set(['Market Approved Expiration', 'Retired']);
@@ -178,6 +179,7 @@ function analyze(records, { settings = {}, asOf = todayIso(), tasks = {}, inboxP
   }
 
   dependencyActions(all, { add, asOf, norm: norm || defaultNorm });
+  versionActions(rows, { add, asOf, norm: norm || defaultNorm });
   radarActions(rows, { add, asOf });
 
   // Grouped data-quality actions.
@@ -238,10 +240,11 @@ const DEPENDS = [
  */
 function dependencyActions(all, { add, asOf, norm }) {
   const byDevice = new Map();
-  const put = (k, x) => { if (!byDevice.has(k)) byDevice.set(k, []); byDevice.get(k).push(x); };
+  // Keyed by where each approval lives: the device for PCI and contact, the hardware version for contactless and TQM.
+  const put = (d, x) => { const k = certHome(norm(d), x.r.category).key; if (!byDevice.has(k)) byDevice.set(k, []); byDevice.get(k).push(x); };
   for (const x of all) {
-    put(norm(x.r.device), x);
-    for (const d of coversOf(x.r)) if (norm(d) !== norm(x.r.device)) put(norm(d), x);
+    put(x.r.device, x);
+    for (const d of coversOf(x.r)) if (norm(d) !== norm(x.r.device)) put(d, x);
   }
   const best = (list) => list.reduce((b, x) => (!b || (x.days ?? -1e9) > (b.days ?? -1e9) ? x : b), null);
   const groups = new Map();
@@ -249,7 +252,7 @@ function dependencyActions(all, { add, asOf, norm }) {
     if (x.eol || x.days == null || x.days < 0) continue;
     for (const dep of DEPENDS) {
       if (!dep.of(x.r)) continue;
-      const base = best((byDevice.get(norm(x.r.device)) || []).filter((y) => y.r.category === dep.needs));
+      const base = best((byDevice.get(certHome(norm(x.r.device), dep.needs).key) || []).filter((y) => y.r.category === dep.needs));
       if (!base || base.days == null) continue;
       const lapsed = base.eol || base.days < 0;
       const before = base.days <= 365 && base.days < x.days;
@@ -283,6 +286,39 @@ function dependencyActions(all, { add, asOf, norm }) {
       why: 'Without a current PCI PTS approval no new units can be manufactured or injected with production keys, even while the EMV approvals are valid. Renew, or mark it end of life if the device is no longer built.',
       due: asOf, days: x.days, recordIds: [x.r.id],
     });
+  }
+}
+
+/**
+ * Older hardware versions: when CL2 exists, CL1 approvals that lapse within a
+ * year need a decision. Renew only if customers still need CL1; otherwise
+ * accept the expiration (end of life) and move customers to the newer version.
+ */
+function versionActions(rows, { add, asOf, norm }) {
+  const versions = new Map();
+  for (const x of rows) {
+    const h = certHome(norm(x.r.device), x.r.category);
+    if (!h.version) continue;
+    if (!versions.has(h.base)) versions.set(h.base, new Map());
+    const m = versions.get(h.base);
+    if (!m.has(h.version)) m.set(h.version, []);
+    m.get(h.version).push(x);
+  }
+  for (const m of versions.values()) {
+    const order = [...m.keys()].sort((a, b) => Number(a.slice(2)) - Number(b.slice(2)));
+    const newest = order[order.length - 1];
+    for (const v of order.slice(0, -1)) {
+      const list = m.get(v).filter((x) => x.days != null && x.days <= 365 && !RESOLVED_EXPIRY.has(x.stage) && !DONE_STAGES.has(x.stage));
+      if (!list.length) continue;
+      const name = list.find((x) => /CL\d+$/i.test(norm(x.r.device)))?.r.device || `${list[0].r.device} (${v})`;
+      const lapsed = list.some((x) => x.days < 0);
+      add({
+        key: `version:${norm(name)}:${v}:${newest}:${list.length}`, kind: 'version', priority: lapsed ? 2 : 3,
+        title: `${name} is replaced by ${newest}: ${pl(list.length, 'approval')} ${lapsed ? 'expired or expiring' : 'expire within a year'}`,
+        why: `${newest} is the newer hardware version of this device. Renew the ${v} approvals only if customers still need ${v}; otherwise mark them end of life so they stop counting, and plan the customers' move to ${newest} (expired approvals block new deployments, kernel upgrades and PCI compliance).`,
+        due: asOf, recordIds: list.map((x) => x.r.id),
+      });
+    }
   }
 }
 

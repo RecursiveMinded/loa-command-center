@@ -88,4 +88,44 @@ Date: 03 Jan 2025
 
 This bulletin describes the configuration of the approved interface.`;
 
-module.exports = { amex, discover, emvco, mastercard, pci, bulletin };
+// A bulletin table laid out the way PDF text extraction prints it: cells wrap
+// above and below the row's reference line, and one device (NX500) has a CT1
+// row of its own while its CT2 units share the first row.
+const bulletinTable = `EMV Level 1 Contact - Product Configuration Bulletin
+NX400, NX600, NX500, NX500 LE
+Date: 02 June 2026
+
+IFM identification - NX400, NX600, NX500, NX500 LE
+
+IFM ID   IFM ID HW   Specification   LoA ref   Expiry date   List of Products covered   PCI-PTS   TQM Label (Terminal Quality
+Management)
+NX400,   NX500 LE:
+NX600,   NWA7xxxxY
+NX500   NX400:   v6.x
+LE   NWIFM2 v1.0   NWIFM2 HW v01.01   EMV v1.0   10001 0122 430 43c 43c LABX   13 Jan 2030   TQM9001/02   01 Feb. 2027
+NX600: NWD7xxxxY
+NX500 CT2:
+v5.x
+CT2
+NWIFM1 v1.0   NX500 : NWR3xxxxY   NX500 CT1:
+NX500
+NWIFM1 HW v01.01   EMV v4.3   10002 0914 400 21 LAB   18 Sep 2026   v5.x   TQM9002/04   01 Feb 2027
+CT1   NWIFM1 v1.3 (qualified)
+
+1/1 Product Configuration Bulletin IFM NX400, NX600, NX500, NX500 LE`;
+
+const mastercardKernel = `Mastercard 2000 Purchase Street
+
+Northwind Terminals 1 Main Street
+
+April 15, 2025 Mastercard Contactless Reader Vendor Product – Letter of Approval
+
+LoA Identifier: TLOA-NW250416(a) Product Vendor: Northwind Terminals LoA Expiration Date: September 5, 2028
+
+Product Commercial Name NX200 Product Technical Name NX200 version MCL4.0
+Application Selection Module             NW.EP version 050100
+Mastercard Contactless Kernel            NW.C2 version 100100
+
+Sincerely, Mastercard`;
+
+module.exports = { amex, discover, emvco, mastercard, pci, bulletin, bulletinTable, mastercardKernel };

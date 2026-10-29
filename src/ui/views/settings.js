@@ -317,18 +317,21 @@ function Matching({ s, save, app }) {
 /** Device series that share one physical reader, so one LOA certifies all of them. */
 function ReaderGroups({ options }) {
   const [groups, reload] = useLoad(() => call('listReaderGroups'), []);
-  const [name, setName] = useState(''); const [devs, setDevs] = useState('');
+  const [notes, reloadNotes] = useLoad(() => call('listFamilyNotes'), []);
+  const [name, setName] = useState(''); const [devs, setDevs] = useState(''); const [note, setNote] = useState('');
   const save = async () => {
-    try { await call('setReaderGroup', name, devs.split(',')); toast(`Saved reader group "${name}"`, 'ok'); setName(''); setDevs(''); reload(); } catch (e) { toastError(e); }
+    try { await call('setReaderGroup', name, devs.split(','), note); toast(`Saved device family "${name}"`, 'ok'); setName(''); setDevs(''); setNote(''); reload(); reloadNotes(); } catch (e) { toastError(e); }
   };
-  return html`<div class="card pad"><h3>Reader groups</h3>
-    <p class="muted small">Devices that share the same physical reader, so one LOA (for example L1 Contact) certifies all of them. Pick a group in a record's "This LOA also certifies" section.</p>
-    ${groups && Object.keys(groups).length ? html`<table class="t compact mt"><tbody>${Object.entries(groups).map(([k, v]) => html`<tr><td><b>${k}</b></td><td class="small">${v.join(', ')}</td>
-      <td><button class="btn sm ghost" onClick=${async () => { await call('setReaderGroup', k, []); reload(); }}>Remove</button></td></tr>`)}</tbody></table>` : null}
-    <div class="row wrap mt"><input type="text" placeholder="Group name, e.g. Contact reader A" value=${name} onInput=${(e) => setName(e.target.value)} style="max-width:220px" />
-      <input type="text" list="rg-devices" placeholder="Devices, comma separated: Lane/5000, Lane/3600, Desk/1700" value=${devs} onInput=${(e) => setDevs(e.target.value)} style="flex:1;min-width:260px" />
-      <datalist id="rg-devices">${options.map((o) => html`<option value=${o} />`)}</datalist>
-      <button class="btn primary" disabled=${!name.trim() || !devs.trim()} onClick=${save}>Save group</button></div></div>`;
+  return html`<div class="card pad"><h3>Device families</h3>
+    <p class="muted small">Devices certified together because they share the same hardware components (reader, chip) and kernel version, so one LOA certifies all of them. Pick a family in a record's "This LOA also certifies" section.</p>
+    ${groups && Object.keys(groups).length ? html`<table class="t compact mt"><tbody>${Object.entries(groups).map(([k, v]) => html`<tr><td><b>${k}</b>${notes && notes[k] ? html`<div class="faint small">${notes[k]}</div>` : null}</td><td class="small">${v.join(', ')}</td>
+      <td><button class="btn sm ghost" onClick=${() => { setName(k); setDevs(v.join(', ')); setNote((notes && notes[k]) || ''); }}>Edit</button>
+      <button class="btn sm ghost" onClick=${async () => { await call('setReaderGroup', k, []); reload(); reloadNotes(); }}>Remove</button></td></tr>`)}</tbody></table>` : null}
+    <div class="row wrap mt"><input type="text" aria-label="Family name" placeholder="Family name, e.g. Contact reader A" value=${name} onInput=${(e) => setName(e.target.value)} style="max-width:220px" />
+      <input type="text" list="rg-devices" aria-label="Devices in the family" placeholder="Devices, comma separated: Lane/5000, Lane/3600, Desk/1700" value=${devs} onInput=${(e) => setDevs(e.target.value)} style="flex:1;min-width:260px" />
+      <datalist id="rg-devices">${options.map((o) => html`<option value=${o} />`)}</datalist></div>
+    <div class="row wrap mt"><input type="text" aria-label="What the family shares" placeholder="What they share (optional), e.g. IFM T3IFM2 HW v01.01, kernel EMV_C5 04.04.00" value=${note} onInput=${(e) => setNote(e.target.value)} style="flex:1;min-width:260px" />
+      <button class="btn primary" disabled=${!name.trim() || !devs.trim()} onClick=${save}>Save family</button></div></div>`;
 }
 
 /** One alias list: add "other spelling -> your name", optionally renaming the records that use the other spelling. */

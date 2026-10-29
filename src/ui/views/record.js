@@ -219,13 +219,13 @@ function DeviceCerts({ p, current, app, reload }) {
     } catch (e) { toastError(e); }
   };
   const na = async (sec, row, v) => { try { await call('setCoverageNA', sec.key, row.slot, v); reload(); } catch (e) { toastError(e); } };
-  const eol = async (r) => {
-    const reason = r.eol ? '' : prompt('Not renewing this certification? Give a reason (e.g. replaced by the CL2 reader):', 'Not renewing');
+  const eol = async (r, sec) => {
+    const reason = r.eol ? '' : prompt('Not renewing this certification? Give a reason:', sec && sec.replacedBy ? `Replaced by ${sec.replacedBy}` : 'Not renewing');
     if (reason === null) return;
     try { await call('setEol', [r.id], reason); toast(reason ? 'Marked end of life' : 'Tracking it again', 'ok'); reload(); app.refresh(); } catch (e) { toastError(e); }
   };
   return html`<p class="muted small">Each certification has its own approval number, dates and LOA. Click one to open it, or add a missing one.${p.platform || p.bundle ? ` Showing ${[p.platform, p.bundle].filter(Boolean).join(' · ')}.` : ''}</p>
-    ${[...p.sections].sort((a, b) => (b.rows.some((x) => x.record && x.record.id === current) ? 1 : 0) - (a.rows.some((x) => x.record && x.record.id === current) ? 1 : 0)).map((sec) => html`<div class="section-title">${sec.device} <span class="faint">${sec.reader ? 'Contactless reader' : 'Terminal'}</span></div>
+    ${p.sections.map((sec) => html`<div class="section-title">${sec.label || sec.device} <span class="faint">${sec.reader ? `Hardware version ${sec.version}` : 'Shared by all versions'}</span>${sec.replacedBy ? html` <span class="tag" title="A newer hardware version exists">Replaced by ${sec.replacedBy}</span>` : null}</div>
       <table class="t compact certs"><thead><tr><th>Certification</th><th>Approval no.</th><th>Issued</th><th>Expires</th><th>Status</th><th class="num">LOAs</th><th></th></tr></thead><tbody>
       ${sec.rows.map((row) => {
         const r = row.record;
@@ -242,7 +242,7 @@ function DeviceCerts({ p, current, app, reload }) {
           <td><${HealthPill} r=${r} /></td>
           <td class="num">${r.doc_count || html`<span class="faint">—</span>`}</td>
           <td class="nowrap" onClick=${(e) => e.stopPropagation()}><button class="btn sm ghost" onClick=${() => app.openRecord(r.id, 'documents')} title="Open its LOAs or add one"><${Icon} name="file" /> LOA</button>
-            <button class="btn sm ghost" onClick=${() => eol(r)} title=${r.eol ? `End of life: ${r.eol}. Click to track it again.` : 'Not renewing: accept this expiration'}>${r.eol ? 'Undo EOL' : 'EOL'}</button></td></tr>`;
+            <button class="btn sm ghost" onClick=${() => eol(r, sec)} title=${r.eol ? `End of life: ${r.eol}. Click to track it again.` : 'Not renewing: accept this expiration'}>${r.eol ? 'Undo EOL' : 'EOL'}</button></td></tr>`;
       })}</tbody></table>`)}`;
 }
 
@@ -257,15 +257,15 @@ function EolField({ value, onChange }) {
     <label class="check"><input type="checkbox" checked=${on} aria-label="Not renewing"
       onChange=${(e) => onChange(e.target.checked ? 'Not renewing' : '')} /> <b>Not renewing: accept this expiration (end of life)</b></label>
     ${on ? html`<label class="field mt">Reason<input type="text" aria-label="End of life reason" value=${value} onInput=${(e) => onChange(e.target.value || ' ')}
-        placeholder="e.g. Replaced by the CL2 reader; customers upgrade" /></label>`
-      : html`<div class="faint small">Tick this when the certification will be allowed to expire. It stops counting as a risk or a gap, and the plan stops asking for action.</div>`}
+        placeholder="e.g. Replaced by Lane/3000-CL2; customers upgrade" /></label>`
+      : html`<div class="faint small">Tick this when the certification will be allowed to expire, for example an older hardware version replaced by a newer CL version. It stops counting as a risk or a gap, and the plan stops asking for action.</div>`}
   </div>`;
 }
 
 /**
  * Other devices this certification also covers: one LOA can certify a series
- * of devices that share the same physical reader (e.g. Lane/5000, Lane/3600
- * and Desk/1700). Saved reader groups fill the list in one click.
+ * of devices that share the same hardware and kernel (e.g. Lane/5000, Lane/3600
+ * and Desk/1700). Saved device families fill the list in one click.
  */
 function CoversField({ value, device, onChange }) {
   const [known, setKnown] = useState([]);
@@ -281,12 +281,12 @@ function CoversField({ value, device, onChange }) {
   const saveGroup = async () => {
     const all = [device, ...list].filter(Boolean);
     if (all.length < 2) return toast('Add the other devices first');
-    const name = prompt('Name this reader group (e.g. the reader model):', '');
+    const name = prompt('Name this device family (e.g. the reader model):', '');
     if (!name) return;
-    try { setGroups(await call('setReaderGroup', name, all)); toast(`Saved reader group "${name}"`, 'ok'); } catch (e) { toastError(e); }
+    try { setGroups(await call('setReaderGroup', name, all)); toast(`Saved device family "${name}"`, 'ok'); } catch (e) { toastError(e); }
   };
   return html`<div class="section-title">This LOA also certifies</div>
-    <p class="muted small">Devices that share this physical reader and are certified by the same letter. The certification and its expiry count for each of them.</p>
+    <p class="muted small">Devices in the same family (same hardware components and kernel) that this letter certifies too. The certification and its expiry count for each of them.</p>
     <div class="tagrow covers">${list.map((d) => html`<span class="utag">${d} <button class="linkbtn" aria-label=${`Remove ${d}`} onClick=${() => onChange(list.filter((x) => x !== d).join(', '))}>×</button></span>`)}
       ${!list.length ? html`<span class="faint small">Only ${device || 'this device'}</span>` : null}</div>
     <div class="row wrap mt">
@@ -294,8 +294,8 @@ function CoversField({ value, device, onChange }) {
         onInput=${(e) => setAdding(e.target.value)} onKeyDown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); addOne(); } }} style="max-width:260px" />
       <datalist id="covers-devices">${known.map((d) => html`<option value=${d} />`)}</datalist>
       <button class="btn sm" onClick=${addOne}><${Icon} name="plus" /> Add</button>
-      ${Object.keys(groups).length ? html`<select aria-label="Use a reader group" value="" onChange=${(e) => { const g = groups[e.target.value]; if (g) merge(g); e.target.value = ''; }}>
-        <option value="">Use a reader group…</option>${Object.entries(groups).map(([k, v]) => html`<option value=${k}>${k} (${v.join(', ')})</option>`)}</select>` : null}
-      <button class="btn sm ghost" onClick=${saveGroup} title="Save this device list to reuse on other LOAs">Save as reader group</button>
+      ${Object.keys(groups).length ? html`<select aria-label="Use a device family" value="" onChange=${(e) => { const g = groups[e.target.value]; if (g) merge(g); e.target.value = ''; }}>
+        <option value="">Use a device family…</option>${Object.entries(groups).map(([k, v]) => html`<option value=${k}>${k} (${v.join(', ')})</option>`)}</select>` : null}
+      <button class="btn sm ghost" onClick=${saveGroup} title="Save this device list to reuse on other LOAs">Save as device family</button>
     </div>`;
 }

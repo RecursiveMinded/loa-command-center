@@ -74,6 +74,30 @@ test('parser: each issuer layout yields the key facts', () => {
   assert.equal(b.informational, true);
 });
 
+test('parser: a bulletin table becomes L1 Contact and TQM approvals per row', () => {
+  const letters = parseDocument([L.bulletinTable]);
+  const rows = letters.map((x) => [x.category, x.approvalNumber.value, x.expiryDate.value, x.products.map((p) => p.value).join(',')]);
+  assert.deepEqual(rows, [
+    ['EMV L1 Contact', '10001 0122 430 43c 43c LABX', '2030-01-13', 'NX400,NX600,NX500 LE'],
+    ['TQM', 'TQM9001/02', '2027-02-01', 'NX400,NX600,NX500 LE'],
+    ['EMV L1 Contact', '10002 0914 400 21 LAB', '2026-09-18', 'NX500'],
+    ['TQM', 'TQM9002/04', '2027-02-01', 'NX500'],
+  ]);
+  assert.ok(letters.every((x) => !x.informational));
+  assert.equal(letters[2].products[0].interface, 'Contact (IFM) CT1');
+  assert.match(letters[0].warnings.join(' '), /NX500 CT2 units are also covered by this row/);
+  assert.equal(letters[0].kernelVersion, null, 'no kernel version on L1');
+  // Each letter remembers the part of the file it came from.
+  assert.ok(letters.every((x) => x.segment === 0));
+});
+
+test('parser: L2 kernel name, version and entry point', () => {
+  const mc = parseDocument([L.mastercardKernel])[0];
+  assert.equal(mc.kernelVersion.value, 'NW.C2 v100100 (entry point NW.EP v050100)');
+  const jcb = parseDocument([L.discover.replace('Kernel Version:', 'Application (kernel) Name EMV_C9\nKernel Checksum: 1A2B\nKernel Version:')])[0];
+  assert.match(jcb.kernelVersion.value, /^EMV_C9 .*\(checksum 1A2B\)$/);
+});
+
 test('parser: labels and values split across printed lines', () => {
   const wrapped = L.discover.replace('Product: Flex/3XXX CL1 Product Reference', 'Product:\nFlex/3XXX CL1\nProduct Reference')
     .replace('Approval Expiration Date: January 5, 2029', 'Approval Expiration\nDate: January 5, 2029')

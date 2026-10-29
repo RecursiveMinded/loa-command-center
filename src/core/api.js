@@ -153,64 +153,128 @@ class AppApi {
 
   // --------------------------------------------------------------- coverage
   /**
-   * What each device needs to be certified. A contact device needs PCI, L1
-   * Contact and TQM; a contactless reader (CL1, CL2...) needs L1 Contactless,
-   * TQM and an L2 Contactless approval from every required brand. Each cell
-   * holds the record that covers it, or is missing / not applicable.
+   * Group records into the parts of each device. A CL suffix names a hardware
+   * version (a name without one is the first version, CL1). PCI and the
+   * contact approvals are one shared part per device; each version is its
+   * own part holding L1 Contactless, TQM and L2 per brand. A device with no
+   * contactless side keeps TQM in its shared part. `homes(r, device)` lists
+   * the platform/bundle groups a record counts in. Older versions are marked
+   * as replaced by the next one.
+   */
+  deviceParts(recs, homes) {
+    const { certHome, splitVariant, baseDisplayName } = require('./devices');
+    const n = this.store.norm();
+    const cless = new Set();
+    for (const r of recs) {
+      for (const d of [r.device, ...coveredDevices(r)]) {
+        const sv = splitVariant(n(d));
+        if (sv.base && (sv.variant || /Contactless/.test(r.category))) cless.add(sv.base);
+      }
+    }
+    const parts = new Map();
+    const part = (grp, h, home, fallback) => {
+      const k = `${grp}||${home.key}`;
+      if (!parts.has(k)) {
+        parts.set(k, { grp, platform: h.platform || '', bundle: h.bundle || '', key: home.key, base: home.base, version: home.version,
+          cless: cless.has(home.base), names: new Map(), fallback, records: [] });
+      }
+      return parts.get(k);
+    };
+    const add = (h, r, device, shared) => {
+      const key = n(device);
+      if (!key) return;
+      let home = certHome(key, r.category);
+      if (r.category === 'TQM' && !cless.has(home.base)) home = { base: home.base, version: '', key: home.base };
+      const grp = [h.platform, h.bundle].filter(Boolean).join(' · ') || 'Unassigned';
+      const p = part(grp, h, home, home.version ? device : baseDisplayName(device));
+      if (!shared) p.names.set(device, (p.names.get(device) || 0) + 1);
+      p.records.push(shared ? { ...r, sharedFrom: r.device } : r);
+    };
+    for (const r of recs) for (const h of homes(r, r.device)) add(h, r, r.device, false);
+    // One LOA can certify a series of devices sharing a reader: it counts for each.
+    for (const r of recs) for (const dev of coveredDevices(r)) if (n(dev) !== n(r.device)) for (const h of homes(r, dev)) add(h, r, dev, true);
+    // Every version belongs to a device whose shared part (PCI, contact) is required too.
+    for (const p of [...parts.values()]) if (p.version) part(p.grp, p, { base: p.base, version: '', key: p.base }, baseDisplayName(p.fallback));
+    const pick = (p, ok) => [...p.names.entries()].filter(([d]) => ok(n(d))).sort((a, b) => b[1] - a[1])[0];
+    for (const p of parts.values()) {
+      if (!p.version) {
+        const hit = pick(p, (k) => k === p.base);
+        p.device = hit ? hit[0] : baseDisplayName((pick(p, () => true) || [p.fallback])[0]);
+        p.label = p.device;
+      } else {
+        const exact = pick(p, (k) => k === p.key);
+        const bare = pick(p, (k) => k === p.base);
+        // CL1 named by the bare device name: records are created under that name.
+        p.device = exact ? exact[0] : bare ? bare[0] : p.fallback;
+        p.label = n(p.device) === p.key ? p.device : `${p.device} (${p.version})`;
+      }
+    }
+    // Hardware versions in order: each older version is replaced by the next.
+    const byBase = new Map();
+    for (const p of parts.values()) if (p.version) { const k = `${p.grp}||${p.base}`; if (!byBase.has(k)) byBase.set(k, []); byBase.get(k).push(p); }
+    for (const list of byBase.values()) {
+      list.sort((a, b) => Number(a.version.slice(2)) - Number(b.version.slice(2)));
+      list.forEach((p, i) => { p.replacedBy = list[i + 1] ? list[i + 1].label : ''; p.newest = list[list.length - 1].version; });
+    }
+    return [...parts.values()];
+  }
+
+  /** The certifications a part needs: shared PCI and contact (plus TQM without a contactless side), or a version's contactless set. */
+  partSlots(p) {
+    const { contact, reader } = this.coverageSlots();
+    return p.version ? reader : p.cless ? contact.filter((c) => c.key !== 'tqm') : contact;
+  }
+
+  /**
+   * What each device needs to be certified: the shared part (PCI, L1 and L2
+   * Contact) and each hardware version (L1 Contactless, TQM, L2 Contactless
+   * from every required brand). Each cell holds the record that covers it,
+   * or is missing / not applicable / end of life.
    */
   deviceCoverage() {
     const { contact, reader, brands, na } = this.coverageSlots();
+    const { splitVariant } = require('./devices');
     const n = this.store.norm();
-    const devices = new Map();
     const recs = this.listRecords();
-    const add = (r, device, shared) => {
-      const key = n(device);
-      if (!key) return;
-      const grp = [r.platform, r.bundle].filter(Boolean).join(' · ') || 'Unassigned';
-      const k = `${grp}||${key}`;
-      if (!devices.has(k)) devices.set(k, { grp, platform: r.platform || '', bundle: r.bundle || '', device, key, records: [] });
-      const d = devices.get(k);
-      if (!shared) d.device = r.device; // a device's own records name it
-      d.records.push(shared ? { ...r, sharedFrom: r.device } : r);
-    };
     // Records with no platform or bundle (often created from an LOA) join the
     // device's real bundle rather than repeating its gaps in "Unassigned".
     const placed = (r) => r.platform || r.bundle;
+    const baseOf = (d) => splitVariant(n(d)).base;
     const groupsOf = new Map();
-    for (const r of recs) if (placed(r)) {
-      const k = n(r.device);
+    for (const r of recs) {
+      if (!placed(r)) continue;
+      const k = baseOf(r.device);
       if (!groupsOf.has(k)) groupsOf.set(k, new Map());
       groupsOf.get(k).set(`${r.platform}|${r.bundle}`, { platform: r.platform || '', bundle: r.bundle || '' });
     }
-    const homes = (r, device) => (placed(r) ? [r] : [...((groupsOf.get(n(device)) || new Map()).values())].map((g) => ({ ...r, ...g })));
-    for (const r of recs) for (const h of homes(r, r.device).length ? homes(r, r.device) : [r]) add(h, r.device, false);
-    // One LOA can certify a series of devices sharing a reader: it counts for each.
-    for (const r of recs) for (const dev of coveredDevices(r)) if (n(dev) !== n(r.device)) for (const h of homes(r, dev).length ? homes(r, dev) : [r]) add(h, dev, true);
+    const homes = (r, device) => {
+      if (placed(r)) return [r];
+      const g = [...((groupsOf.get(baseOf(device)) || new Map()).values())];
+      return g.length ? g : [r];
+    };
     // A live approval beats one accepted as end of life, then the later expiry wins.
     const better = (a, b) => (!b || (!!b.eol > !!a.eol) || (!!a.eol === !!b.eol && (a.days ?? -1e9) > (b.days ?? -1e9)) ? a : b);
     const rows = [];
     let missing = 0;
-    for (const d of devices.values()) {
-      const isReader = /CL\d+$/.test(d.key);
-      const hasCless = d.records.some((r) => /Contactless/.test(r.category));
-      // A device with a built-in reader but no CL suffix needs both sets.
-      const slots = isReader ? reader : hasCless ? [...contact, ...reader] : contact;
-      // Every certification of this device is end of life: its gaps no longer matter.
+    for (const d of this.deviceParts(recs, homes)) {
+      const slots = new Set(this.partSlots(d).map((x) => x.key));
+      // Every certification of this part is end of life: its gaps no longer matter.
       const retired = d.records.length > 0 && d.records.every((r) => r.eol);
       const cells = {};
       for (const slot of [...contact, ...reader]) {
-        const hits = d.records.filter((r) => r.category === slot.category && (!slot.scheme || String(r.scheme).toLowerCase() === slot.scheme.toLowerCase()));
+        const needed = slots.has(slot.key);
+        const hits = needed ? d.records.filter((r) => r.category === slot.category && (!slot.scheme || String(r.scheme).toLowerCase() === slot.scheme.toLowerCase())) : [];
         const rec = hits.reduce((b, r) => better(r, b), null);
-        const needed = slots.includes(slot);
         const isNa = retired || (na[d.key] || []).includes(slot.key);
-        const status = rec ? (rec.eol ? 'eol' : rec.expiry_date ? 'ok' : 'nodate') : isNa ? 'na' : needed ? 'missing' : 'none';
+        const status = rec ? (rec.eol ? 'eol' : rec.expiry_date ? 'ok' : 'nodate') : isNa && needed ? 'na' : needed ? 'missing' : 'none';
         if (status === 'missing') missing++;
         cells[slot.key] = { status, record: rec ? { id: rec.id, expiry_date: rec.expiry_date, days: rec.days, health: rec.health, approval_number: rec.approval_number, scheme: rec.scheme, eol: rec.eol || '', category: rec.category, sharedFrom: rec.sharedFrom || '' } : null };
       }
-      rows.push({ grp: d.grp, platform: d.platform, bundle: d.bundle, device: d.device, key: d.key, reader: isReader, retired,
-        missing: Object.values(cells).filter((c) => c.status === 'missing').length, cells });
+      rows.push({ grp: d.grp, platform: d.platform, bundle: d.bundle, device: d.device, label: d.label, key: d.key, base: d.base, version: d.version,
+        reader: !!d.version, replacedBy: d.replacedBy || '', retired, missing: Object.values(cells).filter((c) => c.status === 'missing').length, cells });
     }
-    rows.sort((a, b) => a.grp.localeCompare(b.grp, undefined, { numeric: true }) || a.device.localeCompare(b.device, undefined, { numeric: true }));
+    const order = (r) => `${r.base}|${r.version ? Number(r.version.slice(2)) + 1 : 0}`;
+    rows.sort((a, b) => a.grp.localeCompare(b.grp, undefined, { numeric: true }) || order(a).localeCompare(order(b), undefined, { numeric: true }));
     return { columns: [...contact, ...reader].map(({ key, label, group }) => ({ key, label, group })), rows, missing, brands };
   }
 
@@ -226,73 +290,69 @@ class AppApi {
     const s = this.store.getSettings();
     const brands = s.requiredBrands && s.requiredBrands.length ? s.requiredBrands : DEFAULT_BRANDS;
     const contact = [
-      { key: 'pci', label: 'PCI', group: 'Contact device', category: 'PCI PTS' },
-      { key: 'l1c', label: 'L1 Contact', group: 'Contact device', category: 'EMV L1 Contact' },
-      { key: 'l2c', label: 'L2 Contact', group: 'Contact device', category: 'EMV L2 Contact' },
-      { key: 'tqm', label: 'TQM', group: 'Contact device', category: 'TQM' },
+      { key: 'pci', label: 'PCI', group: 'Device (all versions)', category: 'PCI PTS' },
+      { key: 'l1c', label: 'L1 Contact', group: 'Device (all versions)', category: 'EMV L1 Contact' },
+      { key: 'l2c', label: 'L2 Contact', group: 'Device (all versions)', category: 'EMV L2 Contact' },
+      { key: 'tqm', label: 'TQM', group: 'Device (all versions)', category: 'TQM' },
     ];
     const reader = [
-      { key: 'l1cl', label: 'L1 Contactless', group: 'Contactless reader', category: 'EMV L1 Contactless' },
-      { key: 'tqmcl', label: 'TQM', group: 'Contactless reader', category: 'TQM' },
+      { key: 'l1cl', label: 'L1 Contactless', group: 'Hardware version (CL)', category: 'EMV L1 Contactless' },
+      { key: 'tqmcl', label: 'TQM', group: 'Hardware version (CL)', category: 'TQM' },
       ...brands.map((b) => ({ key: `l2:${b}`, label: b, group: 'L2 Contactless', category: 'EMV L2 Contactless', scheme: b })),
     ];
     return { contact, reader, brands, na: s.coverageNA || {} };
   }
 
   /**
-   * Every certification of the physical device a record belongs to: the
-   * terminal (PCI, L1 Contact, TQM) and each contactless reader in it (L1
-   * Contactless, TQM, L2 per brand), on the record's platform and bundle.
+   * Every certification of the device a record belongs to: the shared part
+   * (PCI, L1 and L2 Contact) and each hardware version (L1 Contactless, TQM,
+   * L2 per brand), on the record's platform and bundle.
    */
   deviceProfile(recordId) {
     const rec = this.store.getRecord(recordId);
     if (!rec) return null;
     const { splitVariant } = require('./devices');
     const n = this.store.norm();
-    const { contact, reader, na } = this.coverageSlots();
+    const { na } = this.coverageSlots();
     const base = splitVariant(n(rec.device)).base;
+    const g = { platform: rec.platform || '', bundle: rec.bundle || '' };
     // The record's platform and bundle, plus records not placed in any bundle.
-    const same = this.listRecords().filter((r) => ((r.platform || '') === (rec.platform || '') && (r.bundle || '') === (rec.bundle || '')) || (!r.platform && !r.bundle));
-    const byDev = new Map();
-    const put = (r, device, shared) => {
-      const k = n(device);
-      if (splitVariant(k).base !== base) return;
-      if (!byDev.has(k)) byDev.set(k, { key: k, device, records: [] });
-      if (!shared) byDev.get(k).device = r.device;
-      byDev.get(k).records.push(shared ? { ...r, sharedFrom: r.device } : r);
-    };
-    for (const r of same) put(r, r.device, false);
-    for (const r of same) for (const dev of coveredDevices(r)) if (n(dev) !== n(r.device)) put(r, dev, true);
+    const same = this.listRecords().filter((r) => ((r.platform || '') === g.platform && (r.bundle || '') === g.bundle) || (!r.platform && !r.bundle));
     const sum = (r) => ({ id: r.id, category: r.category, scheme: r.scheme, approval_number: r.approval_number, issue_date: r.issue_date, expiry_date: r.expiry_date,
       kernel_version: r.kernel_version, days: r.days, health: r.health, doc_count: r.doc_count, covers: r.covers || '', eol: r.eol || '', renewal_path: r.renewal_path || '', sharedFrom: r.sharedFrom || '' });
     const st = (r) => (r.eol ? 'eol' : r.expiry_date ? 'ok' : 'nodate');
-    const sections = [...byDev.values()].sort((a, b) => a.key.length - b.key.length || a.key.localeCompare(b.key)).map((d) => {
-      const isReader = /CL\d+$/.test(d.key);
-      const hasCless = d.records.some((r) => /Contactless/.test(r.category));
-      const slots = isReader ? reader : hasCless ? [...contact, ...reader] : contact;
+    const parts = this.deviceParts(same, () => [g]).filter((p) => p.base === base)
+      .sort((a, b) => (a.version ? Number(a.version.slice(2)) : 0) - (b.version ? Number(b.version.slice(2)) : 0));
+    const sections = parts.map((d) => {
       const used = new Set();
       const rows = [];
-      for (const slot of slots) {
+      for (const slot of this.partSlots(d)) {
         const hits = d.records.filter((r) => r.category === slot.category && (!slot.scheme || String(r.scheme).toLowerCase() === slot.scheme.toLowerCase()));
         hits.forEach((r) => used.add(r.id));
-        if (hits.length) for (const r of hits) rows.push({ slot: slot.key, label: slot.scheme ? `L2 Contactless · ${slot.label}` : slot.label, status: st(r), record: sum(r) });
-        else rows.push({ slot: slot.key, label: slot.scheme ? `L2 Contactless · ${slot.label}` : slot.label, status: (na[d.key] || []).includes(slot.key) ? 'na' : 'missing', record: null });
+        const label = slot.scheme ? `L2 Contactless · ${slot.label}` : slot.label;
+        if (hits.length) for (const r of hits) rows.push({ slot: slot.key, label, status: st(r), record: sum(r) });
+        else rows.push({ slot: slot.key, label, status: (na[d.key] || []).includes(slot.key) ? 'na' : 'missing', record: null });
       }
       for (const r of d.records) if (!used.has(r.id)) rows.push({ slot: '', label: `${r.category}${r.scheme && r.scheme !== 'EMVCo' ? ` · ${r.scheme}` : ''}`, status: st(r), record: sum(r) });
-      return { device: d.device, key: d.key, reader: isReader, rows };
+      return { device: d.device, label: d.label, key: d.key, version: d.version, reader: !!d.version, replacedBy: d.replacedBy || '', rows };
     });
-    return { platform: rec.platform || '', bundle: rec.bundle || '', sections };
+    return { platform: g.platform, bundle: g.bundle, sections };
   }
 
   /** Saved device series that share one reader, e.g. { "Reader A": ["Lane/5000", "Lane/3600", "Desk/1700"] }. */
   listReaderGroups() { return this.store.getSettings().readerGroups || {}; }
-  setReaderGroup(name, devices) {
+  /** Device families: what the devices share (hardware components, kernel version), by family name. */
+  listFamilyNotes() { return this.store.getSettings().familyNotes || {}; }
+  setReaderGroup(name, devices, note) {
     const g = { ...this.listReaderGroups() };
+    const notes = { ...this.listFamilyNotes() };
     const nm = String(name || '').trim();
-    if (!nm) throw new Error('Name the group first');
+    if (!nm) throw new Error('Name the family first');
     const list = [...new Set((devices || []).map((d) => String(d).trim()).filter(Boolean))];
     if (list.length) g[nm] = list; else delete g[nm];
-    this.store.setSettings({ readerGroups: g });
+    if (list.length && note !== undefined) { if (String(note).trim()) notes[nm] = String(note).trim(); else delete notes[nm]; }
+    if (!list.length) delete notes[nm];
+    this.store.setSettings({ readerGroups: g, familyNotes: notes });
     return g;
   }
 
@@ -621,7 +681,7 @@ class AppApi {
     const it = this.store.getInbox(id);
     if (!it) throw new Error('Review item not found');
     const text = this.store.documentText(it.document_id);
-    const seg = require('./loa-parser').segmentLetters(text.split('\n\f\n'))[it.letter_index] || { text };
+    const seg = require('./loa-parser').segmentLetters(text.split('\n\f\n'))[it.parsed.segment ?? it.letter_index] || { text };
     const has = (f) => !!(f && f.value);
     const missing = [];
     if (!has(it.parsed.approvalNumber)) missing.push('approval_number');
@@ -886,7 +946,7 @@ class AppApi {
 const PUBLIC_METHODS = [
   'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'deleteRecords', 'bulkUpdate',
   'listArchive', 'archiveCount', 'expiredRecords', 'archiveExpired', 'restoreArchived', 'purgeArchived',
-  'activateReplacement', 'deviceCoverage', 'deviceProfile', 'listReaderGroups', 'setReaderGroup', 'setCoverageNA', 'createMissing', 'createSlot', 'listTags', 'knownDevices', 'listAliases', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
+  'activateReplacement', 'deviceCoverage', 'deviceProfile', 'listReaderGroups', 'setReaderGroup', 'listFamilyNotes', 'setCoverageNA', 'createMissing', 'createSlot', 'listTags', 'knownDevices', 'listAliases', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
   'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
   'documentText', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'setEol', 'dataChecks', 'aiDataReview', 'briefingReport', 'exportL3Sheet', 'duplicateInfo', 'mapDuplicate', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',

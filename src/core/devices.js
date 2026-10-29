@@ -33,6 +33,22 @@ function splitVariant(key) {
   return { base: key, variant: '' };
 }
 
+// Where a certification lives. A CL suffix names a hardware version of the
+// device: chip components changed (often required by PCI or a new standard),
+// and a name without a suffix is the first version, CL1. PCI and the contact
+// approvals are held once per device and shared by all its versions; the
+// contactless approvals and TQM are held per version.
+const SHARED_CATEGORIES = new Set(['PCI PTS', 'EMV L1 Contact', 'EMV L2 Contact']);
+const VERSION_CATEGORIES = new Set(['EMV L1 Contactless', 'EMV L2 Contactless', 'TQM']);
+
+/** { base, version, key } for a normalized device key and approval category. */
+function certHome(key, category) {
+  const { base, variant } = splitVariant(key);
+  if (SHARED_CATEGORIES.has(category)) return { base, version: '', key: base };
+  if (VERSION_CATEGORIES.has(category)) { const v = variant || 'CL1'; return { base, version: v, key: base + v }; }
+  return { base, version: variant, key };
+}
+
 /** "Lane/5000-CL3" -> "Lane/5000"; keeps the user's spelling. */
 function baseDisplayName(name) {
   return String(name || '').replace(/[\s\-_/]*CL\d+\s*$/i, '').trim();
@@ -170,5 +186,5 @@ function categoryFromFilename(filename) {
 module.exports = {
   deviceFromFilename, categoryFromFilename, schemeFromFilename,
   DEFAULT_NOISE_WORDS, compact, makeNormalizer, defaultNorm, splitVariant,
-  baseDisplayName, variantOf, deviceScore, splitProducts, wildcardRegex,
+  baseDisplayName, variantOf, certHome, SHARED_CATEGORIES, VERSION_CATEGORIES, deviceScore, splitProducts, wildcardRegex,
 };
