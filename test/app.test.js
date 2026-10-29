@@ -1011,6 +1011,10 @@ test('a bundle page: every date becomes one record, and the register is checked 
   assert.equal(v.l2contactKernel, '4.10');
   assert.equal(v.sections.l2contactless[0].cells.visa.kernel_version, '070803', 'brand kernel taken from the page');
   assert.equal(v.sections.contact[0].cells.l1.expiry_date, '2028-07-12');
+  // Every required card brand has a column, even one with no approvals yet, with its kernel version.
+  assert.deepEqual(v.brands.map((b) => b.label), ['Visa', 'Mastercard', 'Amex', 'Discover', 'UnionPay', 'JCB', 'Interac']);
+  assert.equal(v.brands.find((b) => b.key === 'visa').kernel, '070803');
+  assert.match(api.bundleReport(r.key).html, /Kernel Version/);
   assert.match(api.bundleReport(r.key).html, /12\/03\/28/);
   // L2 Contact is one kernel for the bundle: a second one is a duplicate.
   const issues = api.checkRecord(null, { device: 'NX100', category: 'EMV L2 Contact', scheme: 'EMVCo', platform: 'NWP', bundle: 'NWP Bundle 9', expiry_date: '2028-01-01' });

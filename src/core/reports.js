@@ -377,8 +377,13 @@ function bundleTables(v) {
   ];
 }
 
+// The kernel list at the top of a bundle page: the EMV Contact kernel, then each card brand's contactless kernel.
+const bundleKernels = (v) => [['EMV Contact', v.l2contactKernel || ''], ...v.brands.map((b) => [b.label, b.kernel || ''])];
+
 function bundleReport(v, { company = '', asOf = todayIso() } = {}) {
   const tables = bundleTables(v);
+  const kernels = `<table style="width:auto"><thead><tr><th>Specification</th><th>Kernel Version</th></tr></thead><tbody>
+    ${bundleKernels(v).map(([s, k]) => `<tr><td>${esc(s)}</td><td style="text-align:center">${esc(k) || '—'}</td></tr>`).join('')}</tbody></table>`;
   const l2 = v.l2contact;
   const kernel = `${v.l2contactKernel ? `the EMV Contact kernel v${esc(v.l2contactKernel)}` : 'an EMV Contact kernel'}${l2 && l2.expiry_date ? `, which expires on ${mdy(l2.expiry_date)}` : ', with no expiry date on file'}`;
   const tone = (c) => (!c || !c.expiry_date ? '' : c.eol ? 'color:#6b7280' : c.expiry_date < asOf ? 'background:#fde2e1;color:#8a1c1c' : '');
@@ -393,7 +398,8 @@ function bundleReport(v, { company = '', asOf = todayIso() } = {}) {
   td:first-child,th:first-child{text-align:left;white-space:nowrap}@media print{body{margin:12mm}}</style></head><body>
   <h1>${esc(v.bundle)}${v.platform && !String(v.bundle).toUpperCase().includes(String(v.platform).toUpperCase()) ? ` · ${esc(v.platform)}` : ''}</h1>
   <div class="muted">${company ? `${esc(company)} · ` : ''}From the certification register, ${formatDate(asOf)} · ${v.dates} expiry date${v.dates === 1 ? '' : 's'}${v.page ? ` · the published page (${esc(v.page.filename)}) shows ${v.page.dates}` : ''}</div>
-  <p>This kernel bundle uses ${kernel}. The EMV Contact Level 2 kernel is one approval shared by every device in the bundle.</p>
+  <p>This kernel bundle uses ${kernel}. The EMV Contact Level 2 kernel is one approval shared by every device in the bundle; each card brand has its own contactless kernel and approval.</p>
+  ${kernels}
   <h2 style="margin-top:18px">Terminal &amp; Level 1 Certifications</h2>${body}
   <p class="muted">Blank cell: no approval on file. Red: expired.</p></body></html>`;
   return { html, dates: v.dates };
@@ -411,9 +417,10 @@ async function bundleWorkbook(v) {
     ws.getRow(1).font = { bold: true };
     ws.columns.forEach((c, i) => { c.width = i ? 14 : 20; });
   }
-  const ws = wb.addWorksheet('EMV Contact L2');
-  ws.addRow(['Kernel', 'Exp Date']);
-  ws.addRow([v.l2contactKernel || '', v.l2contact ? mdy(v.l2contact.expiry_date) : '']);
+  const ws = wb.addWorksheet('Kernels');
+  ws.addRow(['Specification', 'Kernel Version', 'Exp Date']);
+  for (const [s, k] of bundleKernels(v)) ws.addRow([s, k, s === 'EMV Contact' && v.l2contact ? mdy(v.l2contact.expiry_date) : '']);
+  ws.columns.forEach((c, i) => { c.width = i ? 14 : 20; });
   ws.getRow(1).font = { bold: true };
   return Buffer.from(await wb.xlsx.writeBuffer());
 }

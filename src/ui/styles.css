@@ -402,3 +402,5 @@ table.mx.bundle td { min-width: 90px; }
 .difflist { max-height: 180px; overflow: auto; margin: 6px 0 0; padding-left: 18px; color: var(--muted); }
 .guards li { margin: 0 0 10px; }
 .guards .stop b { color: var(--bad); }
+.kernels .chip { cursor: default; }
+.row.wrap { flex-wrap: wrap; }

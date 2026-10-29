@@ -403,11 +403,23 @@ class AppApi {
       if (m.section === 'l2contactless' && !view.brands.some((b) => b.key === m.col)) view.brands.push({ key: m.col, label: m.scheme });
     }
     for (const list of Object.values(sections)) list.sort((a, b) => a.device.localeCompare(b.device, undefined, { numeric: true }) || String(a.version).localeCompare(String(b.version), undefined, { numeric: true }));
+    // Every card brand the bundle needs gets a column, so a brand with no approvals shows as a gap rather than disappearing.
+    const allBrands = [...brands.map((b) => ({ key: b.toLowerCase(), label: b })), ...view.brands.filter((b) => !brands.some((x) => x.toLowerCase() === b.key))];
+    // Each brand's contactless kernel: from the page's kernel table, else the version most records carry.
+    const kernels = {};
+    const seen = {};
+    for (const r of records) {
+      if (r.archived || r.category !== 'EMV L2 Contactless' || !r.kernel_version) continue;
+      const k = String(r.scheme || '').toLowerCase();
+      (seen[k] = seen[k] || {})[r.kernel_version] = (seen[k][r.kernel_version] || 0) + 1;
+    }
+    for (const [k, m] of Object.entries(seen)) kernels[k] = Object.entries(m).sort((a, b) => b[1] - a[1])[0][0];
+    for (const [b, v] of Object.entries((page && page.ctx && page.ctx.kernels) || {})) kernels[b.toLowerCase()] = v;
     return {
       key, platform: g ? g.platform : page ? page.platform : '', bundle: g ? g.bundle : page ? page.bundle : '',
       sections, l2missing,
       l2contact: cell(view.l2contact), l2contactKernel: view.l2contact ? view.l2contact.kernel_version || '' : (page && page.ctx && page.ctx.l2Contact ? page.ctx.l2Contact.version : ''),
-      brands: view.brands, dates: view.dates, duplicates: view.duplicates.length,
+      brands: allBrands.map((b) => ({ ...b, kernel: kernels[b.key] || '' })), dates: view.dates, duplicates: view.duplicates.length,
       page: page ? { filename: page.filename, at: page.at, dates: check.pageDates, blanks: check.pageBlanks } : null,
       issues: check ? summarizeCheck(check) : null, missing,
     };
@@ -431,7 +443,7 @@ class AppApi {
     const g = this.bundleGroups().get(key);
     const rows = parsed.records.map((r) => ({ device: r.device, category: r.category, scheme: r.scheme, kernel_version: r.kernel_version || '', expiry_date: r.expiry_date || null }));
     const pages = { ...(this.store.getSettings().bundlePages || {}) };
-    pages[key] = { filename, at: new Date().toISOString(), platform: g ? g.platform : ctx.platform, bundle: g ? g.bundle : ctx.bundle, ctx: { l2Contact: ctx.l2Contact || null }, rows };
+    pages[key] = { filename, at: new Date().toISOString(), platform: g ? g.platform : ctx.platform, bundle: g ? g.bundle : ctx.bundle, ctx: { l2Contact: ctx.l2Contact || null, kernels: ctx.kernels || {} }, rows };
     this.store.setSettings({ bundlePages: pages });
     const check = bundleCheck(rows, g ? g.records : [], { norm: this.store.norm() });
     return { key, filename: pages[key].filename, platform: pages[key].platform, bundle: pages[key].bundle, ...summarizeCheck(check), details: checkDetails(check) };
