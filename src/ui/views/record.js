@@ -32,13 +32,22 @@ export function RecordDrawer({ id, app, onClose, tab: startTab }) {
   useEffect(() => { setProfile(null); if (id) loadProfile(); }, [id, app.version]);
 
   const set = (k) => (e) => setForm({ ...form, [k]: e && e.target ? (e.target.type === 'checkbox' ? e.target.checked : e.target.value) : e });
-  const save = async () => {
+  // Mistakes are caught before they are saved: duplicates, impossible dates,
+  // dates that disagree with the website page, new device spellings.
+  const [guards, setGuards] = useState(null);
+  const save = async (force = false) => {
     if (!form.device.trim()) return toast('Device is required', 'err');
     if (!form.scheme.trim()) return toast('Brand is required', 'err');
     setBusy(true);
     try {
       const patch = { ...form };
       for (const k of ['issue_date', 'expiry_date', 'next_action_date', 'portal_date']) if (!patch[k]) patch[k] = null;
+      if (force !== true) {
+        const changed = id && data ? Object.fromEntries(Object.entries(patch).filter(([k, v]) => (data.record[k] ?? null) !== v && !(data.record[k] == null && v === ''))) : patch;
+        const issues = Object.keys(changed).length ? await call('checkRecord', id || null, changed) : [];
+        if (issues.length) { setGuards(issues); return; }
+      }
+      setGuards(null);
       const d = await call('saveRecord', id || null, patch);
       toast(id ? 'Saved' : 'Record created', 'ok');
       app.refresh();
@@ -163,7 +172,8 @@ export function RecordDrawer({ id, app, onClose, tab: startTab }) {
       <div class="row mt"><label class="btn"><${Icon} name="plus" /> Add LOA to this record
         <input type="file" id="attach-loa" hidden accept=${LOA_EXTENSIONS.map((x) => `.${x}`).join(',')} onChange=${pickLoa} /></label>
         ${adding ? html`<span class="row muted small"><${Spinner} /> ${adding}</span>` : html`<span class="faint small">Use this for a variant device that shares a letter with another record.</span>`}</div>` : null}
-    ${attach ? html`<${AttachModal} a=${attach} r=${r} onLink=${linkLoa} onClose=${() => setAttach(null)} />` : null}
+    ${guards ? html`<${Guards} issues=${guards} app=${app} onClose=${() => setGuards(null)} onSave=${() => save(true)} />` : null}
+      ${attach ? html`<${AttachModal} a=${attach} r=${r} onLink=${linkLoa} onClose=${() => setAttach(null)} />` : null}
 
     ${tab === 'history' ? html`${data.audit.length ? html`<table class="t compact"><thead><tr><th>When</th><th>Change</th><th>By / source</th></tr></thead><tbody>
         ${data.audit.map((a) => html`<tr><td class="small nowrap">${fmtWhen(a.ts)}</td>
@@ -298,4 +308,15 @@ function CoversField({ value, device, onChange }) {
         <option value="">Use a device family…</option>${Object.entries(groups).map(([k, v]) => html`<option value=${k}>${k} (${v.join(', ')})</option>`)}</select>` : null}
       <button class="btn sm ghost" onClick=${saveGroup} title="Save this device list to reuse on other LOAs">Save as device family</button>
     </div>`;
+}
+
+/** "Before you save": what the checks found, with the way out of each. */
+function Guards({ issues, app, onClose, onSave }) {
+  const stop = issues.some((i) => i.level === 'stop');
+  return html`<${Modal} title=${stop ? 'Stop: this would be a mistake' : 'Check before saving'} onClose=${onClose}>
+    <ul class="guards">${issues.map((i) => html`<li class=${i.level}><b>${i.level === 'stop' ? '✖ ' : '⚠ '}${i.title}</b><div class="muted small">${i.detail}</div>
+      ${i.recordId ? html`<a class="small" onClick=${() => { onClose(); app.openRecord(i.recordId); }}>Open that record</a>` : null}</li>`)}</ul>
+    <div class="row mt"><button class="btn primary" onClick=${onClose}>Go back and fix</button>
+      <button class=${`btn ${stop ? 'danger' : ''}`} onClick=${onSave}>${stop ? 'Save anyway' : 'Save'}</button></div>
+  <//>`;
 }

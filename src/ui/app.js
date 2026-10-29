@@ -6,7 +6,7 @@ import { addFiles, filesFromDrop, subscribe } from './queue.js';
 import { Dashboard } from './views/dashboard.js';
 import { Plan } from './views/plan.js';
 import { Register } from './views/register.js';
-import { Matrix } from './views/matrix.js';
+import { Bundles } from './views/bundles.js';
 import { Inbox } from './views/inbox.js';
 import { Reports, ReportModal } from './views/reports.js';
 import { Settings } from './views/settings.js';
@@ -24,7 +24,7 @@ const NAV = [
   ['plan', 'Action plan', 'plan'],
   ['register', 'Certifications', 'list'],
   ['devices', 'Devices', 'shield'],
-  ['matrix', 'Matrix', 'grid'],
+  ['bundles', 'Bundles', 'grid'],
   ['inbox', 'LOA inbox', 'inbox'],
   ['reports', 'Reports', 'report'],
   ['archive', 'Archive', 'box'],
@@ -118,7 +118,7 @@ function App() {
     openRecord: (id, tab) => { setRecordTab(tab || null); setRecord(id); }, openReport: (opts) => setReport(opts && !(opts instanceof Event) ? opts : {}),
     openAi: () => setAi(true), search, setSearch,
   };
-  const View = { dashboard: Dashboard, plan: Plan, register: Register, devices: Devices, matrix: Matrix, inbox: Inbox, reports: Reports, archive: Archive, settings: Settings }[route.name] || Dashboard;
+  const View = { dashboard: Dashboard, plan: Plan, register: Register, devices: Devices, bundles: Bundles, matrix: Bundles, inbox: Inbox, reports: Reports, archive: Archive, settings: Settings }[route.name] || Dashboard;
 
   return html`<div class="app">
     <nav class="side" aria-label="Main">
@@ -136,7 +136,7 @@ function App() {
     <main class="main">
       <header class="topbar">
         <div class="search"><${Icon} name="search" /><input id="global-search" type="search" placeholder="Search devices, approvals, owners…  (Ctrl+K)" value=${search}
-          onInput=${(e) => { setSearch(e.target.value); if (!['register', 'matrix'].includes(route.name)) go('register'); }} /></div>
+          onInput=${(e) => { setSearch(e.target.value); if (route.name !== 'register') go('register'); }} /></div>
         <span class="grow"></span>
         <button class="btn" onClick=${() => go('inbox')}><${Icon} name="upload" /> Add LOAs</button>
         <button class="btn" onClick=${() => setAi(true)}><${Icon} name="spark" /> Ask</button>

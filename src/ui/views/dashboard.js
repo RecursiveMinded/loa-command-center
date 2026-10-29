@@ -3,6 +3,16 @@ import { html, Icon, Ring, fmtDate, fmtMonth, fmtWhen, plural, useLoad, Spinner,
 import { call, saveAs, printHtml } from '../api.js';
 import { ActionItem } from './plan.js';
 
+/** Bundles that no longer match their website page, shown at the top of Today. */
+function BundleAlerts({ app }) {
+  const [list] = useLoad(() => call('listBundles'), [app.version]);
+  const off = (list || []).filter((b) => b.issues && !b.issues.ok);
+  if (!off.length) return null;
+  return html`${off.map((b) => html`<div class="callout warn row" style="margin-bottom:12px"><${Icon} name="warn" />
+    <span class="grow"><b>${b.platform} ${b.bundle} does not match its website page:</b> ${b.dates} dates here, ${b.page.dates} on the page.</span>
+    <button class="btn sm primary" onClick=${() => app.go('bundles')}>Review</button></div>`)}`;
+}
+
 const FREQ = { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' };
 
 export function Dashboard({ app }) {
@@ -15,6 +25,7 @@ export function Dashboard({ app }) {
   return html`
     <div class="page-head"><div><h1>${hello}</h1><p>${fmtDate(d.asOf)} · ${plural(s.total, 'active certification')} · ${plural(d.openActions, 'open action')}</p></div></div>
 
+    <${BundleAlerts} app=${app} />
     <div class="kpis">
       <div class="card kpi row gap-l" onClick=${() => app.go('reports')} title="Share of records that are current, dated, owned and evidenced">
         <${Ring} value=${s.healthScore} /><div><div class="l">Portfolio health</div><div class="s">${s.compliancePct}% current · ${s.evidencePct}% with LOA</div></div></div>
@@ -36,7 +47,7 @@ export function Dashboard({ app }) {
       </div>
       <div class="cards">
         <${Briefing} app=${app} />
-        <div class="card"><div class="hd"><h3>By card brand</h3><a onClick=${() => app.go('matrix')}>Matrix →</a></div>
+        <div class="card"><div class="hd"><h3>By card brand</h3><a onClick=${() => app.go('bundles')}>Bundles →</a></div>
           <div class="bd"><table class="t compact"><thead><tr><th>Brand</th><th class="num">Total</th><th class="num">Expired</th><th class="num">≤ 90 d</th><th class="num">≤ 12 mo</th></tr></thead><tbody>
             ${Object.entries(s.byScheme).sort((a, b) => b[1].total - a[1].total).map(([k, v]) => html`<tr class="click" onClick=${() => go({ scheme: k })}>
               <td>${k}</td><td class="num">${v.total}</td><td class="num" style=${v.expired ? 'color:var(--bad);font-weight:650' : ''}>${v.expired || '–'}</td>
@@ -119,7 +130,7 @@ function Welcome({ app }) {
     <div class="onboard">
       <div class="card" onClick=${() => app.go('inbox')}><${Icon} name="upload" /><h3>Drop your LOAs</h3><p class="muted small">PDFs or scans, one or many at a time. Merged PDFs are split into letters automatically.</p></div>
       <div class="card" onClick=${() => app.go('settings', { tab: 'data' })}><${Icon} name="table" /><h3>Import a tracker</h3><p class="muted small">Bring in your existing Excel or CSV certification list. Columns are recognised automatically.</p></div>
-      <div class="card" onClick=${() => app.go('settings', { tab: 'data' })}><${Icon} name="globe" /><h3>Import a portal page</h3><p class="muted small">Load the certification matrix from a saved web page or PDF of your published kernel bundle page.</p></div>
+      <div class="card" onClick=${() => app.go('bundles')}><${Icon} name="globe" /><h3>Read a kernel bundle page</h3><p class="muted small">Load a bundle's matrix from the PDF or saved web page of your published kernel bundle page.</p></div>
       <div class="card" onClick=${sample}><${Icon} name="spark" /><h3>Try sample data</h3><p class="muted small">Explore with a fictional portfolio. Clear it from Settings when you are ready for real data.</p></div>
     </div>
     <div class="card pad mt-l"><h3>How it works</h3>
