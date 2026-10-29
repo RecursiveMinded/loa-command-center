@@ -272,9 +272,10 @@ function SheetImport({ file, app, onClose }) {
 function Review({ it, app, threshold, readOnly, selected, onSelect, onDone }) {
   const L = it.parsed;
   const defaults = L.recordDefaults || {};
-  const [checked, setChecked] = useState(() => it.proposals.map((p) => p.action !== 'unmatched' && !(p.warnings || []).some((w) => /Confirm it covers/.test(w))));
+  const [checked, setChecked] = useState(() => it.proposals.map((p) => (p.action !== 'unmatched' || (p.suggest || []).length > 0) && !(p.warnings || []).some((w) => /Confirm it covers/.test(w))));
   const [edits, setEdits] = useState(() => it.proposals.map(() => ({})));
-  const [picks, setPicks] = useState(() => it.proposals.map(() => []));
+  // Records picked for the same family name last time are ticked again.
+  const [picks, setPicks] = useState(() => it.proposals.map((p) => p.suggest || []));
   const [creates, setCreates] = useState(() => it.proposals.map(() => []));
   const [fresh, setFresh] = useState({ devices: [], edits: {} });
   const [editing, setEditing] = useState(-1);

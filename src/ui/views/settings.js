@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'preact/hooks';
-import { html, Icon, fmtWhen, plural, useLoad, Spinner, toast, toastError, Select, bytes } from '../lib.js';
+import { html, Icon, fmtWhen, plural, useLoad, Spinner, toast, toastError, Select, bytes, fmtDate } from '../lib.js';
 import { call, native, isDesktop, saveAs } from '../api.js';
 import { extractPdf } from '../extract.js';
 import { useUpdate, checkForUpdates, installUpdate } from '../update.js';
@@ -311,6 +311,7 @@ function Matching({ s, save, app }) {
       list=${fields && fields.bundle} onSave=${async (a, v, apply) => done(await call('setFieldAlias', 'bundle', a, v, { apply }))}
       onRemove=${async (k) => { await call('setFieldAlias', 'bundle', k, ''); reloadFields(); }} />
     <${ReaderGroups} options=${values('device')} />
+    <${Learned} />
   </div>`;
 }
 
@@ -332,6 +333,22 @@ function ReaderGroups({ options }) {
       <datalist id="rg-devices">${options.map((o) => html`<option value=${o} />`)}</datalist></div>
     <div class="row wrap mt"><input type="text" aria-label="What the family shares" placeholder="What they share (optional), e.g. IFM T3IFM2 HW v01.01, kernel EMV_C5 04.04.00" value=${note} onInput=${(e) => setNote(e.target.value)} style="flex:1;min-width:260px" />
       <button class="btn primary" disabled=${!name.trim() || !devs.trim()} onClick=${save}>Save family</button></div></div>`;
+}
+
+/** Rules the app learned from corrections on review cards; each can be removed. */
+function Learned() {
+  const [list, reload] = useLoad(() => call('listLearned'), []);
+  const forget = async (x) => {
+    try { await call('forgetLearned', x.kind, x.from, x.scheme, x.category); toast(`Forgot "${x.said}"`, 'ok'); reload(); } catch (e) { toastError(e); }
+  };
+  return html`<div class="card pad"><h3>Learned from your corrections</h3>
+    <p class="muted small">When you fix a device name on a review card, or pick the records a family name such as "Move/5xxx" covers, the app remembers it and applies it to later letters. Remove a rule here if it was a one-off.</p>
+    ${list && list.length ? html`<table class="t compact mt"><thead><tr><th>The letter says</th><th>Becomes</th><th>Learned</th><th></th></tr></thead><tbody>${list.map((x) => html`<tr>
+      <td><b>${x.said}</b>${x.kind === 'family' ? html`<div class="faint small">${x.scheme} ${x.category}</div>` : null}</td>
+      <td class="small">${x.to.join(', ')}</td>
+      <td class="faint small" title=${x.file || ''}>${fmtDate(String(x.at || '').slice(0, 10))}</td>
+      <td><button class="btn sm ghost" aria-label=${`Forget ${x.said}`} onClick=${() => forget(x)}>Remove</button></td></tr>`)}</tbody></table>`
+    : html`<div class="faint small mt">Nothing learned yet.</div>`}</div>`;
 }
 
 /** One alias list: add "other spelling -> your name", optionally renaming the records that use the other spelling. */

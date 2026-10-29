@@ -399,6 +399,15 @@ class AppApi {
   }
 
   listAliases() { return this.store.aliases(); }
+  /** Rules learned from corrections on review cards, newest first. */
+  listLearned() { return [...(this.store.getSettings().learned || [])].reverse(); }
+  forgetLearned(kind, from, scheme, category) {
+    const all = this.store.getSettings().learned || [];
+    const hit = (x) => x.kind === kind && x.from === from && (kind !== 'family' || (x.scheme === scheme && x.category === category));
+    if (kind === 'device' && all.some(hit)) this.store.setAlias(from, '');
+    this.store.setSettings({ learned: all.filter((x) => !hit(x)) });
+    return this.listLearned();
+  }
 
   setAlias(alias, device, { apply = false } = {}) {
     this.store.setAlias(alias, device);
@@ -946,7 +955,7 @@ class AppApi {
 const PUBLIC_METHODS = [
   'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'deleteRecords', 'bulkUpdate',
   'listArchive', 'archiveCount', 'expiredRecords', 'archiveExpired', 'restoreArchived', 'purgeArchived',
-  'activateReplacement', 'deviceCoverage', 'deviceProfile', 'listReaderGroups', 'setReaderGroup', 'listFamilyNotes', 'setCoverageNA', 'createMissing', 'createSlot', 'listTags', 'knownDevices', 'listAliases', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
+  'activateReplacement', 'deviceCoverage', 'deviceProfile', 'listReaderGroups', 'setReaderGroup', 'listFamilyNotes', 'setCoverageNA', 'createMissing', 'createSlot', 'listTags', 'knownDevices', 'listAliases', 'listLearned', 'forgetLearned', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
   'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
   'documentText', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'setEol', 'dataChecks', 'aiDataReview', 'briefingReport', 'exportL3Sheet', 'duplicateInfo', 'mapDuplicate', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
