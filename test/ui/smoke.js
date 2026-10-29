@@ -156,7 +156,8 @@ function pdfFromPages(pages) {
     // Hardware version filter: CL1 records only.
     await p.selectOption('select[aria-label="All hardware (CL)"]', 'CL1');
     const devs = await p.$$eval('table.t tbody .dev', (els) => els.map((e) => e.textContent));
-    check(devs.length > 0 && devs.every((d) => /CL1/.test(d)), `hardware (CL) filter: ${devs.length} CL1 records`);
+    // A name without a CL suffix is the first hardware version, so it counts as CL1 too.
+    check(devs.some((d) => /CL1/.test(d)) && devs.every((d) => !/CL[2-9]/.test(d)), `hardware (CL) filter: ${devs.length} CL1 records`);
     // Kernel version filter.
     await p.selectOption('select[aria-label="All hardware (CL)"]', '');
     const kopts = await p.$$eval('select[aria-label="All kernel versions"] option', (os) => os.map((o) => o.value).filter((v) => v && v !== '(none)'));
