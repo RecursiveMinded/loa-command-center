@@ -24,7 +24,7 @@ export function FilePickers({ onFiles, compact }) {
   const files = useRef(), folder = useRef();
   const pick = (e) => { onFiles([...e.target.files]); e.target.value = ''; };
   return html`<span class="row">
-    <input ref=${files} type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp,.txt,.xlsx,.xlsm,.csv" class="hidden" onChange=${pick} />
+    <input ref=${files} type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp,.txt,.eml,.msg,.xlsx,.xlsm,.csv" class="hidden" onChange=${pick} />
     <input ref=${folder} type="file" webkitdirectory class="hidden" onChange=${pick} />
     <button class=${`btn ${compact ? '' : 'primary'}`} onClick=${() => files.current.click()}><${Icon} name="upload" /> Choose files</button>
     <button class="btn" onClick=${() => folder.current.click()}><${Icon} name="folder" /> Choose folder</button></span>`;
@@ -41,7 +41,21 @@ export function Inbox({ app, params }) {
   const [sel, setSel] = useState(() => new Set());
   const [find, setFind] = useState('');
   const [dup, setDup] = useState(null);
+  const [pasted, setPasted] = useState(null);
   useEffect(() => onRecent(setRecent), []);
+  // Paste anywhere on the page: copied files and screenshots are read at once,
+  // copied text opens the paste box to check it first.
+  useEffect(() => {
+    const onPaste = (e) => {
+      if (e.target.closest && e.target.closest('input, textarea, [contenteditable]')) return;
+      const files = [...(e.clipboardData.files || [])];
+      if (files.length) { e.preventDefault(); onFiles(files.map((f, i) => (f.name && f.name !== 'image.png' ? f : new File([f], `Pasted image ${stamp()}${i ? ` ${i + 1}` : ''}.png`, { type: f.type })))); return; }
+      const text = e.clipboardData.getData('text/plain');
+      if (text && text.trim()) { e.preventDefault(); setPasted(text); }
+    };
+    document.addEventListener('paste', onPaste);
+    return () => document.removeEventListener('paste', onPaste);
+  });
   useEffect(() => subscribe(setQ), []);
   const threshold = app.settings.autoApproveConfidence || 90;
   const pendingList = tab === 'pending' ? items || [] : [];
@@ -85,8 +99,9 @@ export function Inbox({ app, params }) {
       style=${pendingList.length ? 'padding:16px' : ''}>
       <div class=${pendingList.length ? 'row between' : ''}>
         <div class=${pendingList.length ? 'row' : ''}><${Icon} name="upload" />
-          <div style=${pendingList.length ? 'text-align:left' : ''}><h3>Drop LOAs or a whole folder here</h3><div class="muted small">PDF, scanned PDF, PNG, JPG or TIFF · merged PDFs are split into letters · duplicates are skipped · Excel/CSV trackers are imported</div></div></div>
-        <div style=${pendingList.length ? '' : 'margin-top:14px;display:flex;justify-content:center'}><${FilePickers} onFiles=${onFiles} compact=${!!pendingList.length} /></div>
+          <div style=${pendingList.length ? 'text-align:left' : ''}><h3>Drop LOAs, emails or a whole folder here</h3><div class="muted small">PDF, scanned PDF, images, Outlook emails (.msg, .eml) with their attachments, or pasted text · merged PDFs are split into letters · duplicates are skipped · Excel/CSV trackers are imported</div></div></div>
+        <div class="row" style=${pendingList.length ? '' : 'margin-top:14px;display:flex;justify-content:center'}><${FilePickers} onFiles=${onFiles} compact=${!!pendingList.length} />
+          <button class="btn" onClick=${() => setPasted('')} title="Paste the text of one or many letters, an email or a portal page"><${Icon} name="edit" /> Paste text</button></div>
       </div>
     </div>
 
@@ -105,6 +120,7 @@ export function Inbox({ app, params }) {
           title="Link this LOA to another device or reader version, e.g. the CL2 record"><${Icon} name="link" /> Map to another device…</button>` : null}
       </div>`)}</div></div>` : null}
     ${dup ? html`<${MapDuplicate} documentId=${dup} app=${app} onClose=${() => setDup(null)} />` : null}
+    ${pasted != null ? html`<${PasteText} initial=${pasted} onClose=${() => setPasted(null)} onRead=${(file) => { setPasted(null); onFiles([file]); }} />` : null}
 
     <div class="tabs mt-l">${tabs.map(([k, l]) => html`<button class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${l}${k === 'pending' && app.counts.inbox ? html`<span class="count">${app.counts.inbox}</span>` : null}</button>`)}</div>
     ${tab === 'documents' ? html`<${Documents} docs=${docs} app=${app} reload=${reloadDocs} />`
@@ -114,6 +130,28 @@ export function Inbox({ app, params }) {
             ${shown.map((it) => html`<${Review} key=${`${it.id}:${proposalSig(it)}:${JSON.stringify(it.parsed.recordDefaults || {})}`} it=${it} app=${app} threshold=${threshold} readOnly=${tab !== 'pending'}
               selected=${sel.has(it.id)} onSelect=${tab === 'pending' ? () => toggleSel(it.id) : null} onDone=${() => { reload(); app.refresh(); }} />`)}`}
     ${sheets.length ? html`<${SheetImport} file=${sheets[0]} app=${app} onClose=${() => setSheets((q0) => q0.slice(1))} />` : null}`;
+}
+
+const stamp = () => new Date().toISOString().slice(0, 16).replace('T', ' ').replace(':', '-');
+
+/**
+ * Text pasted from an email, a portal page or a document. It is read like a
+ * dropped file: split into letters, matched, and kept in the archive as a .txt.
+ */
+function PasteText({ initial, onClose, onRead }) {
+  const [text, setText] = useState(initial || '');
+  const [name, setName] = useState('');
+  const read = () => {
+    const base = (name.trim() || `Pasted text ${stamp()}`).replace(/[\\/:*?"<>|]+/g, ' ').replace(/\.txt$/i, '');
+    onRead(new File([text], `${base}.txt`, { type: 'text/plain' }));
+  };
+  return html`<${Modal} title="Paste text" onClose=${onClose}>
+    <p class="muted small">Paste the text of one or many letters, an approval email, or a table copied from a portal. Several letters in one paste are split apart, and each is matched to your records for you to review.</p>
+    <textarea aria-label="Pasted text" rows="14" style="width:100%;font-family:inherit" placeholder="Paste here (Ctrl+V)" value=${text} onInput=${(e) => setText(e.target.value)} autofocus></textarea>
+    <div class="row mt"><input type="text" aria-label="Name for the pasted text" placeholder=${`Name (optional), e.g. Visa approvals email`} value=${name} onInput=${(e) => setName(e.target.value)} class="grow" />
+      <span class="faint small">${plural(text.trim() ? text.trim().split(/\n/).length : 0, 'line')}</span></div>
+    <div class="row mt"><button class="btn primary" disabled=${!text.trim()} onClick=${read}><${Icon} name="check" /> Read text</button><button class="btn" onClick=${onClose}>Cancel</button></div>
+  <//>`;
 }
 
 /**

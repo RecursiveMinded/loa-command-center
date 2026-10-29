@@ -2,6 +2,7 @@
 // between screens; screens subscribe to progress.
 import { call } from './api.js';
 import { extractFile, LOA_EXTENSIONS } from './extract.js';
+import { readEmail, emailFiles } from './email.js';
 
 const state = { items: [], running: false };
 const subs = new Set();
@@ -43,6 +44,22 @@ async function run() {
       emit();
       try {
         const bytes = new Uint8Array(await it.file.arrayBuffer());
+        // An email is opened here; its attachments (and its text, when it reads
+        // like an approval) join the queue right after it as files of their own.
+        if (/\.(eml|msg)$/i.test(it.name)) {
+          it.note = 'Opening email';
+          emit();
+          const mail = await readEmail(it.name, bytes);
+          const { files, skipped } = emailFiles(mail, isLoa);
+          const at = state.items.indexOf(it) + 1;
+          state.items.splice(at, 0, ...files.map((f) => ({ id: ++seq, name: f.name, size: f.size, file: f, status: 'queued', progress: 0, note: `From email: ${mail.subject || it.name}`, onDone: it.onDone })));
+          it.status = 'done';
+          it.progress = 1;
+          it.note = `Email${mail.subject ? ` "${mail.subject}"` : ''}: ${files.length ? `${files.length} file${files.length === 1 ? '' : 's'} added to read` : 'nothing to read'}${skipped.length ? ` · not read: ${skipped.join(', ')}` : ''}`;
+          it.file = null;
+          emit();
+          continue;
+        }
         const ex = await extractFile(it.name, bytes, {
           onProgress: (done, total, note) => { it.progress = total ? done / total : 0; it.note = note; emit(); },
         });
