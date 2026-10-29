@@ -88,7 +88,7 @@ function describe(i) {
 }
 
 function Cell({ c, app }) {
-  if (!c) return html`<td></td>`;
+  if (!c) return html`<td><span class="faint" title="No approval on file">—</span></td>`;
   if (c.missing) return html`<td><span class="cell miss" title="On the website page, but there is no record for it">${mdy(c.page)}<small>missing here</small></span></td>`;
   const d = c.diff;
   const note = d ? (d.kind === 'pageNewer' ? `web ${mdy(d.page)}` : d.kind === 'recordNewer' ? `web shows ${mdy(d.page)}` : 'not on page') : c.eol ? 'end of life' : '';
@@ -110,15 +110,17 @@ function Layout({ v, app }) {
   return html`
     <div class="legend mt">${['expired', 'critical', 'warning', 'good'].map((k) => html`<span><i style=${`background:${HEALTH[k].color}`}></i>${HEALTH[k].label}</span>`)}
       <span><i class="dash"></i>On the website, missing here</span></div>
-    <div class="card mt pad"><b>EMV Contact Level 2 kernel</b> <span class="muted">· one approval shared by every device in the bundle</span>
+    <div class="card mt pad"><b>Level 2 kernels</b> <span class="muted">· EMV Contact: one approval shared by every device in the bundle</span>
       <div class="row mt">${l2 ? html`<span class=${`cell ${l2.health}${l2.diff ? ' differs' : ''}`} style="display:inline-block" onClick=${() => app.openRecord(l2.id)}>
           ${v.l2contactKernel ? `v${v.l2contactKernel} · ` : ''}expires ${mdy(l2.expiry_date) || 'no date'}${l2.diff && l2.diff.page ? html`<small>web ${mdy(l2.diff.page)}</small>` : null}</span>`
         : v.l2missing ? html`<span class="cell miss" style="display:inline-block">v${v.l2missing.kernel_version} · ${mdy(v.l2missing.expiry_date)}<small>missing here</small></span>`
-          : html`<span class="muted">No EMV L2 Contact kernel on file for this bundle.</span>`}</div></div>
+          : html`<span class="muted">No EMV L2 Contact kernel on file for this bundle.</span>`}</div>
+      <div class="kernels mt"><b>Contactless kernels by card brand</b>
+        <div class="row wrap mt">${v.brands.map((b) => html`<span class="chip">${b.label} <b>${b.kernel || '—'}</b></span>`)}</div></div></div>
     <${Table} title="PCI" head=${['Terminal', 'Version', 'Exp Date']} rows=${v.sections.pci} cols=${['#version', 'date']} app=${app} />
     <${Table} title="EMV Contact" head=${['Terminal', 'L1 Contact', 'TQM']} rows=${v.sections.contact} cols=${['l1', 'tqm']} app=${app} />
     <${Table} title="EMV Contactless" head=${['Terminal', 'L1 Contactless', 'TQM']} rows=${v.sections.contactless} cols=${['l1', 'tqm']} app=${app} />
-    <${Table} title="Level 2 · EMV Contactless" note="One approval per card brand" head=${['Terminal', ...v.brands.map((b) => b.label)]} rows=${v.sections.l2contactless} cols=${v.brands.map((b) => b.key)} app=${app} />`;
+    <${Table} title="Level 2 · EMV Contactless" note="One approval per card brand" head=${['Terminal', ...v.brands.map((b) => (b.kernel ? html`${b.label}<small class="faint" style="display:block;font-weight:400">kernel ${b.kernel}</small>` : b.label))]} rows=${v.sections.l2contactless} cols=${v.brands.map((b) => b.key)} app=${app} />`;
 }
 
 const GROUPS = [
