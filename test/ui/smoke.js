@@ -231,6 +231,9 @@ function pdfFromPages(pages) {
     await p.click('.card:has-text("Platform aliases") button:has-text("Add")');
     await p.waitForSelector('text=2 records renamed', { timeout: 5000 });
     check(true, 'platform alias renames existing records');
+    const learnedCard = p.locator('.card:has-text("Learned from your corrections")');
+    await learnedCard.waitFor({ timeout: 5000 });
+    check(/Zeta/.test(await learnedCard.textContent()), 'family pick from a review card is listed as learned');
     const st = await p.evaluate(() => window.__loaSelfTest());
     check(st.ok, `PDF reader and OCR self test ${JSON.stringify(st)}`);
     await p.click('nav >> text=Today');

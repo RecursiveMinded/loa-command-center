@@ -54,7 +54,7 @@ function val(f) { return f ? f.value : null; }
  *   create       - no matching record; create one
  *   unmatched    - family/wildcard name that needs the user to choose records
  */
-function buildProposals(letter, records, { norm, aliases = {}, noiseWords = [], asOf = todayIso(), auditFor } = {}) {
+function buildProposals(letter, records, { norm, aliases = {}, noiseWords = [], asOf = todayIso(), auditFor, learned = [] } = {}) {
   const proposals = [];
   // Supporting documents (bulletins, equivalency letters) never change records.
   if (letter.informational) return proposals;
@@ -88,19 +88,30 @@ function buildProposals(letter, records, { norm, aliases = {}, noiseWords = [], 
       if (letter.products.length >= 4 && prod.source !== 'bulletin') continue;
       if (letter.category === 'TQM' && prod.source !== 'filename' && prod.source !== 'bulletin') continue;
       if (isFamily) {
-        proposals.push({ action: 'unmatched', device: prod.value, category: letter.category, scheme: letter.scheme, score: 0, changes: {}, warnings: [`"${prod.value}" names a device family. Choose the records it covers.`] });
+        const un = { action: 'unmatched', device: prod.value, from: prod.value, category: letter.category, scheme: letter.scheme, score: 0, changes: {}, warnings: [`"${prod.value}" names a device family. Choose the records it covers.`] };
+        // The records picked for this family name last time.
+        const memo = learned.find((x) => x.kind === 'family' && x.from === norm(prod.value) && x.category === letter.category && sameScheme(x.scheme, letter.scheme));
+        if (memo) {
+          const want = new Set(memo.to.map(norm));
+          un.suggest = sameKind.filter((r) => !r.archived && want.has(norm(r.device))).map((r) => r.id);
+          if (un.suggest.length) un.note = `Learned from your last correction: ${memo.to.join(', ')}`;
+        }
+        proposals.push(un);
         continue;
       }
-      const device = displayDevice(prod.value, noiseWords);
+      // A name you corrected before becomes the device you chose.
+      const learnedName = aliases[norm(prod.value)];
+      const device = learnedName || displayDevice(prod.value, noiseWords);
       const place = inferPlace(device, records, norm);
       proposals.push({
         action: 'create',
         device,
+        from: prod.value,
         category: letter.category,
         scheme: letter.scheme,
         score: 0,
         record: { ...letterRecord(letter, device, prod), ...place.fields },
-        note: place.note,
+        note: [learnedName && learnedName !== prod.value ? `The letter says "${prod.value}"; you named it ${learnedName} before` : '', place.note].filter(Boolean).join('. '),
         changes: {},
         warnings: pExpiry ? [] : ['No expiry date: the record will show as "Missing date"'],
       });
@@ -332,6 +343,7 @@ class Intake {
       norm: this.store.norm(),
       aliases: this.store.aliases(),
       noiseWords: s.noiseWords,
+      learned: s.learned || [],
       asOf: todayIso(),
       auditFor: (id, f) => db.get("SELECT ts, source FROM audit WHERE record_id=? AND field=? AND action='update' ORDER BY id DESC LIMIT 1", [id, f]),
     };
@@ -522,6 +534,7 @@ class Intake {
           results.push({ action: 'created', record_id: r.id });
         }
         if (!p) continue;
+        this.learn(p, d, edits, item);
         if (p.action === 'create') {
           const rec = { ...p.record, ...nonEmpty(defaults), ...edits, source: 'loa', verified_at: new Date().toISOString(), verified_by: actor };
           let r = this.store.findByKey(rec);
@@ -583,6 +596,33 @@ class Intake {
       this.store.setInbox(inboxId, { status: 'applied', decided_at: new Date().toISOString() });
     });
     return results;
+  }
+
+  /**
+   * Corrections made on a review card become rules for later letters:
+   * a device name the reader got wrong becomes a device alias, and the
+   * records picked for a family name ("Move/5xxx") are offered next time.
+   */
+  learn(p, d, edits, item) {
+    const norm = this.store.norm();
+    const s = this.store.getSettings();
+    let learned = [...(s.learned || [])];
+    const at = new Date().toISOString();
+    const file = item.filename || '';
+    // Adding or changing only the hardware version (Lane/3000 -> Lane/3000-CL2) is
+    // about this letter, not a spelling to apply to every later one.
+    const sameBase = edits.device && p.from && splitVariant(norm(edits.device)).base === splitVariant(norm(p.from)).base;
+    if (p.action === 'create' && p.from && edits.device && !sameBase && !wildcardRegex(splitVariant(norm(p.from)).base)) {
+      this.store.setAlias(p.from, edits.device);
+      learned = learned.filter((x) => !(x.kind === 'device' && x.from === norm(p.from)));
+      learned.push({ kind: 'device', from: norm(p.from), said: p.from, to: [edits.device], at, file });
+    }
+    if (p.action === 'unmatched' && p.from && ((d.recordIds || []).length || (d.create || []).length)) {
+      const names = [...new Set([...(d.recordIds || []).map((id) => this.store.getRecord(id)).filter(Boolean).map((r) => r.device), ...(d.create || []).map((x) => String(x).trim()).filter(Boolean)])];
+      learned = learned.filter((x) => !(x.kind === 'family' && x.from === norm(p.from) && x.category === p.category && sameScheme(x.scheme, p.scheme)));
+      learned.push({ kind: 'family', from: norm(p.from), said: p.from, to: names, scheme: p.scheme, category: p.category, at, file });
+    }
+    if (learned.length !== (s.learned || []).length || learned.some((x, i) => x !== (s.learned || [])[i])) this.store.setSettings({ learned: learned.slice(-500) });
   }
 
   /** Platform/bundle for the records these letters will create; an empty value clears it. */

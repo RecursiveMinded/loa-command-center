@@ -932,3 +932,43 @@ test('an L2 letter for a different kernel is flagged, not quietly applied', asyn
   assert.match(p.warnings.join(' '), /Different kernel/);
   assert.ok(api.dataChecks().every((c) => c.key !== 'l2-no-kernel' || !c.recordIds.includes(rec.id)));
 });
+
+test('corrections on review cards are learned and applied to later letters', async () => {
+  const { api } = await fresh();
+  await api.importTracker({ filename: 'tracker.csv', bytes: Buffer.from(CSV) });
+  // A device name the reader got wrong: fixed once, remembered after.
+  const odd = L.discover.replace('Flex/3XXX CL1', 'FlexiPad 97');
+  api.ingestDocument({ filename: 'a.pdf', bytes: Buffer.from('la'), pages: [odd] });
+  let it = api.listInbox('pending').find((i) => i.filename === 'a.pdf');
+  assert.equal(it.proposals[0].action, 'create');
+  api.applyInbox(it.id, [{ index: 0, edits: { device: 'Pad/900' } }]);
+  assert.deepEqual(api.listLearned().map((x) => [x.kind, x.said, x.to[0]]), [['device', 'FlexiPad 97', 'Pad/900']]);
+  api.ingestDocument({ filename: 'b.pdf', bytes: Buffer.from('lb'), pages: [odd.replace('January 5, 2029', 'January 5, 2030')] });
+  it = api.listInbox('pending').find((i) => i.filename === 'b.pdf');
+  assert.equal(it.proposals[0].device, 'Pad/900');
+  assert.equal(it.proposals[0].action, 'update');
+  api.rejectInbox(it.id, '');
+
+  // Adding only a hardware version is about that letter, not a rule.
+  const nx = L.discover.replace('Flex/3XXX CL1', 'NX777');
+  api.ingestDocument({ filename: 'c.pdf', bytes: Buffer.from('lc'), pages: [nx] });
+  it = api.listInbox('pending').find((i) => i.filename === 'c.pdf');
+  api.applyInbox(it.id, [{ index: 0, edits: { device: 'NX777-CL2' } }]);
+  assert.equal(api.listLearned().length, 1);
+
+  // Records picked for a family name are ticked again next time.
+  const fam = L.discover.replace('Flex/3XXX CL1', 'Zeta/7XXX');
+  api.ingestDocument({ filename: 'd.pdf', bytes: Buffer.from('ld'), pages: [fam] });
+  it = api.listInbox('pending').find((i) => i.filename === 'd.pdf');
+  assert.equal(it.proposals[0].action, 'unmatched');
+  const pad = api.listRecords().find((r) => r.device === 'Pad/900');
+  api.applyInbox(it.id, [{ index: 0, recordIds: [pad.id] }]);
+  api.ingestDocument({ filename: 'e.pdf', bytes: Buffer.from('le'), pages: [fam.replace('January 5, 2029', 'January 5, 2031')] });
+  it = api.listInbox('pending').find((i) => i.filename === 'e.pdf');
+  assert.deepEqual(it.proposals[0].suggest, [pad.id]);
+
+  // Forgetting a device rule removes its alias.
+  api.forgetLearned('device', api.listLearned().find((x) => x.kind === 'device').from);
+  assert.ok(!Object.values(api.listAliases()).includes('Pad/900'));
+  assert.equal(api.listLearned().length, 1);
+});
