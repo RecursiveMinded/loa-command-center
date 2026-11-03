@@ -1025,4 +1025,12 @@ test('a bundle page: every date becomes one record, and the register is checked 
   const w = api.checkRecord(l1.id, { expiry_date: '2027-01-01' });
   assert.ok(w.some((i) => /earlier/.test(i.title)) && w.some((i) => /website shows/.test(i.title)));
   assert.deepEqual(api.checkRecord(l1.id, { notes: 'hello' }), [], 'an unrelated edit is not blocked');
+  // An LOA for another kernel than the bundle runs is stopped, kept out of the website request, and listed as a data issue.
+  const visa = api.listRecords().find((x) => x.category === 'EMV L2 Contactless' && x.scheme === 'Visa');
+  const k = api.checkRecord(visa.id, { kernel_version: '070702', expiry_date: '2030-01-01' });
+  assert.ok(k.some((i) => i.level === 'stop' && /Wrong kernel/.test(i.title) && /070803/.test(i.title)), JSON.stringify(k));
+  assert.ok(!api.checkRecord(visa.id, { kernel_version: '07.08.03' }).some((i) => /Wrong kernel/.test(i.title)), 'the same kernel written differently matches');
+  api.saveRecord(visa.id, { kernel_version: '070702', expiry_date: '2030-01-01', portal_status: 'Change Needed' });
+  assert.ok(!api.portalChanges().some((r) => r.id === visa.id), 'held out of the change request');
+  assert.ok(api.dataChecks().some((c) => c.key === 'kernel-mismatch' && c.recordIds.includes(visa.id)));
 });

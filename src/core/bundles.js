@@ -155,4 +155,37 @@ function bundleCheck(pageRows, records, { norm = defaultNorm } = {}) {
   return out;
 }
 
-module.exports = { bundleKey, cellOf, layout, bundleCheck, pciVersion };
+// Kernel numbers are written many ways: 2.03, 0203, 02.03, 2.0.3. Compare the digits,
+// ignoring leading and trailing zeros; any number on one side matching any on the other is a match.
+const kernelIds = (v) => String(v || '').split(/[\s,;/]+/).map((t) => t.replace(/[^0-9]/g, '').replace(/^0+/, '').replace(/0+$/, '')).filter((t) => t.length >= 2);
+function kernelMatches(a, b) {
+  const x = kernelIds(a), y = kernelIds(b);
+  if (!x.length || !y.length) return true; // cannot tell: not a mismatch
+  return x.some((t) => y.includes(t));
+}
+
+/**
+ * The kernel a bundle runs for a record's approval, from the bundle's published page:
+ * the EMV contact kernel for L2 Contact, the card brand's contactless kernel for L2 Contactless.
+ * Returns { kernel, ids, page } or null when the page does not say.
+ */
+function bundleKernel(pages, r) {
+  if (!/^EMV L2/.test(r.category || '')) return null;
+  const page = (pages || {})[bundleKey(r.platform, r.bundle)];
+  const ctx = page && page.ctx;
+  if (!ctx) return null;
+  if (r.category === 'EMV L2 Contact') return ctx.l2Contact && ctx.l2Contact.version ? { kernel: ctx.l2Contact.version, ids: ctx.l2Contact.version, page } : null;
+  const brand = Object.keys(ctx.kernels || {}).find((b) => b.toLowerCase() === String(r.scheme || '').toLowerCase());
+  if (!brand) return null;
+  return { kernel: ctx.kernels[brand], ids: ((ctx.kernelIds || {})[brand] || [ctx.kernels[brand]]).join(' '), page };
+}
+
+/** A letter or record whose kernel is not the one the bundle runs: its date does not apply to the bundle. */
+function kernelMismatch(pages, r, kernel = r.kernel_version) {
+  if (!kernel) return null;
+  const k = bundleKernel(pages, r);
+  if (!k || kernelMatches(kernel, k.ids)) return null;
+  return { kernel, expected: k.kernel, platform: k.page.platform, bundle: k.page.bundle };
+}
+
+module.exports = { bundleKey, cellOf, layout, bundleCheck, pciVersion, kernelMatches, bundleKernel, kernelMismatch };

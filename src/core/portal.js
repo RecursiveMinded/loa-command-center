@@ -29,6 +29,7 @@ function classifyHeader(cells) {
 // The page's specification table names each brand's L2 kernel version:
 //   "Visa Paywave   2.2   070803"            (Card Version, Kernel Version)
 //   "Visa Paywave   0302  002.00.012"        (Kernel Version, App Version)
+const ID = Symbol('kernel ids');
 function kernelTable(t) {
   const out = {};
   const head = t.match(/Specification\s+(Card\s+Version\s+Kernel\s+Version|Kernel\s+Version\s+App\s+Version)/i);
@@ -41,7 +42,7 @@ function kernelTable(t) {
     const brand = normalizeScheme(m[1].replace(/\s+(paywave|paypass|expresspay|dpas|d-pas|quickpay|quickpass|speedy|flash)$/i, '').trim());
     const nums = m[2].trim().split(/\s+/);
     const kernel = kernelLast ? nums[nums.length - 1] : (nums.length > 1 ? nums.slice(0, -1) : nums).join(' ');
-    if (kernel) out[brand] = kernel;
+    if (kernel) { out[brand] = kernel; (out[ID] = out[ID] || {})[brand] = kernelLast ? nums : kernel.split(' '); }
   }
   return out;
 }
@@ -50,12 +51,15 @@ function contextFromText(text) {
   const t = String(text || '');
   const bundle = (t.match(/Kernel\s+Bundle\s+(\d+[A-Za-z]?)/i) || [])[1];
   const plat = (t.match(/kernel\s+bundle\s+(?:for|of)\s+([A-Z][A-Za-z0-9-]{1,12})/i) || [])[1];
+  const kernels = kernelTable(t);
   const l2c = t.match(/EMV\s+Contact\s+kernel\s+v?([\d.]+),?\s+which\s+expires\s+on\s+([\d/.-]+)/i);
   return {
     bundle: bundle ? `Kernel Bundle ${bundle}` : '',
     platform: plat || '',
     l2Contact: l2c ? { version: l2c[1], expiry: parseDate(l2c[2]) } : null,
-    kernels: kernelTable(t),
+    kernels: kernels,
+    // Every number the kernel table gives a brand (card version and kernel build), for matching letters.
+    kernelIds: kernels[ID] || {},
   };
 }
 

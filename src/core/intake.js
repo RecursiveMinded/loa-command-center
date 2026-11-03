@@ -10,6 +10,7 @@ const { parseDocument } = require('./loa-parser');
 const { deviceScore, wildcardRegex, splitVariant, deviceFromFilename, categoryFromFilename, schemeFromFilename } = require('./devices');
 const { todayIso, daysBetween } = require('./dates');
 const { coverage } = require('./lifecycle');
+const { kernelMismatch } = require('./bundles');
 
 const RENEWAL_STAGES = new Set(['Renewal Requested', 'Pending New LOA', 'Replacement Received']);
 
@@ -54,7 +55,7 @@ function val(f) { return f ? f.value : null; }
  *   create       - no matching record; create one
  *   unmatched    - family/wildcard name that needs the user to choose records
  */
-function buildProposals(letter, records, { norm, aliases = {}, noiseWords = [], asOf = todayIso(), auditFor, learned = [] } = {}) {
+function buildProposals(letter, records, { norm, aliases = {}, noiseWords = [], asOf = todayIso(), auditFor, learned = [], pages = {} } = {}) {
   const proposals = [];
   // Supporting documents (bulletins, equivalency letters) never change records.
   if (letter.informational) return proposals;
@@ -128,7 +129,7 @@ function buildProposals(letter, records, { norm, aliases = {}, noiseWords = [], 
     const ambiguous = chosen.length > 1 && !isFamily && !splitVariant(norm(prod.value)).variant
       && chosen.some((x) => splitVariant(norm(x.r.device)).variant);
     for (const { r, s } of chosen) {
-      const p = proposalFor(r, s, { ...letter, approval: prod.label || approval, expiry: pExpiry, issue }, { asOf, auditFor });
+      const p = proposalFor(r, s, { ...letter, approval: prod.label || approval, expiry: pExpiry, issue }, { asOf, auditFor, pages });
       if (ambiguous) p.warnings = [...p.warnings, `The letter says "${prod.value}" without a reader version (CL1, CL2...). Confirm it covers ${r.device}.`];
       proposals.push(p);
     }
@@ -259,8 +260,14 @@ function sameScheme(a, b) {
   return String(a || '').toLowerCase() === String(b || '').toLowerCase();
 }
 
-function proposalFor(r, score, L, { asOf, auditFor }) {
+function proposalFor(r, score, L, { asOf, auditFor, pages }) {
   const base = { record_id: r.id, device: r.device, category: r.category, scheme: r.scheme, platform: r.platform, bundle: r.bundle, score, warnings: [], changes: {} };
+  // A letter for another kernel than the bundle runs does not apply: keep it as evidence, change nothing.
+  const km = kernelMismatch(pages, r, val(L.kernelVersion));
+  if (km) {
+    return { ...base, action: 'history', kernelMismatch: km, note: 'Wrong kernel: not applied',
+      warnings: [`Not applicable: this LOA is for kernel ${km.kernel}, ${km.platform} ${km.bundle} runs ${r.scheme ? `${r.scheme} ` : ''}kernel ${km.expected}. It is linked as history only and the date is not changed. Find the LOA for kernel ${km.expected}.`] };
+  }
   const cur = r.expiry_date;
   if (!L.expiry) {
     return { ...base, action: 'attach', warnings: ['No expiry date in letter; evidence will be linked without changing dates'] };
@@ -344,6 +351,7 @@ class Intake {
       aliases: this.store.aliases(),
       noiseWords: s.noiseWords,
       learned: s.learned || [],
+      pages: s.bundlePages || {},
       asOf: todayIso(),
       auditFor: (id, f) => db.get("SELECT ts, source FROM audit WHERE record_id=? AND field=? AND action='update' ORDER BY id DESC LIMIT 1", [id, f]),
     };
@@ -552,7 +560,7 @@ class Intake {
           let action = p.action;
           let changes = p.changes || {};
           if (p.action === 'unmatched') {
-            const fresh = proposalFor(r, 100, { ...L, approval: val(L.approvalNumber), expiry: val(L.expiryDate), issue: val(L.issueDate) }, { asOf: todayIso() });
+            const fresh = proposalFor(r, 100, { ...L, approval: val(L.approvalNumber), expiry: val(L.expiryDate), issue: val(L.issueDate) }, { asOf: todayIso(), pages: this.store.getSettings().bundlePages || {} });
             action = fresh.action; changes = fresh.changes;
             if (fresh.action === 'replacement') p.replacement = fresh.replacement;
           }
