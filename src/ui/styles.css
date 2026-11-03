@@ -410,5 +410,16 @@ table.mx.bundle td { min-width: 90px; }
 .typepick .seg { flex-wrap: wrap; margin-top: 4px; }
 .typepick .typehint { flex-basis: 100%; }
 a.devlink { cursor: pointer; color: inherit; }
+/* Device column: never wider than a name needs; long names (LOA product lists) are cut with … and shown in full on hover. */
+table.cov th.name { width: 1%; }
+table.cov td.name .nm { display: flex; align-items: center; gap: 4px; max-width: 210px; }
+table.cov td.name .nm > * { flex: none; }
+table.cov td.name .nm a.devlink { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Compact cells so the whole matrix fits a laptop screen. */
+table.cov .cell { min-width: 62px; padding: 4px 3px; font-size: 11px; }
+table.cov .cell small { font-size: 9.5px; }
+table.cov td { padding: 2px; }
+table.cov thead tr + tr th { white-space: normal; line-height: 1.2; padding: 6px 3px; min-width: 62px; }
+table.cov td.name, table.cov th.name { padding: 5px 10px; font-size: 12.5px; }
 a.devlink:hover { color: var(--brand); text-decoration: underline; }
 table.certs td:first-child, table.certs td:last-child { white-space: nowrap; }
