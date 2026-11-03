@@ -406,3 +406,9 @@ table.mx.bundle td { min-width: 90px; }
 .row.wrap { flex-wrap: wrap; }
 .cell.wrongk { outline: 2px solid var(--bad, #c0392b); outline-offset: -2px; }
 .callout.held ul { margin: 6px 0 0; padding-left: 18px; }
+.typepick { display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: flex-end; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2, var(--panel)); }
+.typepick .seg { flex-wrap: wrap; margin-top: 4px; }
+.typepick .typehint { flex-basis: 100%; }
+a.devlink { cursor: pointer; color: inherit; }
+a.devlink:hover { color: var(--brand); text-decoration: underline; }
+table.certs td:first-child, table.certs td:last-child { white-space: nowrap; }

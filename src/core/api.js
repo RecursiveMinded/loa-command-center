@@ -622,6 +622,16 @@ class AppApi {
   deviceProfile(recordId) {
     const rec = this.store.getRecord(recordId);
     if (!rec) return null;
+    return this.deviceView(rec);
+  }
+
+  /**
+   * Everything a device is certified for, by device name: the device (PCI, L1
+   * Contact, TQM) and each hardware version (L1 Contactless, TQM, L2 per brand),
+   * plus the bundle's shared EMV L2 contact kernel. One place to see a device.
+   */
+  deviceView({ device, platform = '', bundle = '' }) {
+    const rec = { device, platform, bundle };
     const { splitVariant } = require('./devices');
     const n = this.store.norm();
     const { na } = this.coverageSlots();
@@ -640,14 +650,16 @@ class AppApi {
       for (const slot of this.partSlots(d)) {
         const hits = d.records.filter((r) => r.category === slot.category && (!slot.scheme || String(r.scheme).toLowerCase() === slot.scheme.toLowerCase()));
         hits.forEach((r) => used.add(r.id));
-        const label = slot.scheme ? `L2 Contactless · ${slot.label}` : slot.label;
+        const label = slot.scheme ? `L2 · ${slot.label}` : slot.label;
         if (hits.length) for (const r of hits) rows.push({ slot: slot.key, label, status: st(r), record: sum(r) });
         else rows.push({ slot: slot.key, label, status: (na[d.key] || []).includes(slot.key) ? 'na' : 'missing', record: null });
       }
       for (const r of d.records) if (!used.has(r.id)) rows.push({ slot: '', label: `${r.category}${r.scheme && r.scheme !== 'EMVCo' ? ` · ${r.scheme}` : ''}`, status: st(r), record: sum(r) });
       return { device: d.device, label: d.label, key: d.key, version: d.version, reader: !!d.version, replacedBy: d.replacedBy || '', rows };
     });
-    return { platform: g.platform, bundle: g.bundle, sections };
+    // The EMV L2 contact kernel is one approval for the whole bundle.
+    const l2c = same.find((r) => r.category === 'EMV L2 Contact' && !r.archived && (r.platform || '') === g.platform && (r.bundle || '') === g.bundle);
+    return { device: parts.length ? parts[0].device : device, platform: g.platform, bundle: g.bundle, sections, l2contact: l2c ? sum(l2c) : null };
   }
 
   /** Saved device series that share one reader, e.g. { "Reader A": ["Lane/5000", "Lane/3600", "Desk/1700"] }. */
@@ -1306,7 +1318,7 @@ const PUBLIC_METHODS = [
   'listArchive', 'archiveCount', 'expiredRecords', 'archiveExpired', 'restoreArchived', 'purgeArchived',
   'activateReplacement', 'deviceCoverage', 'deviceProfile', 'listBundles', 'bundleView', 'readBundlePage', 'bundleDifferences', 'cleanBundle', 'bundleReport', 'checkRecord', 'listReaderGroups', 'setReaderGroup', 'listFamilyNotes', 'setCoverageNA', 'createMissing', 'createSlot', 'listTags', 'knownDevices', 'listAliases', 'listLearned', 'forgetLearned', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
   'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
-  'documentText', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'setEol', 'dataChecks', 'aiDataReview', 'briefingReport', 'exportL3Sheet', 'duplicateInfo', 'mapDuplicate', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
+  'documentText', 'deviceView', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'setEol', 'dataChecks', 'aiDataReview', 'briefingReport', 'exportL3Sheet', 'duplicateInfo', 'mapDuplicate', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'heldChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
   'aiDraftEmail', 'backup', 'listBackups', 'restore', 'health',
 ];
