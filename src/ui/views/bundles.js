@@ -91,9 +91,10 @@ function Cell({ c, app }) {
   if (!c) return html`<td><span class="faint" title="No approval on file">—</span></td>`;
   if (c.missing) return html`<td><span class="cell miss" title="On the website page, but there is no record for it">${mdy(c.page)}<small>missing here</small></span></td>`;
   const d = c.diff;
-  const note = d ? (d.kind === 'pageNewer' ? `web ${mdy(d.page)}` : d.kind === 'recordNewer' ? `web shows ${mdy(d.page)}` : 'not on page') : c.eol ? 'end of life' : '';
-  const tip = `${c.approval_number ? `Approval ${c.approval_number}\n` : ''}${c.kernel_version ? `Kernel ${c.kernel_version}\n` : ''}${c.doc_count ? `${plural(c.doc_count, 'LOA')} on file` : 'No LOA on file'}${d ? `\n${d.kind === 'pageNewer' ? 'The website has a later date' : d.kind === 'recordNewer' ? 'The website needs updating' : 'Not on the website page'}` : ''}`;
-  return html`<td><span class=${`cell ${c.eol ? 'retired' : c.health}${d ? ' differs' : ''}`} title=${tip} onClick=${() => app.openRecord(c.id)}>
+  const wk = c.wrongKernel;
+  const note = wk ? `kernel ${wk.kernel}, not ${wk.expected}${wk.fits ? ` (fits ${wk.fits.replace(/^kernel\s+/i, '')})` : ''}` : d ? (d.kind === 'pageNewer' ? `web ${mdy(d.page)}` : d.kind === 'recordNewer' ? `web shows ${mdy(d.page)}` : 'not on page') : c.eol ? 'end of life' : '';
+  const tip = `${c.approval_number ? `Approval ${c.approval_number}\n` : ''}${c.kernel_version ? `Kernel ${c.kernel_version}\n` : ''}${c.doc_count ? `${plural(c.doc_count, 'LOA')} on file` : 'No LOA on file'}${wk ? `\nWrong kernel: the LOA is for ${wk.kernel}, the bundle runs ${wk.expected}. This date does not count for the bundle.${wk.fits ? ` It matches ${wk.fits}.` : ''}` : ''}${d ? `\n${d.kind === 'pageNewer' ? 'The website has a later date' : d.kind === 'recordNewer' ? 'The website needs updating' : 'Not on the website page'}` : ''}`;
+  return html`<td><span class=${`cell ${c.eol ? 'retired' : c.health}${d ? ' differs' : ''}${wk ? ' wrongk' : ''}`} title=${tip} onClick=${() => app.openRecord(c.id)}>
     ${c.expiry_date ? mdy(c.expiry_date) : 'No date'}${note ? html`<small>${note}</small>` : null}</span></td>`;
 }
 

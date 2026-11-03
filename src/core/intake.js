@@ -10,7 +10,7 @@ const { parseDocument } = require('./loa-parser');
 const { deviceScore, wildcardRegex, splitVariant, deviceFromFilename, categoryFromFilename, schemeFromFilename } = require('./devices');
 const { todayIso, daysBetween } = require('./dates');
 const { coverage } = require('./lifecycle');
-const { kernelMismatch } = require('./bundles');
+const { kernelMismatch, fitsNote } = require('./bundles');
 
 const RENEWAL_STAGES = new Set(['Renewal Requested', 'Pending New LOA', 'Replacement Received']);
 
@@ -266,7 +266,7 @@ function proposalFor(r, score, L, { asOf, auditFor, pages }) {
   const km = kernelMismatch(pages, r, val(L.kernelVersion));
   if (km) {
     return { ...base, action: 'history', kernelMismatch: km, note: 'Wrong kernel: not applied',
-      warnings: [`Not applicable: this LOA is for kernel ${km.kernel}, ${km.platform} ${km.bundle} runs ${r.scheme ? `${r.scheme} ` : ''}kernel ${km.expected}. It is linked as history only and the date is not changed. Find the LOA for kernel ${km.expected}.`] };
+      warnings: [`Not applicable: this LOA is for kernel ${km.kernel}, ${km.platform} ${km.bundle} runs ${r.scheme ? `${r.scheme} ` : ''}kernel ${km.expected}. It is linked as history only and the date is not changed. Find the LOA for kernel ${km.expected}.${fitsNote(km)}`] };
   }
   const cur = r.expiry_date;
   if (!L.expiry) {

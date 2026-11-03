@@ -5,6 +5,7 @@
 // The optional local LLM only rephrases and answers questions on top of this.
 
 const { todayIso, daysBetween, addDays, formatDate } = require('./dates');
+const { bundleKernel, kernelMismatch, fitsNote } = require('./bundles');
 const { daysRemaining, effectiveStage, windowFor, health, isEol, WINDOWS } = require('./lifecycle');
 const { certHome } = require('./devices');
 
@@ -117,7 +118,7 @@ function analyze(records, { settings = {}, asOf = todayIso(), tasks = {}, inboxP
           key: `renew:${r.id}:${r.expiry_date}`, kind: 'renewal',
           priority: days <= 30 ? 1 : days <= 90 ? 2 : 3,
           title: `Start renewal: ${name} expires in ${days} days`,
-          why: `${r.category} renewals need about ${leadDays} days. Expiry is ${formatDate(r.expiry_date)} and no renewal has been requested yet.`,
+          why: `${r.category} renewals need about ${leadDays} days. Expiry is ${formatDate(r.expiry_date)} and no renewal has been requested yet.${kernelNote(r, settings)}`,
           due: asOf, days, recordIds: [r.id],
         });
       }
@@ -325,7 +326,7 @@ function versionActions(rows, { add, asOf, norm }) {
 // Escalation points before expiry (months -> who to involve).
 const RADAR = [
   { from: 366, to: 545, key: 't18', priority: 4, title: (n) => `18-month radar: ${pl(n, 'approval')} expire in 12 to 18 months`,
-    why: 'Recertification needs lab booking, a frozen kernel build and brand review. Decide now for each: administrative renewal, derivative, delta, full recertification, or end of life.' },
+    why: 'Decide now for each: administrative renewal, derivative, delta, full recertification, or end of life. A renewal can stay on the kernel the bundle runs; only a kernel change needs new testing and a new approval.' },
   { from: 181, to: 365, key: 't12', priority: 3, title: (n) => `12 months out: confirm renewal budget for ${pl(n, 'approval')}`,
     why: 'Escalate to Product Management for any without an agreed renewal path or budget, and book lab slots.' },
   { from: 91, to: 180, key: 't6', priority: 2, title: (n) => `6 months out: tell Client Solutions about ${pl(n, 'approval')} with no new LOA yet`,
@@ -336,6 +337,16 @@ const RADAR = [
 const DONE_STAGES = new Set(['Replacement Received', 'Certified']);
 
 /** One grouped action per escalation point, so the 18-month horizon is visible without one action per record. */
+// What an L2 renewal must cover: the kernel the bundle runs for this brand. A renewal keeps the kernel; only a kernel change needs a new approval.
+function kernelNote(r, settings = {}) {
+  const k = bundleKernel(settings.bundlePages, r);
+  if (!k) return '';
+  const what = r.category === 'EMV L2 Contact' ? 'EMV contact kernel' : `${r.scheme} kernel`;
+  const km = r.kernel_version && kernelMismatch(settings.bundlePages, r);
+  if (km) return ` This record's LOA is for kernel ${r.kernel_version}, but ${k.page.platform} ${k.page.bundle} runs ${what} ${k.kernel}: the renewal must cover ${k.kernel}.${fitsNote(km)}`;
+  return ` Renew on ${what} ${k.kernel}, the one ${k.page.platform} ${k.page.bundle} runs. A renewal keeps the kernel; it is not a kernel upgrade.`;
+}
+
 function radarActions(rows, { add, asOf }) {
   for (const p of RADAR) {
     const list = rows.filter((x) => x.days != null && x.days >= p.from && x.days <= p.to && !DONE_STAGES.has(x.stage)

@@ -1033,4 +1033,19 @@ test('a bundle page: every date becomes one record, and the register is checked 
   api.saveRecord(visa.id, { kernel_version: '070702', expiry_date: '2030-01-01', portal_status: 'Change Needed' });
   assert.ok(!api.portalChanges().some((r) => r.id === visa.id), 'held out of the change request');
   assert.ok(api.dataChecks().some((c) => c.key === 'kernel-mismatch' && c.recordIds.includes(visa.id)));
+  // Kernel numbers as letters and pages write them.
+  const { kernelMatches } = require('../src/core/bundles');
+  assert.ok(kernelMatches('DPAS_L2 02.03', '0203') && !kernelMatches('DPAS_L2 02.02', '0203'));
+  assert.ok(kernelMatches('T3.EMV.C4-08.00.00', '080000') && kernelMatches('PAYPASS_L2 v04.04 (entry point v2.0.6)', '0404 020006'));
+  // An older bundle of the platform runs the LOA's kernel: the app names it.
+  api.readBundlePage({ filename: 'NWP bundle 8.txt', text: page.replace('Kernel Bundle 9', 'Kernel Bundle 8').replace('070803', '070702') });
+  assert.match(api.checkRecord(visa.id, { kernel_version: '070702', expiry_date: '2030-01-02' }).find((i) => /Wrong kernel/.test(i.title)).detail, /matches NWP Kernel Bundle 8/);
+  const held = api.heldChanges().find((r) => r.id === visa.id);
+  assert.match(held.reason, /kernel 070702.*runs 070803/);
+  // A renewal coming up says which kernel it must cover: a renewal keeps the kernel.
+  const mc = api.listRecords().find((x) => x.category === 'EMV L2 Contactless' && x.scheme === 'Mastercard');
+  const soon = new Date(Date.now() + 60 * 864e5).toISOString().slice(0, 10);
+  api.saveRecord(mc.id, { expiry_date: soon, kernel_version: '100100' });
+  const act = api.analysis().actions.find((a) => a.recordIds && a.recordIds.includes(mc.id) && a.kind === 'renewal');
+  assert.match(act.why, /Renew on Mastercard kernel 100100/);
 });

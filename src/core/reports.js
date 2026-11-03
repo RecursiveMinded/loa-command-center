@@ -181,24 +181,27 @@ const CR_COLS = [
   ['Change ID', 'ticket', 10], ['Platform', 'platform', 10], ['Website Section', 'section', 20], ['Device / Model', 'device', 18],
   ['Level', 'level', 10], ['Card Brand / Type', 'brand', 18], ['Action', 'action', 22], ['Current Website Value', 'published', 20],
   ['Requested New Value', 'requested', 30], ['Restricted?', 'restricted', 11], ['Web Status', 'status', 12], ['Additional Comment', 'comment', 44],
+  ['LOA Kernel', 'loaKernel', 14], ['Bundle Kernel', 'bundleKernel', 14], ['LOA on file', 'evidence', 34],
 ];
 
 /** The change request workbook: one master sheet plus one per platform. */
-async function exportChangeRequest(rows, { title = 'Website Change Request' } = {}) {
+async function exportChangeRequest(rows, { title = 'Website Change Request', held = [] } = {}) {
   const ExcelJS = require('exceljs');
   const wb = new ExcelJS.Workbook();
   wb.creator = 'LOA Command Center';
   wb.created = new Date();
-  const sheet = (name, list) => {
+  const sheet = (name, list, cols = CR_COLS) => {
     const ws = wb.addWorksheet(name.slice(0, 31), { views: [{ state: 'frozen', ySplit: 1 }] });
-    ws.columns = CR_COLS.map(([header, key, width]) => ({ header, key, width }));
+    ws.columns = cols.map(([header, key, width]) => ({ header, key, width }));
     for (const r of list) ws.addRow(r);
     ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
     ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF142F4C' } };
-    ws.autoFilter = { from: 'A1', to: { row: 1, column: CR_COLS.length } };
+    ws.autoFilter = { from: 'A1', to: { row: 1, column: cols.length } };
   };
   sheet(`Master ${title.includes('Change') ? 'Change Request' : title} (All)`, rows);
   for (const p of [...new Set(rows.map((r) => r.platform || 'No platform'))].sort()) sheet(p, rows.filter((r) => (r.platform || 'No platform') === p));
+  // Not sent: the website would reject these. Kept for your own follow-up.
+  if (held.length) sheet('Held back (not sent)', held, [['Why held back', 'reason', 60], ...CR_COLS.filter(([, k]) => k !== 'ticket')]);
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
 

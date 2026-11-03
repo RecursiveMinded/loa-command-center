@@ -155,13 +155,14 @@ function bundleCheck(pageRows, records, { norm = defaultNorm } = {}) {
   return out;
 }
 
-// Kernel numbers are written many ways: 2.03, 0203, 02.03, 2.0.3. Compare the digits,
-// ignoring leading and trailing zeros; any number on one side matching any on the other is a match.
-const kernelIds = (v) => String(v || '').split(/[\s,;/]+/).map((t) => t.replace(/[^0-9]/g, '').replace(/^0+/, '').replace(/0+$/, '')).filter((t) => t.length >= 2);
+// Kernel numbers are written many ways: 2.03, 0203, 02.03, v04.04, T3.EMV.C4-08.00.00. Each dotted
+// number becomes its digits without leading zeros; any number on one side matching any on the other is a match.
+const kernelIds = (v) => (String(v || '').match(/\d+(?:\.\d+)*/g) || []).map((t) => t.replace(/\./g, '').replace(/^0+/, '')).filter((t) => t.length >= 2);
 function kernelMatches(a, b) {
   const x = kernelIds(a), y = kernelIds(b);
   if (!x.length || !y.length) return true; // cannot tell: not a mismatch
-  return x.some((t) => y.includes(t));
+  const short = (t) => t.replace(/0+$/, '');
+  return x.some((t) => y.includes(t) || (short(t) && y.some((u) => short(u) === short(t))));
 }
 
 /**
@@ -185,7 +186,15 @@ function kernelMismatch(pages, r, kernel = r.kernel_version) {
   if (!kernel) return null;
   const k = bundleKernel(pages, r);
   if (!k || kernelMatches(kernel, k.ids)) return null;
-  return { kernel, expected: k.kernel, platform: k.page.platform, bundle: k.page.bundle };
+  // Older bundles of a platform run older kernels: name the one this LOA's kernel fits, if its page was read.
+  const plat = bundleKey(r.platform, '').split('|')[0];
+  const fits = Object.entries(pages || {}).filter(([key, p]) => key.split('|')[0] === plat && p !== k.page
+    && (() => { const o = bundleKernel({ [key]: p }, { ...r, platform: p.platform, bundle: p.bundle }); return o && kernelMatches(kernel, o.ids); })())
+    .map(([, p]) => p.bundle).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  return { kernel, expected: k.kernel, platform: k.page.platform, bundle: k.page.bundle, fits: fits.join(', ') };
 }
 
-module.exports = { bundleKey, cellOf, layout, bundleCheck, pciVersion, kernelMatches, bundleKernel, kernelMismatch };
+/** "It fits Kernel Bundle 3", for messages about a wrong-kernel LOA. */
+const fitsNote = (km) => (km && km.fits ? ` Its kernel matches ${km.platform} ${km.fits}: the date belongs on ${km.fits.includes(',') ? 'those bundles\' pages' : 'that bundle\'s page'}.` : '');
+
+module.exports = { bundleKey, cellOf, layout, bundleCheck, pciVersion, kernelMatches, bundleKernel, kernelMismatch, fitsNote };
