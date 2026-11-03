@@ -44,10 +44,11 @@ export function Reports({ app, params }) {
 
 function PortalChanges({ app }) {
   const [rows, reload] = useLoad(() => call('portalChanges'), [app.version]);
+  const [held] = useLoad(() => call('heldChanges'), [app.version]);
   const [busy, setBusy] = useState(false);
   if (!rows) return html`<${Spinner} />`;
-  const cols = ['Change ID', 'Platform', 'Website Section', 'Device / Model', 'Level', 'Card Brand / Type', 'Action', 'Current Website Value', 'Requested New Value', 'Restricted?', 'Web Status', 'Additional Comment'];
-  const text = () => [cols.join('\t'), ...rows.map((r) => [r.ticket, r.platform, r.section, r.device, r.level, r.brand, r.action, r.published, r.requested, r.restricted, r.status, r.comment].join('\t'))].join('\n');
+  const cols = ['Change ID', 'Platform', 'Website Section', 'Device / Model', 'Level', 'Card Brand / Type', 'Action', 'Current Website Value', 'Requested New Value', 'Restricted?', 'Web Status', 'Additional Comment', 'LOA Kernel', 'Bundle Kernel', 'LOA on file'];
+  const text = () => [cols.join('\t'), ...rows.map((r) => [r.ticket, r.platform, r.section, r.device, r.level, r.brand, r.action, r.published, r.requested, r.restricted, r.status, r.comment, r.loaKernel, r.bundleKernel, r.evidence].join('\t'))].join('\n');
   const copy = async () => { try { await navigator.clipboard.writeText(text()); toast('Copied. Paste into your change request or spreadsheet.', 'ok'); } catch (e) { toastError(e); } };
   const download = async (markRequested) => {
     setBusy(true);
@@ -73,14 +74,18 @@ function PortalChanges({ app }) {
   };
   return html`<div>
     <p class="muted">What your website shows versus your verified LOAs, in the format engineering gets. Expired dates, changed dates, and rows flagged "Change Needed" are listed. Import the portal page in compare mode (Settings → Data) to refresh what the website shows.</p>
+    ${held && held.length ? html`<div class="callout bad held"><div><b>${plural(held.length, 'change')} held back: the website would reject ${held.length === 1 ? 'it' : 'them'}</b>
+      <div class="small muted">An LOA only renews a website date when it covers the device and the kernel the bundle runs. Fix these before they go in a request.</div>
+      <ul class="small">${held.map((r) => html`<li><a onClick=${() => app.openRecord(r.id)}><b>${r.device}</b> ${r.brand} ${r.level}</a>: ${r.reason}</li>`)}</ul></div></div>` : null}
     ${!rows.length ? html`<div class="card"><div class="empty"><${Icon} name="check" /><h3>Website is in sync</h3><div>No published dates differ from your verified dates.</div></div></div>` : html`
     <div class="row wrap" style="margin-bottom:10px"><b>${plural(rows.length, 'change')}</b><span class="grow"></span>
       <button class="btn primary" disabled=${busy} onClick=${() => download(true)} title="Assign change IDs (CR-001…) and mark the rows as requested"><${Icon} name="download" /> Create change request</button>
       <button class="btn" disabled=${busy} onClick=${() => download(false)}>Preview in Excel</button>
       <button class="btn" onClick=${copy}>Copy as table</button>
       <button class="btn ghost" onClick=${published} title="After engineering updates the website">Mark requested rows published</button></div>
-    <div class="table-wrap"><table class="t"><thead><tr><th>ID</th><th>Platform</th><th>Section</th><th>Device</th><th>Brand / type</th><th>Action</th><th>Website now</th><th>Requested</th><th>Status</th></tr></thead>
+    <div class="table-wrap"><table class="t"><thead><tr><th>ID</th><th>Platform</th><th>Section</th><th>Device</th><th>Brand / type</th><th title="LOA kernel / kernel the bundle runs">Kernel</th><th>Action</th><th>Website now</th><th>Requested</th><th>Status</th></tr></thead>
       <tbody>${rows.map((r) => html`<tr><td class="small nowrap">${r.ticket || '—'}</td><td class="small">${r.platform}</td><td class="small">${r.section}</td><td class="dev"><a onClick=${() => app.openRecord(r.id)}>${r.device}</a></td><td>${r.brand}</td>
+        <td class="small nowrap">${r.loaKernel || r.bundleKernel ? html`${r.loaKernel || '—'}${r.bundleKernel ? html` <span class="faint">/ ${r.bundleKernel}</span>` : null}` : ''}</td>
         <td class="small nowrap"><span class=${`pill ${r.action === 'Update date' ? 'info' : r.action === 'Add date' ? 'good' : 'warning'}`}>${r.action}</span></td>
         <td class="nowrap"><s class="faint">${/^\d{4}-/.test(r.published) ? fmtDate(r.published) : r.published}</s></td><td class="nowrap"><b>${/^\d{4}-/.test(r.requested) ? fmtDate(r.requested) : r.requested}</b></td><td class="small">${r.status}</td></tr>`)}</tbody></table></div>`}
   </div>`;

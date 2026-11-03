@@ -155,13 +155,14 @@ function bundleCheck(pageRows, records, { norm = defaultNorm } = {}) {
   return out;
 }
 
-// Kernel numbers are written many ways: 2.03, 0203, 02.03, 2.0.3. Compare the digits,
-// ignoring leading and trailing zeros; any number on one side matching any on the other is a match.
-const kernelIds = (v) => String(v || '').split(/[\s,;/]+/).map((t) => t.replace(/[^0-9]/g, '').replace(/^0+/, '').replace(/0+$/, '')).filter((t) => t.length >= 2);
+// Kernel numbers are written many ways: 2.03, 0203, 02.03, v04.04, T3.EMV.C4-08.00.00. Each dotted
+// number becomes its digits without leading zeros; any number on one side matching any on the other is a match.
+const kernelIds = (v) => (String(v || '').match(/\d+(?:\.\d+)*/g) || []).map((t) => t.replace(/\./g, '').replace(/^0+/, '')).filter((t) => t.length >= 2);
 function kernelMatches(a, b) {
   const x = kernelIds(a), y = kernelIds(b);
   if (!x.length || !y.length) return true; // cannot tell: not a mismatch
-  return x.some((t) => y.includes(t));
+  const short = (t) => t.replace(/0+$/, '');
+  return x.some((t) => y.includes(t) || (short(t) && y.some((u) => short(u) === short(t))));
 }
 
 /**

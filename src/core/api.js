@@ -388,7 +388,9 @@ class AppApi {
       for (const x of check.recordNewer) diff[x.record.id] = { kind: 'recordNewer', page: x.page.expiry_date };
       for (const r of check.extra) diff[r.id] = { kind: 'extra' };
     }
-    const cell = (r) => (r ? { id: r.id, expiry_date: r.expiry_date, health: r.health, days: r.days, approval_number: r.approval_number, eol: r.eol || '', kernel_version: r.kernel_version || '', doc_count: r.doc_count, diff: diff[r.id] || null } : null);
+    const { kernelMismatch } = require('./bundles');
+    const pages = this.store.getSettings().bundlePages;
+    const cell = (r) => (r ? { id: r.id, wrongKernel: kernelMismatch(pages, r), expiry_date: r.expiry_date, health: r.health, days: r.days, approval_number: r.approval_number, eol: r.eol || '', kernel_version: r.kernel_version || '', doc_count: r.doc_count, diff: diff[r.id] || null } : null);
     const rows = (list) => list.map((row) => ({ row: row.row, device: row.device, version: row.version, cells: Object.fromEntries(Object.entries(row.cells).map(([k, r]) => [k, cell(r)])) }));
     const sections = Object.fromEntries(Object.entries(view.sections).map(([k, v]) => [k, rows(v)]));
     // Dates on the page that the register does not have yet sit in their cells, marked missing.
@@ -1119,12 +1121,44 @@ class AppApi {
     return reports.exportCsv(records);
   }
 
-  /** Website changes to request. Records for another kernel than their bundle runs are held back: the website would reject them. */
-  portalChanges() {
-    const { kernelMismatch } = require('./bundles');
-    const pages = this.store.getSettings().bundlePages;
-    return reports.portalChanges(this.store.listRecords().filter((r) => !kernelMismatch(pages, r)));
+  /**
+   * Website changes to request, each with the evidence a reviewer checks: the LOA's kernel
+   * next to the kernel the bundle runs, and the LOA file. Rows the website would reject are
+   * held back with the reason: an LOA for another kernel, or an LOA file that names another device.
+   */
+  changeRequest() {
+    const { bundleKernel, kernelMismatch } = require('./bundles');
+    const { deviceFromFilename, splitVariant } = require('./devices');
+    const pages = this.store.getSettings().bundlePages || {};
+    const norm = this.store.norm();
+    const records = this.store.listRecords();
+    const byId = new Map(records.map((r) => [r.id, r]));
+    const devices = [...new Set(records.map((r) => r.device))];
+    const rows = [], held = [];
+    for (const row of reports.portalChanges(records)) {
+      const r = byId.get(row.id);
+      const k = bundleKernel(pages, r);
+      const doc = this.store.documentsFor(r.id)[0];
+      row.loaKernel = /^EMV L2/.test(r.category) ? r.kernel_version || '' : '';
+      row.bundleKernel = k ? k.kernel : '';
+      row.evidence = doc ? doc.filename : '';
+      const km = kernelMismatch(pages, r);
+      let reason = '';
+      if (km) reason = `The LOA is for kernel ${km.kernel}; ${km.platform} ${km.bundle} runs ${km.expected}. Find the LOA for ${km.expected}.`;
+      else if (doc && /^EMV L2/.test(r.category)) {
+        // An LOA file named after another device, linked to this record alone, is usually the wrong letter.
+        const named = deviceFromFilename(doc.filename, devices, norm);
+        const links = this.db.get('SELECT COUNT(*) AS n FROM document_links WHERE document_id=?', [doc.id]).n;
+        if (named && named.known && links === 1 && splitVariant(norm(named.value)).base !== splitVariant(norm(r.device)).base) reason = `The LOA on file (${doc.filename}) names ${named.value}, not ${r.device}. Link the ${r.device} letter.`;
+      }
+      if (reason) held.push({ ...row, reason }); else rows.push(row);
+    }
+    return { rows, held };
   }
+
+  portalChanges() { return this.changeRequest().rows; }
+
+  heldChanges() { return this.changeRequest().held; }
 
   /**
    * The website change request workbook. With `markRequested`, rows get a
@@ -1132,7 +1166,8 @@ class AppApi {
    * continues the numbering and the sent rows can be tracked until published.
    */
   async exportChangeRequest({ ids, markRequested = false } = {}) {
-    let rows = this.portalChanges();
+    const cr = this.changeRequest();
+    let rows = cr.rows;
     if (ids && ids.length) { const set = new Set(ids); rows = rows.filter((r) => set.has(r.id)); }
     if (markRequested) {
       let n = Math.max(0, ...this.store.listRecords().map((r) => +(String(r.change_ticket || '').match(/^CR-(\d+)$/) || [0, 0])[1]));
@@ -1144,7 +1179,7 @@ class AppApi {
         }
       });
     }
-    return reports.exportChangeRequest(rows);
+    return reports.exportChangeRequest(rows, { held: cr.held });
   }
 
   listImports() { return this.store.imports(); }
@@ -1272,7 +1307,7 @@ const PUBLIC_METHODS = [
   'activateReplacement', 'deviceCoverage', 'deviceProfile', 'listBundles', 'bundleView', 'readBundlePage', 'bundleDifferences', 'cleanBundle', 'bundleReport', 'checkRecord', 'listReaderGroups', 'setReaderGroup', 'listFamilyNotes', 'setCoverageNA', 'createMissing', 'createSlot', 'listTags', 'knownDevices', 'listAliases', 'listLearned', 'forgetLearned', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
   'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
   'documentText', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'setEol', 'dataChecks', 'aiDataReview', 'briefingReport', 'exportL3Sheet', 'duplicateInfo', 'mapDuplicate', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
-  'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
+  'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'heldChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
   'aiDraftEmail', 'backup', 'listBackups', 'restore', 'health',
 ];
 
