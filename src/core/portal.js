@@ -32,7 +32,7 @@ function classifyHeader(cells) {
 const ID = Symbol('kernel ids');
 function kernelTable(t) {
   const out = {};
-  const head = t.match(/Specification\s+(Card\s+Version\s+Kernel\s+Version|Kernel\s+Version\s+App\s+Version)/i);
+  const head = t.match(/Specification\s+(Card\s+Version\s+Kernel\s+Version|Kernel\s+Version\s+App\s+Version|Kernel(?:\s+Version)?\b)/i);
   if (!head) return out;
   const kernelLast = /^Card/i.test(head[1]);
   const lines = t.slice(head.index + head[0].length).split(/\n/).slice(0, 40);
