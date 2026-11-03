@@ -5,7 +5,7 @@
 // The optional local LLM only rephrases and answers questions on top of this.
 
 const { todayIso, daysBetween, addDays, formatDate } = require('./dates');
-const { bundleKernel, kernelMismatch } = require('./bundles');
+const { bundleKernel, kernelMismatch, fitsNote } = require('./bundles');
 const { daysRemaining, effectiveStage, windowFor, health, isEol, WINDOWS } = require('./lifecycle');
 const { certHome } = require('./devices');
 
@@ -342,7 +342,8 @@ function kernelNote(r, settings = {}) {
   const k = bundleKernel(settings.bundlePages, r);
   if (!k) return '';
   const what = r.category === 'EMV L2 Contact' ? 'EMV contact kernel' : `${r.scheme} kernel`;
-  if (r.kernel_version && kernelMismatch(settings.bundlePages, r)) return ` This record's LOA is for kernel ${r.kernel_version}, but ${k.page.platform} ${k.page.bundle} runs ${what} ${k.kernel}: the renewal must cover ${k.kernel}.`;
+  const km = r.kernel_version && kernelMismatch(settings.bundlePages, r);
+  if (km) return ` This record's LOA is for kernel ${r.kernel_version}, but ${k.page.platform} ${k.page.bundle} runs ${what} ${k.kernel}: the renewal must cover ${k.kernel}.${fitsNote(km)}`;
   return ` Renew on ${what} ${k.kernel}, the one ${k.page.platform} ${k.page.bundle} runs. A renewal keeps the kernel; it is not a kernel upgrade.`;
 }
 

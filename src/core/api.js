@@ -532,7 +532,7 @@ class AppApi {
    * 'warn' asks for a second look.
    */
   checkRecord(id, patch = {}) {
-    const { bundleKey, cellOf, kernelMismatch } = require('./bundles');
+    const { bundleKey, cellOf, kernelMismatch, fitsNote } = require('./bundles');
     const { formatDate, daysBetween } = require('./dates');
     const cur = id ? this.store.getRecord(id) : null;
     const r = { ...(cur || {}), ...patch, category: taxonomy.normalizeCategory(patch.category || (cur && cur.category) || ''), scheme: taxonomy.normalizeScheme(patch.scheme || (cur && cur.scheme) || '') };
@@ -592,7 +592,7 @@ class AppApi {
     }
     // An LOA for another kernel than the bundle runs does not apply to the bundle.
     const km = (keyChanged || dateChanged) && kernelMismatch(this.store.getSettings().bundlePages, r);
-    if (km) out.push({ level: 'stop', title: `Wrong kernel: this approval is for kernel ${km.kernel}, ${km.platform} ${km.bundle} runs ${km.expected}`, detail: `${r.scheme ? `${r.scheme} ` : ''}${r.category} dates only apply to the kernel the bundle runs. Find the LOA for kernel ${km.expected}, or leave the website date as it is.` });
+    if (km) out.push({ level: 'stop', title: `Wrong kernel: this approval is for kernel ${km.kernel}, ${km.platform} ${km.bundle} runs ${km.expected}`, detail: `${r.scheme ? `${r.scheme} ` : ''}${r.category} dates only apply to the kernel the bundle runs. Find the LOA for kernel ${km.expected}, or leave the website date as it is.${fitsNote(km)}` });
     if (keyChanged && r.kernel_version && /^EMV L1/.test(r.category)) out.push({ level: 'warn', title: 'Kernel versions belong to L2 approvals', detail: 'An L1 approval covers the hardware interface, not a kernel build. Leave the kernel empty on L1 records.' });
     return out;
   }
@@ -1127,7 +1127,7 @@ class AppApi {
    * held back with the reason: an LOA for another kernel, or an LOA file that names another device.
    */
   changeRequest() {
-    const { bundleKernel, kernelMismatch } = require('./bundles');
+    const { bundleKernel, kernelMismatch, fitsNote } = require('./bundles');
     const { deviceFromFilename, splitVariant } = require('./devices');
     const pages = this.store.getSettings().bundlePages || {};
     const norm = this.store.norm();
@@ -1144,7 +1144,7 @@ class AppApi {
       row.evidence = doc ? doc.filename : '';
       const km = kernelMismatch(pages, r);
       let reason = '';
-      if (km) reason = `The LOA is for kernel ${km.kernel}; ${km.platform} ${km.bundle} runs ${km.expected}. Find the LOA for ${km.expected}.`;
+      if (km) reason = `The LOA is for kernel ${km.kernel}; ${km.platform} ${km.bundle} runs ${km.expected}. Find the LOA for ${km.expected}.${fitsNote(km)}`;
       else if (doc && /^EMV L2/.test(r.category)) {
         // An LOA file named after another device, linked to this record alone, is usually the wrong letter.
         const named = deviceFromFilename(doc.filename, devices, norm);
