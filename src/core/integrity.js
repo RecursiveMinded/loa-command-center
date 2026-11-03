@@ -30,12 +30,19 @@ function distance(a, b) {
  * Returns [{ key, severity: 'high'|'medium'|'low', title, detail, fix, recordIds }].
  * `records` are live (not archived) records.
  */
-function dataChecks(records, { norm = defaultNorm } = {}) {
+function dataChecks(records, { norm = defaultNorm, pages = {} } = {}) {
   const live = records.filter((r) => !r.archived);
   const out = [];
   const add = (key, severity, title, detail, fix, list) => {
     if (list.length) out.push({ key, severity, title: title(list.length), detail, fix, recordIds: [...new Set(list.map((r) => r.id))], examples: list.slice(0, 5).map(label) });
   };
+
+  // L2 approvals for a kernel the bundle does not run: their dates do not count for the bundle.
+  const { kernelMismatch } = require('./bundles');
+  add('kernel-mismatch', 'high', (n) => `${n} L2 approval${n === 1 ? ' is' : 's are'} for a different kernel than the bundle runs`,
+    'The bundle page lists the kernel each card brand runs. An LOA for another kernel (for example 2.02 when the bundle runs 2.03) does not renew the bundle date, and the website will reject it.',
+    'Find the LOA for the kernel the bundle runs, or move this record to the bundle that runs its kernel. These are left out of website change requests.',
+    live.filter((r) => kernelMismatch(pages, r)));
 
   // Dates that cannot be right.
   add('dates-order', 'high', (n) => `${n} record${n === 1 ? ' expires' : 's expire'} before ${n === 1 ? 'it was' : 'they were'} issued`,

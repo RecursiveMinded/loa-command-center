@@ -443,7 +443,7 @@ class AppApi {
     const g = this.bundleGroups().get(key);
     const rows = parsed.records.map((r) => ({ device: r.device, category: r.category, scheme: r.scheme, kernel_version: r.kernel_version || '', expiry_date: r.expiry_date || null }));
     const pages = { ...(this.store.getSettings().bundlePages || {}) };
-    pages[key] = { filename, at: new Date().toISOString(), platform: g ? g.platform : ctx.platform, bundle: g ? g.bundle : ctx.bundle, ctx: { l2Contact: ctx.l2Contact || null, kernels: ctx.kernels || {} }, rows };
+    pages[key] = { filename, at: new Date().toISOString(), platform: g ? g.platform : ctx.platform, bundle: g ? g.bundle : ctx.bundle, ctx: { l2Contact: ctx.l2Contact || null, kernels: { ...(ctx.kernels || {}) }, kernelIds: ctx.kernelIds || {} }, rows };
     this.store.setSettings({ bundlePages: pages });
     const check = bundleCheck(rows, g ? g.records : [], { norm: this.store.norm() });
     return { key, filename: pages[key].filename, platform: pages[key].platform, bundle: pages[key].bundle, ...summarizeCheck(check), details: checkDetails(check) };
@@ -530,7 +530,7 @@ class AppApi {
    * 'warn' asks for a second look.
    */
   checkRecord(id, patch = {}) {
-    const { bundleKey, cellOf } = require('./bundles');
+    const { bundleKey, cellOf, kernelMismatch } = require('./bundles');
     const { formatDate, daysBetween } = require('./dates');
     const cur = id ? this.store.getRecord(id) : null;
     const r = { ...(cur || {}), ...patch, category: taxonomy.normalizeCategory(patch.category || (cur && cur.category) || ''), scheme: taxonomy.normalizeScheme(patch.scheme || (cur && cur.scheme) || '') };
@@ -588,6 +588,9 @@ class AppApi {
         out.push({ level: 'warn', title: near ? `New device name. Did you mean ${near}?` : `${r.device} is a new device name`, detail: near ? 'Names one letter apart are usually the same device.' : `No other record uses this name${r.platform ? ` in ${r.platform}` : ''}.` });
       }
     }
+    // An LOA for another kernel than the bundle runs does not apply to the bundle.
+    const km = (keyChanged || dateChanged) && kernelMismatch(this.store.getSettings().bundlePages, r);
+    if (km) out.push({ level: 'stop', title: `Wrong kernel: this approval is for kernel ${km.kernel}, ${km.platform} ${km.bundle} runs ${km.expected}`, detail: `${r.scheme ? `${r.scheme} ` : ''}${r.category} dates only apply to the kernel the bundle runs. Find the LOA for kernel ${km.expected}, or leave the website date as it is.` });
     if (keyChanged && r.kernel_version && /^EMV L1/.test(r.category)) out.push({ level: 'warn', title: 'Kernel versions belong to L2 approvals', detail: 'An L1 approval covers the hardware interface, not a kernel build. Leave the kernel empty on L1 records.' });
     return out;
   }
@@ -1116,7 +1119,12 @@ class AppApi {
     return reports.exportCsv(records);
   }
 
-  portalChanges() { return reports.portalChanges(this.store.listRecords()); }
+  /** Website changes to request. Records for another kernel than their bundle runs are held back: the website would reject them. */
+  portalChanges() {
+    const { kernelMismatch } = require('./bundles');
+    const pages = this.store.getSettings().bundlePages;
+    return reports.portalChanges(this.store.listRecords().filter((r) => !kernelMismatch(pages, r)));
+  }
 
   /**
    * The website change request workbook. With `markRequested`, rows get a
@@ -1156,7 +1164,7 @@ class AppApi {
   aiAsk(question) { return this.ai.ask(question, this.analysis(), this.store.listRecords()); }
 
   /** Data integrity spot checks (dates, conflicting approval numbers, typos, missing foundations...). */
-  dataChecks() { return require('./integrity').dataChecks(this.listRecords(), { norm: this.store.norm() }); }
+  dataChecks() { return require('./integrity').dataChecks(this.listRecords(), { norm: this.store.norm(), pages: this.store.getSettings().bundlePages }); }
 
   /** The data checks with clean-up recommendations from the local AI when it is on. */
   async aiDataReview() {
