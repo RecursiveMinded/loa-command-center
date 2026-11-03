@@ -37,7 +37,7 @@ export function RecordDrawer({ id, app, onClose, tab: startTab }) {
   const [guards, setGuards] = useState(null);
   const save = async (force = false) => {
     if (!form.device.trim()) return toast('Device is required', 'err');
-    if (!form.scheme.trim()) return toast('Brand is required', 'err');
+    if (!form.scheme.trim()) return toast(form.category === 'EMV L2 Contactless' ? 'Pick the card brand' : 'Who issued it is required', 'err');
     setBusy(true);
     try {
       const patch = { ...form };
@@ -118,15 +118,14 @@ export function RecordDrawer({ id, app, onClose, tab: startTab }) {
       <${Icon} name="file" /><span class="grow"><b>Latest LOA</b> <a href="#" class="dev" onClick=${(e) => { e.preventDefault(); openDoc(data.documents[0]); }}>${data.documents[0].filename}</a>
         <span class="faint small"> · added ${fmtWhen(data.documents[0].uploaded_at)}${data.documents.length > 1 ? html` · <a href="#" onClick=${(e) => { e.preventDefault(); setTab('documents'); }}>all ${data.documents.length} LOAs</a>` : null}</span></span>
       <${DocButtons} d=${data.documents[0]} /></div>` : null}
-    ${tab === 'details' && profile ? html`<${ProfileStrip} p=${profile} onOpen=${() => setTab('device')} />` : null}
+    ${tab === 'details' && profile ? html`<${ProfileStrip} p=${profile} onOpen=${() => app.openDevice({ device: r.device, platform: r.platform || '', bundle: r.bundle || '' })} />` : null}
     ${tab === 'device' && profile ? html`<${DeviceCerts} p=${profile} current=${id} app=${app} reload=${loadProfile} />` : null}
     ${tab === 'details' ? html`
       <div class="section-title">Certification</div>
-      <div class="grid3">
-        ${F('device', 'Device *')}
-        <label class="field">Brand *<input list="brand-list" value=${form.scheme} onInput=${set('scheme')} /><datalist id="brand-list">${tax.schemes.map((s) => html`<option value=${s} />`)}</datalist></label>
-        <label class="field">Approval type<${Select} value=${form.category} onChange=${set('category')} options=${tax.categories} /></label>
-        ${F('platform', 'Platform')}${F('bundle', 'Bundle')}${F('kernel_version', 'Kernel / version')}
+      <${TypePicker} form=${form} setForm=${setForm} schemes=${tax.schemes} />
+      <div class="grid3 mt">
+        ${F('device', 'Device *')}${F('platform', 'Platform')}${F('bundle', 'Bundle')}
+        ${versionLabel(form) ? F('kernel_version', versionLabel(form)) : null}
         ${F('approval_number', 'Approval number')}${F('family', 'Family / model group')}${F('expiry_basis', 'Expiry basis')}
         ${F('issue_date', 'Issued', 'date')}${F('expiry_date', 'Expires', 'date')}
         <label class="field">Days left<input type="text" disabled value=${r ? daysLabel(r.days) : ''} /></label>
@@ -212,7 +211,7 @@ function ProfileStrip({ p, onOpen }) {
   const expired = p.sections.reduce((n, s) => n + s.rows.filter((r) => r.record && r.record.health === 'expired').length, 0);
   return html`<div class="loa-strip"><${Icon} name="shield" /><span class="grow"><b>${p.sections.map((s) => s.device).join(', ')}</b>
     <span class="faint small"> · ${total} certification${total === 1 ? '' : 's'}${expired ? ` · ${expired} expired` : ''}${miss ? html` · <span class="bad-text">${miss} missing</span>` : ''}</span></span>
-    <button class="btn sm" onClick=${onOpen}>View all certifications</button></div>`;
+    <button class="btn sm" onClick=${onOpen}>Open device</button></div>`;
 }
 
 /**
@@ -220,7 +219,7 @@ function ProfileStrip({ p, onOpen }) {
  * and each contactless reader in it (L1 Contactless, TQM, L2 per brand),
  * each with its own approval number, dates and LOA.
  */
-function DeviceCerts({ p, current, app, reload }) {
+export function DeviceCerts({ p, current, app, reload }) {
   const add = async (sec, row) => {
     try {
       const rid = await call('createSlot', { device: sec.device, platform: p.platform, bundle: p.bundle, slot: row.slot });
@@ -236,24 +235,25 @@ function DeviceCerts({ p, current, app, reload }) {
   };
   return html`<p class="muted small">Each certification has its own approval number, dates and LOA. Click one to open it, or add a missing one.${p.platform || p.bundle ? ` Showing ${[p.platform, p.bundle].filter(Boolean).join(' · ')}.` : ''}</p>
     ${p.sections.map((sec) => html`<div class="section-title">${sec.label || sec.device} <span class="faint">${sec.reader ? `Hardware version ${sec.version}` : 'Shared by all versions'}</span>${sec.replacedBy ? html` <span class="tag" title="A newer hardware version exists">Replaced by ${sec.replacedBy}</span>` : null}</div>
-      <table class="t compact certs"><thead><tr><th>Certification</th><th>Approval no.</th><th>Issued</th><th>Expires</th><th>Status</th><th class="num">LOAs</th><th></th></tr></thead><tbody>
+      <div class="table-wrap"><table class="t compact certs"><thead><tr><th>Certification</th><th>Approval no.</th><th>Kernel / version</th><th>Issued</th><th>Expires</th><th>Status</th><th class="num">LOAs</th><th></th></tr></thead><tbody>
       ${sec.rows.map((row) => {
         const r = row.record;
         if (!r) {
-          return html`<tr class=${row.status === 'na' ? 'faint' : 'missing'}><td>${row.label}</td><td colspan="5">${row.status === 'na' ? 'Not applicable' : html`<span class="bad-text">Missing</span>`}</td>
+          return html`<tr class=${row.status === 'na' ? 'faint' : 'missing'}><td>${row.label}</td><td colspan="6">${row.status === 'na' ? 'Not applicable' : html`<span class="bad-text">Missing</span>`}</td>
             <td class="nowrap">${row.status === 'na' ? html`<button class="btn sm ghost" onClick=${() => na(sec, row, false)}>Require</button>`
               : html`<button class="btn sm" onClick=${() => add(sec, row)}><${Icon} name="plus" /> Add</button> <button class="btn sm ghost" onClick=${() => na(sec, row, true)} title="Not needed (waiver or no reader)">N/A</button>`}</td></tr>`;
         }
         return html`<tr class=${`click ${r.id === current ? 'sel' : ''}`} onClick=${() => r.id !== current && app.openRecord(r.id)}>
-          <td>${row.label}${r.kernel_version && r.category === 'PCI PTS' ? html` <span class="faint">${r.kernel_version}</span>` : null}${r.sharedFrom ? html` <span class="tag" title=${`Certified by the ${r.sharedFrom} LOA, which covers this device too`}>via ${r.sharedFrom}</span>` : null}</td>
+          <td>${row.label}${r.sharedFrom ? html` <span class="tag" title=${`Certified by the ${r.sharedFrom} LOA, which covers this device too`}>via ${r.sharedFrom}</span>` : null}</td>
           <td class="small ellipsis" style="max-width:180px" title=${r.approval_number}>${r.approval_number || html`<span class="faint">—</span>`}</td>
+          <td class="small nowrap">${r.kernel_version || html`<span class="faint">—</span>`}</td>
           <td class="small nowrap">${fmtDate(r.issue_date) || html`<span class="faint">—</span>`}</td>
           <td class="small nowrap">${fmtDate(r.expiry_date) || html`<span class="faint">—</span>`}</td>
           <td><${HealthPill} r=${r} /></td>
           <td class="num">${r.doc_count || html`<span class="faint">—</span>`}</td>
           <td class="nowrap" onClick=${(e) => e.stopPropagation()}><button class="btn sm ghost" onClick=${() => app.openRecord(r.id, 'documents')} title="Open its LOAs or add one"><${Icon} name="file" /> LOA</button>
             <button class="btn sm ghost" onClick=${() => eol(r, sec)} title=${r.eol ? `End of life: ${r.eol}. Click to track it again.` : 'Not renewing: accept this expiration'}>${r.eol ? 'Undo EOL' : 'EOL'}</button></td></tr>`;
-      })}</tbody></table>`)}`;
+      })}</tbody></table></div>`)}`;
 }
 
 /**
@@ -308,6 +308,47 @@ function CoversField({ value, device, onChange }) {
         <option value="">Use a device family…</option>${Object.entries(groups).map(([k, v]) => html`<option value=${k}>${k} (${v.join(', ')})</option>`)}</select>` : null}
       <button class="btn sm ghost" onClick=${saveGroup} title="Save this device list to reuse on other LOAs">Save as device family</button>
     </div>`;
+}
+
+// What an LOA certifies, asked the way the website groups it: PCI, EMV Level 1
+// (contact or contactless reader), EMV Level 2 (the contact kernel, or a card
+// brand's contactless kernel) and TQM. The approval type and the brand follow.
+const KINDS = [['pci', 'PCI PTS'], ['l1', 'EMV Level 1'], ['l2', 'EMV Level 2'], ['tqm', 'TQM'], ['other', 'Other']];
+const BRANDS = ['Visa', 'Mastercard', 'Amex', 'Discover', 'UnionPay', 'JCB', 'Interac'];
+const kindOf = (c) => (c === 'PCI PTS' ? 'pci' : /^EMV L1/.test(c) ? 'l1' : /^EMV L2/.test(c) ? 'l2' : c === 'TQM' ? 'tqm' : 'other');
+const isCless = (f) => (f.category === 'TQM' ? /pcd|contactless/i.test(f.kernel_version || '') : /Contactless/.test(f.category));
+const versionLabel = (f) => ({ pci: 'PTS version (e.g. v6)', l2: 'Kernel version', other: 'Kernel / version' })[kindOf(f.category)] || '';
+
+function TypePicker({ form, setForm, schemes }) {
+  const kind = kindOf(form.category);
+  const cless = isCless(form);
+  const pick = (k, cl = cless) => {
+    const next = { ...form };
+    if (k === 'pci') Object.assign(next, { category: 'PCI PTS', scheme: 'PCI SSC' });
+    else if (k === 'l1') Object.assign(next, { category: cl ? 'EMV L1 Contactless' : 'EMV L1 Contact', scheme: 'EMVCo', kernel_version: '' });
+    else if (k === 'l2') Object.assign(next, { category: cl ? 'EMV L2 Contactless' : 'EMV L2 Contact', scheme: cl ? (BRANDS.includes(form.scheme) ? form.scheme : '') : 'EMVCo' });
+    else if (k === 'tqm') Object.assign(next, { category: 'TQM', scheme: 'Mastercard TQM', kernel_version: cl ? 'Contactless (PCD)' : 'Contact (IFM)' });
+    else Object.assign(next, { category: ['Letter of Equivalency', 'Other'].includes(form.category) ? form.category : 'Other' });
+    setForm(next);
+  };
+  const iface = kind === 'l1' || kind === 'l2' || kind === 'tqm';
+  return html`<div class="typepick">
+    <div class="field">What does this LOA certify?
+      <div class="seg" role="group" aria-label="Approval type">${KINDS.map(([k, l]) => html`<button type="button" class=${kind === k ? 'on' : ''} onClick=${() => pick(k)}>${l}</button>`)}</div></div>
+    ${iface ? html`<div class="field">Interface
+      <div class="seg" role="group" aria-label="Interface"><button type="button" class=${!cless ? 'on' : ''} onClick=${() => pick(kind, false)}>Contact</button><button type="button" class=${cless ? 'on' : ''} onClick=${() => pick(kind, true)}>Contactless</button></div></div>` : null}
+    ${kind === 'l2' && cless ? html`<div class="field">Card brand *
+      <div class="seg" role="group" aria-label="Card brand">${BRANDS.map((b) => html`<button type="button" class=${form.scheme === b ? 'on' : ''} onClick=${() => setForm({ ...form, scheme: b })}>${b}</button>`)}</div></div>` : null}
+    ${kind === 'other' ? html`<label class="field">Type<${Select} value=${form.category} onChange=${(v) => setForm({ ...form, category: v && v.target ? v.target.value : v })} options=${['Letter of Equivalency', 'Other']} /></label>
+      <label class="field">Issued by *<input list="brand-list" value=${form.scheme} onInput=${(e) => setForm({ ...form, scheme: e.target.value })} /><datalist id="brand-list">${schemes.map((x) => html`<option value=${x} />`)}</datalist></label>` : null}
+    <div class="faint small typehint">${{
+      pci: 'PCI PTS approval of the device, shared by all its hardware versions. Issued by PCI SSC.',
+      l1: cless ? 'EMVCo Level 1 for the contactless reader of this hardware version (CL1, CL2…).' : 'EMVCo Level 1 for the contact interface, shared by all hardware versions.',
+      l2: cless ? 'A card brand\'s Level 2 approval for its contactless kernel on this hardware version. Each brand has its own approval and expiry.' : 'The EMV contact kernel: one EMVCo approval for the whole bundle.',
+      tqm: 'Mastercard TQM for the contact (IFM) or contactless (PCD) interface.',
+      other: 'Letters of equivalency and anything else.',
+    }[kind]}</div>
+  </div>`;
 }
 
 /** "Before you save": what the checks found, with the way out of each. */

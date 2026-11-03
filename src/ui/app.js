@@ -13,6 +13,7 @@ import { Settings } from './views/settings.js';
 import { Archive } from './views/archive.js';
 import { Devices } from './views/devices.js';
 import { RecordDrawer } from './views/record.js';
+import { DeviceDrawer } from './views/device.js';
 import { Assistant } from './views/assistant.js';
 import { selfTest } from './selftest.js';
 import { useUpdate, installUpdate, checkForUpdates } from './update.js';
@@ -44,6 +45,7 @@ function App() {
   const [counts, setCounts] = useState({ inbox: 0, critical: 0 });
   const [record, setRecord] = useState(undefined); // undefined closed, null new, id open
   const [recordTab, setRecordTab] = useState(null);
+  const [device, setDevice] = useState(null); // { device, platform, bundle } of the open device page
   const [report, setReport] = useState(null);
   const [ai, setAi] = useState(false);
   const [search, setSearch] = useState('');
@@ -115,7 +117,8 @@ function App() {
   const app = {
     version, refresh, refreshCounts, counts, go, info: boot.info, settings: boot.settings,
     setSettings: (s) => { setBoot({ ...boot, settings: s }); refresh(); },
-    openRecord: (id, tab) => { setRecordTab(tab || null); setRecord(id); }, openReport: (opts) => setReport(opts && !(opts instanceof Event) ? opts : {}),
+    openRecord: (id, tab) => { setRecordTab(tab || null); setRecord(id); },
+    openDevice: (d) => { setRecord(undefined); setDevice(d); }, openReport: (opts) => setReport(opts && !(opts instanceof Event) ? opts : {}),
     openAi: () => setAi(true), search, setSearch,
   };
   const View = { dashboard: Dashboard, plan: Plan, register: Register, devices: Devices, bundles: Bundles, matrix: Bundles, inbox: Inbox, reports: Reports, archive: Archive, settings: Settings }[route.name] || Dashboard;
@@ -146,6 +149,7 @@ function App() {
         <button class="btn sm primary" onClick=${() => installUpdate().catch(toastError)}>Restart to update</button></div>` : null}
       <div class="content"><${View} app=${app} params=${route.params} key=${route.name} /></div>
     </main>
+    ${device && record === undefined ? html`<${DeviceDrawer} key=${`${device.device}|${device.platform}|${device.bundle}`} dev=${device} app=${app} onClose=${() => setDevice(null)} />` : null}
     ${record !== undefined ? html`<${RecordDrawer} key=${`${record || 'new'}-${recordTab || ''}`} id=${record} tab=${recordTab} app=${app} onClose=${() => setRecord(undefined)} />` : null}
     ${report ? html`<${ReportModal} opts=${report} onClose=${() => setReport(null)} />` : null}
     ${ai ? html`<${Assistant} app=${app} onClose=${() => setAi(false)} />` : null}
