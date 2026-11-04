@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'preact/hooks';
-import { html, Icon, fmtDate, fmtWhen, plural, useLoad, Spinner, toast, toastError, Modal, bytes, recLabel } from '../lib.js';
+import { html, Icon, fmtDate, fmtWhen, plural, useLoad, Spinner, toast, toastError, Modal, bytes, recLabel, usePersist } from '../lib.js';
 import { call } from '../api.js';
 import { subscribe, addFiles, clearFinished, filesFromDrop } from '../queue.js';
 import { DocButtons, openDoc } from '../docs.js';
@@ -15,6 +15,21 @@ const ACTION = {
   unmatched: { label: 'Choose the records it covers', cls: 'critical' },
 };
 const FIELD = { expiry_date: 'Expiry', issue_date: 'Issued', approval_number: 'Approval no.', expiry_basis: 'Expiry basis', kernel_version: 'Kernel / version', restricted: 'Restricted', stage: 'Stage', archived: 'Archived' };
+
+/** How sure a card is: the reader's confidence in the letter, then the best record match. */
+export function cardConfidence(it) {
+  const best = Math.max(0, ...(it.proposals || []).map((p) => p.score || 0));
+  return { read: (it.parsed && it.parsed.confidence) || 0, match: best };
+}
+
+/** Order inbox cards: most or least confident first, or as they arrived; optionally only those at or above a confidence. */
+export function sortCards(list, { order = 'newest', min = 0 } = {}) {
+  const out = list.filter((it) => !min || cardConfidence(it).read >= min);
+  if (order === 'newest') return out;
+  const dir = order === 'least' ? -1 : 1;
+  return out.map((it, i) => ({ it, i, c: cardConfidence(it) }))
+    .sort((a, b) => dir * (b.c.read - a.c.read) || dir * (b.c.match - a.c.match) || a.i - b.i).map((x) => x.it);
+}
 
 function isSafe(p, letter, threshold) {
   return ['update', 'attach'].includes(p.action) && !(p.warnings || []).length && !(letter.warnings || []).length && p.score >= 80 && letter.confidence >= threshold;
@@ -59,7 +74,8 @@ export function Inbox({ app, params }) {
   useEffect(() => subscribe(setQ), []);
   const threshold = app.settings.autoApproveConfidence || 90;
   const pendingList = tab === 'pending' ? items || [] : [];
-  const shown = (items || []).filter((it) => !find || cardText(it).includes(find.toLowerCase()));
+  const [view, setView] = usePersist('inboxSort', { order: 'confident', onlyHigh: false });
+  const shown = sortCards((items || []).filter((it) => !find || cardText(it).includes(find.toLowerCase())), tab === 'pending' ? { order: view.order, min: view.onlyHigh ? threshold : 0 } : {});
   const toggleSel = (id) => setSel((s0) => { const s1 = new Set(s0); if (s1.has(id)) s1.delete(id); else s1.add(id); return s1; });
   const safeCount = pendingList.filter((it) => it.proposals.length && it.proposals.every((p) => isSafe(p, it.parsed, threshold))).length;
 
@@ -126,7 +142,7 @@ export function Inbox({ app, params }) {
     ${tab === 'documents' ? html`<${Documents} docs=${docs} app=${app} reload=${reloadDocs} />`
       : !items ? html`<div class="row"><${Spinner} /> Loading…</div>`
         : !items.length ? html`<div class="card"><div class="empty"><${Icon} name="inbox" /><h3>${tab === 'pending' ? 'Nothing to review' : 'Nothing here yet'}</h3><div>${tab === 'pending' ? 'Drop LOAs above to get started.' : ''}</div></div></div>`
-          : html`${tab === 'pending' ? html`<${BulkBar} items=${shown} all=${items} sel=${sel} setSel=${setSel} find=${find} setFind=${setFind} app=${app} onDone=${() => { reload(); app.refresh(); }} />` : null}
+          : html`${tab === 'pending' ? html`<${BulkBar} items=${shown} all=${items} sel=${sel} setSel=${setSel} find=${find} setFind=${setFind} view=${view} setView=${setView} threshold=${threshold} app=${app} onDone=${() => { reload(); app.refresh(); }} />` : null}
             ${shown.map((it) => html`<${Review} key=${`${it.id}:${proposalSig(it)}:${JSON.stringify(it.parsed.recordDefaults || {})}`} it=${it} app=${app} threshold=${threshold} readOnly=${tab !== 'pending'}
               selected=${sel.has(it.id)} onSelect=${tab === 'pending' ? () => toggleSel(it.id) : null} onDone=${() => { reload(); app.refresh(); }} />`)}`}
     ${sheets.length ? html`<${SheetImport} file=${sheets[0]} app=${app} onClose=${() => setSheets((q0) => q0.slice(1))} />` : null}`;
@@ -209,7 +225,7 @@ function cardText(it) {
  * Work on many letters at once: pick them (or filter and select all), set
  * the platform/bundle for the records they create, then approve or reject.
  */
-function BulkBar({ items, all, sel, setSel, find, setFind, app, onDone }) {
+function BulkBar({ items, all, sel, setSel, find, setFind, view, setView, threshold, app, onDone }) {
   const [platform, setPlatform] = useState('');
   const [bundle, setBundle] = useState('');
   const [busy, setBusy] = useState(false);
@@ -255,6 +271,9 @@ function BulkBar({ items, all, sel, setSel, find, setFind, app, onDone }) {
       <label class="check"><input type="checkbox" checked=${allShown} onChange=${() => setSel(allShown ? new Set() : new Set([...sel, ...items.map((it) => it.id)]))} aria-label="Select all shown" />
         ${allShown ? 'Clear selection' : `Select all ${items.length}${find ? ' shown' : ''}`}</label>
       <input type="search" placeholder="Find letters: file name, device, brand, platform" value=${find} onInput=${(e) => setFind(e.target.value)} class="grow" aria-label="Find letters" />
+      <select aria-label="Sort letters" value=${view.order} onChange=${(e) => setView({ ...view, order: e.target.value })} title="Order the letters by how sure the reader is">
+        <option value="confident">Most confident first</option><option value="least">Least confident first</option><option value="newest">As they arrived</option></select>
+      <label class="check small nowrap" title=${`Show only letters read with ${threshold}% confidence or more, e.g. to select all and approve them`}><input type="checkbox" checked=${view.onlyHigh} onChange=${(e) => setView({ ...view, onlyHigh: e.target.checked })} /> ${threshold}%+ only</label>
       <b class="small nowrap">${ids.length} selected</b>
     </div>
     ${ids.length ? html`<div class="row wrap mt">

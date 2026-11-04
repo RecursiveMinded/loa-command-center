@@ -675,7 +675,28 @@ test('device coverage lists the required certifications per device', async () =>
   api.setCoverageNA(cl1.key, 'tqmcl', true);
   assert.equal(api.deviceCoverage().rows.find((r) => r.device === 'Lane/3000-CL1').cells.tqmcl.status, 'na');
   assert.equal(api.createMissing([{ device: 'Lane/3000-CL1', platform: 'UPP', bundle: 'Bundle 6', slot: 'l2:Amex' }]), 1);
-  assert.equal(api.deviceCoverage().rows.find((r) => r.device === 'Lane/3000-CL1').cells['l2:Amex'].status, 'nodate');
+  const after = api.deviceCoverage().rows.find((r) => r.device === 'Lane/3000-CL1');
+  assert.equal(after.cells['l2:Amex'].status, 'awaiting', 'an empty placeholder is not a certification');
+  assert.equal(after.missing, 5, 'a placeholder with no LOA still counts as a gap');
+});
+
+test('adding a missing certification needs its LOA and fills the record from it', async () => {
+  const { api } = await fresh();
+  const d = addDays(todayIso(), 300);
+  api.store.createRecord({ device: 'Lane/3000-CL1', category: 'EMV L1 Contactless', scheme: 'EMVCo', platform: 'UPP', bundle: 'Bundle 6', expiry_date: d });
+  const slot = { device: 'Lane/3000-CL1', platform: 'UPP', bundle: 'Bundle 6', slot: 'l2:Amex' };
+  const before = api.listRecords().length;
+  assert.throws(() => api.addCertWithLoa(slot, {}), /LOA/);
+  assert.equal(api.listRecords().length, before, 'no LOA, no record');
+  const text = 'American Express Global Network Services\nLetter of Approval\nApproval Number: AXP-77123\nProduct: Lane/3000-CL1\nEMV Level 2 Contactless (Expresspay)\nIssue Date: 2025-03-01\nExpiry Date: 2029-03-01';
+  const res = api.addCertWithLoa(slot, { filename: 'amex.txt', bytes: Buffer.from(text), pages: [text] });
+  const r = api.store.getRecord(res.id);
+  assert.equal(r.category, 'EMV L2 Contactless');
+  assert.equal(r.scheme, 'Amex');
+  assert.equal(r.doc_count, 1, 'the LOA is linked');
+  const cell = api.deviceCoverage().rows.find((x) => x.device === 'Lane/3000-CL1').cells['l2:Amex'];
+  assert.notEqual(cell.status, 'missing');
+  assert.notEqual(cell.status, 'awaiting', 'with its LOA on file it is no longer a placeholder');
 });
 
 test('one device keeps one spelling; reader variants stay separate devices', async () => {
@@ -1048,4 +1069,31 @@ test('a bundle page: every date becomes one record, and the register is checked 
   api.saveRecord(mc.id, { expiry_date: soon, kernel_version: '100100' });
   const act = api.analysis().actions.find((a) => a.recordIds && a.recordIds.includes(mc.id) && a.kind === 'renewal');
   assert.match(act.why, /Renew on Mastercard kernel 100100/);
+});
+
+test('platforms list their devices: letters, new records and blank platforms use it', async () => {
+  const { api } = await fresh();
+  api.setPlatformDevices('UPP', ['Lane/3000', 'Lane/5000', 'lane/3000']);
+  api.setPlatformDevices('Tetra', ['Desk/5000']);
+  assert.deepEqual(api.listPlatformDevices().UPP, ['Lane/3000', 'Lane/5000'], 'one spelling per device');
+  assert.equal(api.platformForDevice('Lane/3000-CL2'), 'UPP', 'a hardware version follows its device');
+  assert.equal(api.platformForDevice('Desk/5000'), 'Tetra');
+  assert.equal(api.platformForDevice('Move/5000'), '', 'unlisted device');
+  api.setPlatformDevices('Tetra', ['Desk/5000', 'Lane/5000']);
+  assert.equal(api.platformForDevice('Lane/5000'), '', 'a device on two platforms is left for you to pick');
+  // Records with no platform get the listed one.
+  const blank = api.store.createRecord({ device: 'Lane/3000-CL1', category: 'EMV L1 Contactless', scheme: 'EMVCo' });
+  api.store.createRecord({ device: 'Lane/3000', category: 'PCI PTS', scheme: 'PCI SSC', platform: 'UPP', bundle: 'Bundle 6' });
+  assert.equal(api.applyPlatformDevices().changed, 1);
+  assert.equal(api.store.getRecord(blank.id).platform, 'UPP');
+  assert.deepEqual(api.devicesOnPlatform('UPP'), ['Lane/3000']);
+  // A letter for a listed device that is not in the register yet proposes the listed platform and its bundle.
+  const { buildProposals } = require('../src/core/intake');
+  const ctx = { ...api.intake.context(), platformDevices: api.listPlatformDevices() };
+  const letter = { category: 'EMV L2 Contactless', scheme: 'Visa', products: [{ value: 'Lane/3000-CL3' }], expiryDate: { value: '2030-01-01' } };
+  const p = buildProposals(letter, api.listRecords(), ctx).find((x) => x.action === 'create');
+  assert.equal(p.record.platform, 'UPP');
+  assert.equal(p.record.bundle, 'Bundle 6');
+  api.setPlatformDevices('Tetra', []);
+  assert.equal(api.listPlatformDevices().Tetra, undefined, 'an empty list removes the platform');
 });

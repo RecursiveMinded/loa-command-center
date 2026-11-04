@@ -4,6 +4,7 @@
 import { useMemo } from 'preact/hooks';
 import { html, Icon, fmtDate, useLoad, Spinner, unique, usePersist, Select, HEALTH, daysLabel, plural, toast, toastError } from '../lib.js';
 import { call, saveAs } from '../api.js';
+import { addCertFromLoa } from './record.js';
 
 export function Devices({ app }) {
   const [cov, reload] = useLoad(() => call('deviceCoverage'), [app.version]);
@@ -18,14 +19,14 @@ export function Devices({ app }) {
 
   const done = () => { reload(); app.refresh(); };
   const create = async (items) => {
-    try { toast(`Created ${plural(await call('createMissing', items), 'record')}. Add the LOA or dates to finish them.`, 'ok'); done(); } catch (e) { toastError(e); }
+    try { toast(`Created ${plural(await call('createMissing', items), 'placeholder')}. They stay gaps until each LOA is added.`, 'ok'); done(); } catch (e) { toastError(e); }
   };
   const l3 = async () => {
     try { await saveAs(`L3 approval numbers${f.platform ? ` ${f.platform}` : ''}${f.bundle ? ` ${f.bundle}` : ''}.xlsx`, await call('exportL3Sheet', { platform: f.platform, bundle: f.bundle }), [{ name: 'Excel', extensions: ['xlsx'] }]); } catch (e) { toastError(e); }
   };
   const setNa = async (row, slot, v) => { try { await call('setCoverageNA', row.key, slot, v); reload(); } catch (e) { toastError(e); } };
   const gaps = rows.flatMap((r) => cov.columns.filter((c) => r.cells[c.key].status === 'missing').map((c) => ({ device: r.device, platform: r.platform, bundle: r.bundle, slot: c.key })));
-  const createAll = () => { if (confirm(`Create ${plural(gaps.length, 'empty record')} for the missing certifications shown? You can then add each LOA.`)) create(gaps); };
+  const createAll = () => { if (confirm(`Create ${plural(gaps.length, 'placeholder')} for the missing certifications shown? They stay marked "Needs LOA" and count as gaps until each letter is added.`)) create(gaps); };
   // Bulk create only within one platform and bundle, so it never floods the register.
   const oneGroup = new Set(rows.map((r) => r.grp)).size === 1;
   const gapsByGrp = {};
@@ -39,7 +40,7 @@ export function Devices({ app }) {
   return html`
     <div class="page-head"><div><h1>Devices</h1><p>Click a device to see everything it is certified for. What each device needs to be certified. PCI, L1 Contact and L2 Contact are held once per device and shared by all its hardware versions. Each hardware version (CL1, CL2, CL3; a name without a suffix is CL1) needs its own L1 Contactless, TQM and L2 Contactless from each brand. Certifications marked end of life are not gaps.</p></div>
       <div class="row"><button class="btn" onClick=${l3} title="Every device's L1, L2 and brand approval numbers, for acquirers' Level 3 work"><${Icon} name="download" /> L3 sheet</button>
-        ${gaps.length && oneGroup ? html`<button class="btn" onClick=${createAll} title="Creates empty records you then fill in from each LOA"><${Icon} name="plus" /> Create ${plural(gaps.length, 'missing record')}</button>` : null}</div></div>
+        ${gaps.length && oneGroup ? html`<button class="btn" onClick=${createAll} title="Creates placeholders marked Needs LOA. They stay gaps until each letter is added."><${Icon} name="plus" /> Create ${plural(gaps.length, 'placeholder')}</button>` : null}</div></div>
     <div class="filters">
       <${Select} value=${f.platform} onChange=${(v) => setF({ ...f, platform: v, bundle: '' })} placeholder="All platforms" options=${platforms} />
       <${Select} value=${f.bundle} onChange=${(v) => setF({ ...f, bundle: v })} placeholder="All bundles" options=${bundles} />
@@ -57,13 +58,16 @@ export function Devices({ app }) {
         return html`${head}<tr class=${row.reader ? 'reader' : ''}><td class="name"><div class="nm" title=${row.label || row.device}>${row.reader ? html`<span class="faint" title="Hardware version of this device">↳ </span>` : null}<a class="devlink" title="Open this device: every certification, LOA and gap" onClick=${() => app.openDevice({ device: row.device, platform: row.platform || '', bundle: row.bundle || '' })}>${row.label || row.device}</a>${row.replacedBy ? html` <span class="tag" title=${`A newer hardware version exists: ${row.replacedBy}`}>replaced by ${row.replacedBy.replace(/^.*?(CL\d+)\)?$/, '$1')}</span>` : null}${row.retired ? html` <span class="tag" title="Every certification of this device is end of life">EOL</span>` : null}${row.missing ? html` <span class="pill bad" title="Missing certifications">${row.missing}</span>` : null}</div></td>${cov.columns.map((c) => {
           const cell = row.cells[c.key];
           const r = cell.record;
+          if (r && cell.status === 'awaiting') {
+            return html`<td><span class="cell miss" title=${`${row.device} · ${c.group} ${c.label}\nA placeholder with no LOA yet. It is still a gap until the letter is added.`} onClick=${() => app.openRecord(r.id, 'documents')}>Needs LOA<small>add letter</small></span></td>`;
+          }
           if (r) {
             return html`<td><span class=${`cell ${r.health}${r.sharedFrom ? ' shared' : ''}`} title=${`${row.device} · ${c.group} ${c.label}\n${r.approval_number || ''}\nExpires ${fmtDate(r.expiry_date) || 'unknown'}${r.sharedFrom ? `\nCertified by the ${r.sharedFrom} LOA` : ''}`} onClick=${() => app.openRecord(r.id)}>
               ${r.expiry_date ? fmtDate(r.expiry_date).replace(/^(\w+) \d+, (\d+)$/, '$1 $2') : 'No date'}<small>${r.eol ? 'EOL' : r.sharedFrom ? `via ${r.sharedFrom}` : r.expiry_date ? daysLabel(r.days) : 'add LOA'}</small></span></td>`;
           }
           if (cell.status === 'missing') {
             return html`<td><span class="cell miss" title=${`${row.device} has no ${c.group} ${c.label} record`}>Missing<small>
-              <button class="linkbtn" onClick=${() => create([{ device: row.device, platform: row.platform, bundle: row.bundle, slot: c.key }])} title="Create an empty record for it">Add</button> ·
+              <button class="linkbtn" onClick=${() => addCertFromLoa(app, { device: row.device, platform: row.platform, bundle: row.bundle, slot: c.key }, `${row.label || row.device} · ${c.group} ${c.label}`, reload)} title="Choose its LOA. The certification is added from the letter.">Add LOA</button> ·
               <button class="linkbtn" onClick=${() => setNa(row, c.key, true)} title="This device does not need it (a waiver or no reader)">N/A</button></small></span></td>`;
           }
           if (cell.status === 'na') return html`<td><button class="cell na" onClick=${() => setNa(row, c.key, false)} title="Marked not applicable. Click to require it again.">N/A</button></td>`;

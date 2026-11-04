@@ -59,6 +59,9 @@ function checkDetails(c) {
   };
 }
 
+/** An empty placeholder: no LOA, no approval number and no dates. It does not count as certified. */
+const awaitingLoa = (r) => !r.doc_count && !r.expiry_date && !r.approval_number && !r.issue_date;
+
 class AppApi {
   static async create({ dataDir, actor = '' }) {
     fs.mkdirSync(dataDir, { recursive: true });
@@ -300,12 +303,12 @@ class AppApi {
         const hits = needed ? d.records.filter((r) => r.category === slot.category && (!slot.scheme || String(r.scheme).toLowerCase() === slot.scheme.toLowerCase())) : [];
         const rec = hits.reduce((b, r) => better(r, b), null);
         const isNa = retired || (na[d.key] || []).includes(slot.key);
-        const status = rec ? (rec.eol ? 'eol' : rec.expiry_date ? 'ok' : 'nodate') : isNa && needed ? 'na' : needed ? 'missing' : 'none';
-        if (status === 'missing') missing++;
+        const status = rec ? (rec.eol ? 'eol' : rec.expiry_date ? 'ok' : awaitingLoa(rec) ? 'awaiting' : 'nodate') : isNa && needed ? 'na' : needed ? 'missing' : 'none';
+        if (status === 'missing' || status === 'awaiting') missing++;
         cells[slot.key] = { status, record: rec ? { id: rec.id, expiry_date: rec.expiry_date, days: rec.days, health: rec.health, approval_number: rec.approval_number, scheme: rec.scheme, eol: rec.eol || '', category: rec.category, sharedFrom: rec.sharedFrom || '' } : null };
       }
       rows.push({ grp: d.grp, platform: d.platform, bundle: d.bundle, device: d.device, label: d.label, key: d.key, base: d.base, version: d.version,
-        reader: !!d.version, replacedBy: d.replacedBy || '', retired, missing: Object.values(cells).filter((c) => c.status === 'missing').length, cells });
+        reader: !!d.version, replacedBy: d.replacedBy || '', retired, missing: Object.values(cells).filter((c) => c.status === 'missing' || c.status === 'awaiting').length, cells });
     }
     const order = (r) => `${r.base}|${r.version ? Number(r.version.slice(2)) + 1 : 0}`;
     rows.sort((a, b) => a.grp.localeCompare(b.grp, undefined, { numeric: true }) || order(a).localeCompare(order(b), undefined, { numeric: true }));
@@ -641,7 +644,7 @@ class AppApi {
     const same = this.listRecords().filter((r) => ((r.platform || '') === g.platform && (r.bundle || '') === g.bundle) || (!r.platform && !r.bundle));
     const sum = (r) => ({ id: r.id, category: r.category, scheme: r.scheme, approval_number: r.approval_number, issue_date: r.issue_date, expiry_date: r.expiry_date,
       kernel_version: r.kernel_version, days: r.days, health: r.health, doc_count: r.doc_count, covers: r.covers || '', eol: r.eol || '', renewal_path: r.renewal_path || '', sharedFrom: r.sharedFrom || '' });
-    const st = (r) => (r.eol ? 'eol' : r.expiry_date ? 'ok' : 'nodate');
+    const st = (r) => (r.eol ? 'eol' : r.expiry_date ? 'ok' : awaitingLoa(r) ? 'awaiting' : 'nodate');
     const parts = this.deviceParts(same, () => [g]).filter((p) => p.base === base)
       .sort((a, b) => (a.version ? Number(a.version.slice(2)) : 0) - (b.version ? Number(b.version.slice(2)) : 0));
     const sections = parts.map((d) => {
@@ -704,6 +707,44 @@ class AppApi {
     return this.store.createRecord({ device, platform, bundle, category, scheme }, { source: 'manual', note: 'Created from device certifications' }).id;
   }
 
+
+  /**
+   * Add a missing certification from its LOA: the record is created only once
+   * a letter is given, and is filled from it. Without a letter nothing is made,
+   * so a device never looks certified before its LOA is on file.
+   */
+  addCertWithLoa(slotInfo, { filename, bytes, pages = [], ocrPages = 0 } = {}) {
+    const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes || []);
+    if (!buf.length && !(pages || []).some((p) => String(p).trim())) throw new Error('Choose the LOA for this certification');
+    const id = this.createSlot(slotInfo);
+    if (!id) throw new Error('Unknown certification');
+    const dup = this.checkAttach(id, { bytes: buf });
+    let documentId;
+    if (dup) {
+      documentId = dup.document.id;
+      this.linkDocumentToRecord(id, documentId);
+    } else {
+      documentId = this.attachNewDocument(id, { filename, bytes: buf, pages, ocrPages }).documentId;
+    }
+    // Dates and approval number only from a letter in the file for this exact certification.
+    const values = this.slotValues(documentId, id);
+    if (values) this.linkDocumentToRecord(id, documentId, { useValues: true, values });
+    return { id, documentId, existing: !!dup, values };
+  }
+
+  /** The approval number and dates a file gives one record, only from a letter of the record's own type and brand. */
+  slotValues(documentId, recordId) {
+    const rec = this.store.getRecord(recordId);
+    const text = this.store.documentText(documentId);
+    if (!rec || !text) return null;
+    const { parseDocument } = require('./loa-parser');
+    const same = (x) => x.category === rec.category && String(x.scheme).toLowerCase() === String(rec.scheme).toLowerCase();
+    const L = parseDocument(text.split('\n\f\n')).filter((x) => !x.informational).find(same);
+    if (!L) return null;
+    const v = (f) => (f ? f.value : null);
+    const out = { approval_number: v(L.approvalNumber) || '', issue_date: v(L.issueDate), expiry_date: v(L.expiryDate) };
+    return out.approval_number || out.expiry_date ? out : null;
+  }
 
   /** Make a replacement approval the current one (audited). */
   activateReplacement(approvalId) {
@@ -769,6 +810,63 @@ class AppApi {
   applyAlias(field, alias, value) {
     const ids = this.aliasMatches(field, alias, value).map((r) => r.id);
     return ids.length ? this.store.bulkUpdate(ids, { [field]: value }, { source: 'alias' }) : { changed: 0, skipped: [] };
+  }
+
+  /** Platforms and the devices each one runs, e.g. { UPP: ["Lane/3000", "Lane/5000"], Tetra: ["Desk/5000"] }. */
+  listPlatformDevices() { return this.store.getSettings().platformDevices || {}; }
+
+  /** Save (or with no devices remove) the device list of one platform. */
+  setPlatformDevices(platform, devices) {
+    const pf = String(platform || '').trim();
+    if (!pf) throw new Error('Name the platform first');
+    const all = { ...this.listPlatformDevices() };
+    const n = this.store.norm();
+    const seen = new Set();
+    const list = [];
+    for (const d of devices || []) {
+      const v = String(d || '').trim();
+      if (v && !seen.has(n(v))) { seen.add(n(v)); list.push(v); }
+    }
+    if (list.length) all[pf] = list; else delete all[pf];
+    this.store.setSettings({ platformDevices: all });
+    this.intake.rematch();
+    return all;
+  }
+
+  /** The platform a device is listed under, or '' when it is on none (or on more than one). */
+  platformForDevice(device) {
+    const { presetPlatform } = require('./intake');
+    return presetPlatform(device, this.listPlatformDevices(), this.store.norm());
+  }
+
+  /** Devices each platform already has in the register, to start a platform's list from. */
+  devicesOnPlatform(platform) {
+    const { splitVariant, baseDisplayName } = require('./devices');
+    const n = this.store.norm();
+    const out = new Map();
+    for (const r of this.listRecords()) {
+      if (r.platform !== platform) continue;
+      const base = splitVariant(n(r.device)).base;
+      if (!out.has(base) || n(r.device) === base) out.set(base, n(r.device) === base ? r.device : baseDisplayName(r.device));
+    }
+    return [...out.values()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  }
+
+  /** Give records with no platform the platform their device is listed under. */
+  applyPlatformDevices() {
+    const ids = {};
+    for (const r of this.listRecords()) {
+      if (r.platform) continue;
+      const pf = this.platformForDevice(r.device);
+      if (pf) (ids[pf] = ids[pf] || []).push(r.id);
+    }
+    const out = { changed: 0, skipped: [] };
+    for (const [pf, list] of Object.entries(ids)) {
+      const r = this.store.bulkUpdate(list, { platform: pf }, { source: 'platform list' });
+      out.changed += r.changed;
+      out.skipped.push(...r.skipped);
+    }
+    return out;
   }
 
   /** Apply every saved alias of a field to existing records. */
@@ -994,7 +1092,7 @@ class AppApi {
   }
 
   /** Save a new LOA file and link it to this record (it does not go through the LOA inbox). */
-  attachNewDocument(recordId, { filename, bytes, pages = [], ocrPages = 0 }) {
+  attachNewDocument(recordId, { filename, bytes, pages = [], ocrPages = 0, useValues = false }) {
     const { sha256, archiveFile } = require('./intake');
     if (!this.store.getRecord(recordId)) throw new Error('Record not found');
     const dup = this.checkAttach(recordId, { bytes });
@@ -1004,8 +1102,9 @@ class AppApi {
     const stored = buf.length && this.archiveDir ? archiveFile(this.archiveDir, filename, buf) : null;
     const documentId = this.store.addDocument({ sha256: sha256(buf.length ? buf : Buffer.from(text)), filename, stored_path: stored, size: buf.length,
       page_count: pages.length, ocr_pages: ocrPages, text });
-    this.linkDocumentToRecord(recordId, documentId);
-    return { documentId, values: this.letterValues([documentId], recordId) };
+    const values = this.letterValues([documentId], recordId);
+    this.linkDocumentToRecord(recordId, documentId, { useValues: useValues && !!values, values });
+    return { documentId, values };
   }
 
   /** Let the local model fill fields the reader missed (values must exist in the text). */
@@ -1316,7 +1415,7 @@ class AppApi {
 const PUBLIC_METHODS = [
   'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'deleteRecords', 'bulkUpdate',
   'listArchive', 'archiveCount', 'expiredRecords', 'archiveExpired', 'restoreArchived', 'purgeArchived',
-  'activateReplacement', 'deviceCoverage', 'deviceProfile', 'listBundles', 'bundleView', 'readBundlePage', 'bundleDifferences', 'cleanBundle', 'bundleReport', 'checkRecord', 'listReaderGroups', 'setReaderGroup', 'listFamilyNotes', 'setCoverageNA', 'createMissing', 'createSlot', 'listTags', 'knownDevices', 'listAliases', 'listLearned', 'forgetLearned', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
+  'activateReplacement', 'deviceCoverage', 'deviceProfile', 'listBundles', 'bundleView', 'readBundlePage', 'bundleDifferences', 'cleanBundle', 'bundleReport', 'checkRecord', 'listReaderGroups', 'setReaderGroup', 'listFamilyNotes', 'setCoverageNA', 'createMissing', 'createSlot', 'addCertWithLoa', 'listTags', 'knownDevices', 'listAliases', 'listLearned', 'forgetLearned', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'listPlatformDevices', 'setPlatformDevices', 'platformForDevice', 'devicesOnPlatform', 'applyPlatformDevices', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
   'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
   'documentText', 'deviceView', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'setEol', 'dataChecks', 'aiDataReview', 'briefingReport', 'exportL3Sheet', 'duplicateInfo', 'mapDuplicate', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'heldChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',

@@ -31,6 +31,14 @@ export function RecordDrawer({ id, app, onClose, tab: startTab }) {
   const loadProfile = () => call('deviceProfile', id).then(setProfile).catch(() => setProfile(null));
   useEffect(() => { setProfile(null); if (id) loadProfile(); }, [id, app.version]);
 
+  // Platforms and their devices (Settings > Matching): a new device gets its
+  // platform filled in, and a chosen platform suggests its devices.
+  const [pfDevices, setPfDevices] = useState({});
+  useEffect(() => { call('listPlatformDevices').then((m) => setPfDevices(m || {})).catch(() => {}); }, []);
+  const fillPlatform = async () => {
+    if (!form || form.platform || !form.device.trim()) return;
+    try { const pf = await call('platformForDevice', form.device); if (pf) setForm((f) => (f.platform ? f : { ...f, platform: pf })); } catch (_) { /* optional */ }
+  };
   const set = (k) => (e) => setForm({ ...form, [k]: e && e.target ? (e.target.type === 'checkbox' ? e.target.checked : e.target.value) : e });
   // Mistakes are caught before they are saved: duplicates, impossible dates,
   // dates that disagree with the website page, new device spellings.
@@ -124,7 +132,8 @@ export function RecordDrawer({ id, app, onClose, tab: startTab }) {
       <div class="section-title">Certification</div>
       <${TypePicker} form=${form} setForm=${setForm} schemes=${tax.schemes} />
       <div class="grid3 mt">
-        ${F('device', 'Device *')}${F('platform', 'Platform')}${F('bundle', 'Bundle')}
+        ${F('device', 'Device *', 'text', { onBlur: fillPlatform, list: 'rec-platform-devices' })}${F('platform', 'Platform')}${F('bundle', 'Bundle')}
+        <datalist id="rec-platform-devices">${(pfDevices[form.platform] || []).map((d) => html`<option value=${d} />`)}</datalist>
         ${versionLabel(form) ? F('kernel_version', versionLabel(form)) : null}
         ${F('approval_number', 'Approval number')}${F('family', 'Family / model group')}${F('expiry_basis', 'Expiry basis')}
         ${F('issue_date', 'Issued', 'date')}${F('expiry_date', 'Expires', 'date')}
@@ -202,7 +211,7 @@ function AttachModal({ a, r, onLink, onClose }) {
 }
 
 const countCerts = (p) => p.sections.reduce((n, s) => n + s.rows.filter((r) => r.record).length, 0);
-const countMissing = (p) => p.sections.reduce((n, s) => n + s.rows.filter((r) => r.status === 'missing').length, 0);
+const countMissing = (p) => p.sections.reduce((n, s) => n + s.rows.filter((r) => r.status === 'missing' || r.status === 'awaiting').length, 0);
 
 /** One line on the Details tab: how many certifications this device has, and how many are missing. */
 function ProfileStrip({ p, onOpen }) {
@@ -215,18 +224,37 @@ function ProfileStrip({ p, onOpen }) {
 }
 
 /**
+ * Add a missing certification by choosing its LOA. Nothing is created until a
+ * letter is picked, so a device is never shown as certified without one.
+ */
+export function addCertFromLoa(app, slot, label, after) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = LOA_EXTENSIONS.map((x) => `.${x}`).join(',');
+  input.onchange = async () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    try {
+      toast(`Reading ${file.name}…`);
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const ex = await extractFile(file.name, bytes, {});
+      const res = await call('addCertWithLoa', slot, { filename: file.name, bytes, pages: ex.pages, ocrPages: ex.ocrPages });
+      const got = res.values && (res.values.expiry_date || res.values.approval_number);
+      toast(got ? `Added ${label} from ${file.name}` : `Added ${label} with ${file.name}. No ${label.split(' · ').pop()} letter was found in it: fill in the approval number and dates on the record.`, got ? 'ok' : undefined);
+      if (after) after();
+      app.refresh(); app.openRecord(res.id, 'documents');
+    } catch (e) { toastError(e); }
+  };
+  input.click();
+}
+
+/**
  * The device's full certification set: the terminal (PCI, L1 Contact, TQM)
  * and each contactless reader in it (L1 Contactless, TQM, L2 per brand),
  * each with its own approval number, dates and LOA.
  */
 export function DeviceCerts({ p, current, app, reload }) {
-  const add = async (sec, row) => {
-    try {
-      const rid = await call('createSlot', { device: sec.device, platform: p.platform, bundle: p.bundle, slot: row.slot });
-      toast(`Created ${sec.device} · ${row.label}. Add its LOA here.`, 'ok');
-      app.refresh(); app.openRecord(rid, 'documents');
-    } catch (e) { toastError(e); }
-  };
+  const add = (sec, row) => addCertFromLoa(app, { device: sec.device, platform: p.platform, bundle: p.bundle, slot: row.slot }, `${sec.device} · ${row.label}`, reload);
   const na = async (sec, row, v) => { try { await call('setCoverageNA', sec.key, row.slot, v); reload(); } catch (e) { toastError(e); } };
   const eol = async (r, sec) => {
     const reason = r.eol ? '' : prompt('Not renewing this certification? Give a reason:', sec && sec.replacedBy ? `Replaced by ${sec.replacedBy}` : 'Not renewing');
@@ -241,10 +269,10 @@ export function DeviceCerts({ p, current, app, reload }) {
         if (!r) {
           return html`<tr class=${row.status === 'na' ? 'faint' : 'missing'}><td>${row.label}</td><td colspan="6">${row.status === 'na' ? 'Not applicable' : html`<span class="bad-text">Missing</span>`}</td>
             <td class="nowrap">${row.status === 'na' ? html`<button class="btn sm ghost" onClick=${() => na(sec, row, false)}>Require</button>`
-              : html`<button class="btn sm" onClick=${() => add(sec, row)}><${Icon} name="plus" /> Add</button> <button class="btn sm ghost" onClick=${() => na(sec, row, true)} title="Not needed (waiver or no reader)">N/A</button>`}</td></tr>`;
+              : html`<button class="btn sm" onClick=${() => add(sec, row)} title="Choose its LOA. The certification is added from the letter."><${Icon} name="plus" /> Add LOA</button> <button class="btn sm ghost" onClick=${() => na(sec, row, true)} title="Not needed (waiver or no reader)">N/A</button>`}</td></tr>`;
         }
         return html`<tr class=${`click ${r.id === current ? 'sel' : ''}`} onClick=${() => r.id !== current && app.openRecord(r.id)}>
-          <td>${row.label}${r.sharedFrom ? html` <span class="tag" title=${`Certified by the ${r.sharedFrom} LOA, which covers this device too`}>via ${r.sharedFrom}</span>` : null}</td>
+          <td>${row.label}${row.status === 'awaiting' ? html` <span class="pill bad" title="A placeholder with no LOA yet. Still a gap until the letter is added.">Needs LOA</span>` : null}${r.sharedFrom ? html` <span class="tag" title=${`Certified by the ${r.sharedFrom} LOA, which covers this device too`}>via ${r.sharedFrom}</span>` : null}</td>
           <td class="small ellipsis" style="max-width:180px" title=${r.approval_number}>${r.approval_number || html`<span class="faint">—</span>`}</td>
           <td class="small nowrap">${r.kernel_version || html`<span class="faint">—</span>`}</td>
           <td class="small nowrap">${fmtDate(r.issue_date) || html`<span class="faint">—</span>`}</td>
