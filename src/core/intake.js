@@ -55,7 +55,7 @@ function val(f) { return f ? f.value : null; }
  *   create       - no matching record; create one
  *   unmatched    - family/wildcard name that needs the user to choose records
  */
-function buildProposals(letter, records, { norm, aliases = {}, noiseWords = [], asOf = todayIso(), auditFor, learned = [], pages = {} } = {}) {
+function buildProposals(letter, records, { norm, aliases = {}, noiseWords = [], asOf = todayIso(), auditFor, learned = [], pages = {}, platformDevices = {} } = {}) {
   const proposals = [];
   // Supporting documents (bulletins, equivalency letters) never change records.
   if (letter.informational) return proposals;
@@ -103,7 +103,7 @@ function buildProposals(letter, records, { norm, aliases = {}, noiseWords = [], 
       // A name you corrected before becomes the device you chose.
       const learnedName = aliases[norm(prod.value)];
       const device = learnedName || displayDevice(prod.value, noiseWords);
-      const place = inferPlace(device, records, norm);
+      const place = inferPlace(device, records, norm, platformDevices);
       proposals.push({
         action: 'create',
         device,
@@ -142,8 +142,32 @@ function buildProposals(letter, records, { norm, aliases = {}, noiseWords = [], 
  * device under another brand or type, else every device of its family
  * ("Self/...") when they all share one platform.
  */
-function inferPlace(device, records, norm) {
+/**
+ * The platform you listed a device under (Settings > Matching > Platforms and
+ * devices). A hardware version (CL2...) belongs where its device is listed.
+ * Only one platform counts: a device listed under two is left for you to pick.
+ */
+function presetPlatform(device, platformDevices, norm) {
   const key = norm(device);
+  if (!key) return '';
+  const base = splitVariant(key).base;
+  const hits = Object.entries(platformDevices || {}).filter(([, list]) => (list || []).some((d) => {
+    const k = norm(d);
+    return k === key || splitVariant(k).base === base;
+  })).map(([pf]) => pf);
+  return hits.length === 1 ? hits[0] : '';
+}
+
+function inferPlace(device, records, norm, platformDevices) {
+  const key = norm(device);
+  const preset = presetPlatform(device, platformDevices, norm);
+  if (preset) {
+    const base0 = splitVariant(key).base;
+    const c = {};
+    for (const r of records) if (r.platform === preset && r.bundle && splitVariant(norm(r.device)).base === base0) c[r.bundle] = (c[r.bundle] || 0) + 1;
+    const b = Object.entries(c).sort((x, y) => y[1] - x[1])[0];
+    return { fields: { platform: preset, ...(b ? { bundle: b[0] } : {}) }, note: `Platform ${preset} from your platform device list${b ? `, ${b[0]} from your other records` : ''}` };
+  }
   const pickMost = (list, f) => {
     const c = {};
     for (const r of list) if (r[f]) c[r[f]] = (c[r[f]] || 0) + 1;
@@ -352,6 +376,7 @@ class Intake {
       noiseWords: s.noiseWords,
       learned: s.learned || [],
       pages: s.bundlePages || {},
+      platformDevices: s.platformDevices || {},
       asOf: todayIso(),
       auditFor: (id, f) => db.get("SELECT ts, source FROM audit WHERE record_id=? AND field=? AND action='update' ORDER BY id DESC LIMIT 1", [id, f]),
     };
@@ -528,7 +553,7 @@ class Intake {
           const prod = (p && (L.products || []).find((x) => x.value === p.device)) || {};
           const rec = {
             ...letterRecord(L, device, prod),
-            ...inferPlace(device, records, norm).fields,
+            ...inferPlace(device, records, norm, this.store.getSettings().platformDevices).fields,
             ...nonEmpty(defaults),
             ...pick(edits, ['platform', 'bundle', 'expiry_date', 'issue_date', 'approval_number']),
             source: 'loa', verified_at: new Date().toISOString(), verified_by: actor,
@@ -722,4 +747,4 @@ function pick(o, keys) {
   return out;
 }
 
-module.exports = { Intake, buildProposals, proposalFor, isSafe, sha256, archiveFile, displayDevice };
+module.exports = { Intake, buildProposals, proposalFor, isSafe, sha256, archiveFile, displayDevice, presetPlatform };

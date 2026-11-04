@@ -310,9 +310,50 @@ function Matching({ s, save, app }) {
       help="Different spellings of one kernel bundle. New and imported records use your name, and existing records can be renamed."
       list=${fields && fields.bundle} onSave=${async (a, v, apply) => done(await call('setFieldAlias', 'bundle', a, v, { apply }))}
       onRemove=${async (k) => { await call('setFieldAlias', 'bundle', k, ''); reloadFields(); }} />
+    <${PlatformDevices} options=${values('device')} platforms=${values('platform')} app=${app} />
     <${ReaderGroups} options=${values('device')} />
     <${Learned} />
   </div>`;
+}
+
+/**
+ * Which devices run on which platform, set up front. Letters for a listed
+ * device get its platform, and records with no platform can be filled in.
+ */
+function PlatformDevices({ options, platforms, app }) {
+  const [map, reload] = useLoad(() => call('listPlatformDevices'), []);
+  const [pf, setPf] = useState(''); const [devs, setDevs] = useState('');
+  const [look, setLook] = useState(''); const [found, setFound] = useState(null);
+  const save = async () => {
+    try { await call('setPlatformDevices', pf, devs.split(',')); toast(`Saved the devices of ${pf.trim()}`, 'ok'); setPf(''); setDevs(''); reload(); } catch (e) { toastError(e); }
+  };
+  const fromRecords = async () => {
+    try {
+      const have = await call('devicesOnPlatform', pf.trim());
+      if (!have.length) return toast(`No records on ${pf.trim()} yet`);
+      const cur = devs.split(',').map((x) => x.trim()).filter(Boolean);
+      setDevs([...new Set([...cur, ...have])].join(', '));
+    } catch (e) { toastError(e); }
+  };
+  const apply = async () => {
+    try { const r = await call('applyPlatformDevices'); toast(r.changed ? `Set the platform on ${plural(r.changed, 'record')}` : 'Every listed device already has its platform', r.changed ? 'ok' : ''); app.refresh(); } catch (e) { toastError(e); }
+  };
+  const lookup = async (d) => { setLook(d); setFound(d.trim() ? await call('platformForDevice', d).catch(() => '') : null); };
+  const entries = Object.entries(map || {});
+  return html`<div class="card pad"><h3>Platforms and their devices</h3>
+    <p class="muted small">List the devices each platform runs. A letter or new record for one of them gets its platform filled in, the record form suggests a platform's devices, and records with no platform can be filled in below. A hardware version (CL2, CL3) follows its device.</p>
+    ${entries.length ? html`<table class="t compact mt"><tbody>${entries.map(([k, v]) => html`<tr><td><b>${k}</b></td><td class="small">${v.join(', ')}</td>
+      <td class="nowrap"><button class="btn sm ghost" onClick=${() => { setPf(k); setDevs(v.join(', ')); }}>Edit</button>
+      <button class="btn sm ghost" onClick=${async () => { await call('setPlatformDevices', k, []); reload(); }}>Remove</button></td></tr>`)}</tbody></table>` : null}
+    <div class="row wrap mt"><input type="text" list="pd-platforms" aria-label="Platform" placeholder="Platform, e.g. UPP" value=${pf} onInput=${(e) => setPf(e.target.value)} style="max-width:180px" />
+      <input type="text" list="pd-devices" aria-label="Devices on the platform" placeholder="Devices, comma separated: Lane/3000, Lane/5000, Desk/5000" value=${devs} onInput=${(e) => setDevs(e.target.value)} style="flex:1;min-width:260px" />
+      <datalist id="pd-platforms">${platforms.map((o) => html`<option value=${o} />`)}</datalist>
+      <datalist id="pd-devices">${options.map((o) => html`<option value=${o} />`)}</datalist></div>
+    <div class="row wrap mt"><button class="btn" disabled=${!pf.trim()} onClick=${fromRecords} title="Add the devices your records already have on this platform">Add devices from my records</button>
+      <button class="btn primary" disabled=${!pf.trim()} onClick=${save}>Save platform</button><span class="grow"></span>
+      ${entries.length ? html`<button class="btn" onClick=${apply} title="Records with no platform get the platform their device is listed under">Fill blank platforms</button>` : null}</div>
+    ${entries.length ? html`<div class="row wrap mt"><input type="text" list="pd-devices" aria-label="Find a device's platform" placeholder="Which platform is a device on? Type a device" value=${look} onInput=${(e) => lookup(e.target.value)} style="max-width:320px" />
+      ${found === null ? null : html`<span class="small">${found ? html`<b>${found}</b>` : html`<span class="faint">Not listed under one platform</span>`}</span>`}</div>` : null}</div>`;
 }
 
 /** Device series that share one physical reader, so one LOA certifies all of them. */

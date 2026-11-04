@@ -216,6 +216,7 @@ function pdfFromPages(pages) {
     await p.waitForSelector('.card.review:has-text("P400CL1_Discover_L2.pdf") >> text=Device taken from the file name', { timeout: 60000 });
     const namedCard = p.locator('.card.review:has-text("P400CL1_Discover_L2.pdf")');
     check(await namedCard.locator('.prop a:has-text("P400-CL1")').count() > 0, 'device read from the file name matches the register');
+    check(await p.locator('select[aria-label="Sort letters"]').inputValue() === 'confident', 'the inbox lists the most confident letters first');
     // Bulk: find letters, set a platform on all of them, approve.
     await p.fill('input[aria-label="Find letters"]', 'P400CL1');
     await p.waitForFunction(() => document.querySelectorAll('.card.review').length === 1, null, { timeout: 5000 });
@@ -283,6 +284,15 @@ function pdfFromPages(pages) {
     await p.click('nav >> text=Devices');
     const [l3] = await Promise.all([p.waitForEvent('download', { timeout: 10000 }), p.click('button:has-text("L3 sheet")')]);
     check(/L3 approval numbers/.test(l3.suggestedFilename()), `L3 sheet download: ${l3.suggestedFilename()}`);
+    // Add on a missing certification asks for its LOA first: nothing is created without one.
+    const missBefore = await p.locator("table.cov .cell.miss").count();
+    const [chAdd] = await Promise.all([p.waitForEvent('filechooser', { timeout: 5000 }), p.locator('table.cov button:has-text("Add LOA")').first().click()]);
+    check(missBefore === await p.locator("table.cov .cell.miss").count(), 'Add on the Devices screen opens the LOA picker and creates nothing yet');
+    await chAdd.setFiles(pdf);
+    await p.waitForSelector('.drawer >> text=Northwind merged.pdf', { timeout: 30000 });
+    check(await p.locator('.drawer .pill:has-text("Current")').count() === 0, 'the certification is added with the chosen LOA, without dates from a letter for another certification');
+    await p.click('.drawer button[aria-label="Close"]');
+    await p.waitForSelector('.drawer', { state: 'detached', timeout: 5000 });
     // A device name opens the device page: every certification of the device and its hardware versions.
     await p.locator('table.cov a.devlink').first().click();
     await p.waitForSelector('.drawer table.certs', { timeout: 5000 });

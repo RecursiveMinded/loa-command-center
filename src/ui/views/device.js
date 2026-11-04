@@ -12,8 +12,8 @@ export function DeviceDrawer({ dev, app, onClose }) {
   useEffect(() => { load(); }, [dev.device, dev.platform, dev.bundle, app.version]);
   if (!p) return html`<${Drawer} title=${dev.device} onClose=${onClose}><${Spinner} /><//>`;
   const rows = p.sections.flatMap((s) => s.rows);
-  const held = rows.filter((r) => r.record).length;
-  const missing = rows.filter((r) => r.status === 'missing').length;
+  const held = rows.filter((r) => r.record && r.status !== 'awaiting').length;
+  const missing = rows.filter((r) => r.status === 'missing' || r.status === 'awaiting').length;
   const expired = rows.filter((r) => r.record && r.record.health === 'expired' && !r.record.eol).length;
   const sub = html`<span class="row wrap">${p.platform || p.bundle ? html`<span class="tag">${[p.platform, p.bundle].filter(Boolean).join(' · ')}</span>` : null}
     <span>${held} certification${held === 1 ? '' : 's'}</span>${expired ? html`<span class="bad-text">${expired} expired</span>` : null}${missing ? html`<span class="bad-text">${missing} missing</span>` : null}
