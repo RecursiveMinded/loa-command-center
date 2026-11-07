@@ -19,6 +19,7 @@ export function Bundles({ app }) {
   const [view, reloadView] = useLoad(() => (key ? call('bundleView', key) : Promise.resolve(null)), [app.version, key]);
   const [diff, setDiff] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [catalog, setCatalog] = useState(false);
   const input = useRef();
 
   const readPage = async (e) => {
@@ -51,6 +52,7 @@ export function Bundles({ app }) {
       <div class="row"><input ref=${input} type="file" accept=".pdf,.html,.htm,.mhtml,.mht,.txt" class="hidden" onChange=${readPage} />
         <button class="btn primary" disabled=${busy} onClick=${() => input.current.click()} title="Read the published bundle page (PDF printout or saved web page) and compare it with your records">
           ${busy ? html`<${Spinner} />` : html`<${Icon} name="globe" />`} Check against website page</button>
+        <button class="btn" onClick=${() => setCatalog(true)} title="Every bundle's kernel per card brand, for ARC, UPP and any other platform"><${Icon} name="grid" /> Kernel catalog</button>
         ${key ? html`<button class="btn" onClick=${print}><${Icon} name="print" /> Report like the website</button>
           <button class="btn" onClick=${excel}><${Icon} name="download" /> Excel</button>` : null}</div></div>
 
@@ -70,6 +72,7 @@ export function Bundles({ app }) {
     </div>` : null}
 
     ${!view ? html`<div class="row"><${Spinner} /> Loading…</div>` : html`<${Layout} v=${view} app=${app} />`}`}
+    ${catalog ? html`<${KernelCatalog} onClose=${() => { setCatalog(false); reloadView(); app.refresh(); }} />` : null}
     ${diff ? html`<${Differences} d=${diff} app=${app} onClose=${() => setDiff(null)} onDone=${() => { setDiff(null); reload(); reloadView(); app.refresh(); }} />` : null}`;
 }
 
@@ -117,7 +120,7 @@ function Layout({ v, app }) {
         : v.l2missing ? html`<span class="cell miss" style="display:inline-block">v${v.l2missing.kernel_version} · ${mdy(v.l2missing.expiry_date)}<small>missing here</small></span>`
           : html`<span class="muted">No EMV L2 Contact kernel on file for this bundle.</span>`}</div>
       <div class="kernels mt"><b>Contactless kernels by card brand</b>
-        <div class="row wrap mt">${v.brands.map((b) => html`<span class="chip">${b.label} <b>${b.kernel || '—'}</b></span>`)}</div></div></div>
+        <div class="row wrap mt">${v.brands.map((b) => html`<span class="chip" title=${b.alsoIn && b.alsoIn.length ? `Kernel ${b.kernel} also runs in ${b.alsoIn.join(', ')}: an LOA for it applies there too` : ''}>${b.label} <b>${b.kernel || '—'}</b>${b.alsoIn && b.alsoIn.length ? html`<span class="faint">also ${b.alsoIn.map((x) => x.replace(/^(kernel\s+)?bundle\s*/i, 'B')).join(', ')}</span>` : null}</span>`)}</div></div></div>
     <${Table} title="PCI" head=${['Terminal', 'Version', 'Exp Date']} rows=${v.sections.pci} cols=${['#version', 'date']} app=${app} />
     <${Table} title="EMV Contact" head=${['Terminal', 'L1 Contact', 'TQM']} rows=${v.sections.contact} cols=${['l1', 'tqm']} app=${app} />
     <${Table} title="EMV Contactless" head=${['Terminal', 'L1 Contactless', 'TQM']} rows=${v.sections.contactless} cols=${['l1', 'tqm']} app=${app} />
@@ -165,5 +168,63 @@ function Differences({ d, app, onClose, onDone }) {
     ${d.ok ? html`<p class="mt">Nothing to fix.</p>` : null}
     <div class="row mt-l"><button class="btn primary" disabled=${busy || d.ok || !GROUPS.some(([k]) => fix[k] && n(k))} onClick=${run}>${busy ? html`<${Spinner} />` : html`<${Icon} name="check" />`} Make it match the website</button>
       <button class="btn" onClick=${onClose}>Not now</button><span class="faint small">A backup is taken first; archived records can be restored.</span></div>
+  <//>`;
+}
+
+/**
+ * The kernel catalog: every bundle of every platform (ARC, UPP...) with the kernel it runs
+ * per card brand. A bundle is a snapshot of the kernels current when it was cut, so one
+ * kernel often runs in several bundles; an L2 LOA applies to each of them.
+ */
+function KernelCatalog({ onClose }) {
+  const [cat, reload] = useLoad(() => call('kernelCatalog'), []);
+  const [add, setAdd] = useState({ platform: '', bundle: '' });
+  const [paste, setPaste] = useState(null);
+  const file = useRef();
+  if (!cat) return html`<${Modal} title="Kernel catalog" wide onClose=${onClose}><div class="row"><${Spinner} /> Loading…</div><//>`;
+  const cols = ['EMV Contact', ...cat.brands];
+  const spanOf = (b, brand, value) => cat.spans.find((x) => x.platform === b.platform && x.brand.toLowerCase() === brand.toLowerCase() && x.bundles.includes(b.bundle) && x.kernel === value);
+  const save = async (b, brand, value) => {
+    const cur = brand === 'EMV Contact' ? b.l2Contact : b.kernels[brand.toLowerCase()];
+    if (String(value || '').trim() === String((cur && cur.value) || '')) return;
+    try {
+      await call('setKernelCatalog', brand === 'EMV Contact' ? { platform: b.platform, bundle: b.bundle, l2Contact: value } : { platform: b.platform, bundle: b.bundle, kernels: { [brand]: value } });
+      reload();
+    } catch (e) { toastError(e); }
+  };
+  const addBundle = async () => {
+    try { await call('setKernelCatalog', { ...add, kernels: {} }); setAdd({ platform: add.platform, bundle: '' }); reload(); } catch (e) { toastError(e); }
+  };
+  const done = (r) => { toast(`Imported ${plural(r.kernels, 'kernel')} for ${plural(r.bundles, 'bundle')}`, 'ok'); reload(); };
+  const importFile = async (e) => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (!f) return;
+    try { done(await call('importKernelCatalog', { filename: f.name, bytes: new Uint8Array(await f.arrayBuffer()) })); } catch (er) { toastError(er); }
+  };
+  const importText = async () => { try { done(await call('importKernelCatalog', { text: paste })); setPaste(null); } catch (e) { toastError(e); } };
+  const remove = async (b) => { try { await call('removeKernelBundle', b.key); reload(); } catch (e) { toastError(e); } };
+  const shared = cat.spans.filter((x) => x.bundles.length > 1);
+  return html`<${Modal} title="Kernel catalog" wide onClose=${onClose}>
+    <p class="muted small" style="margin-top:0">The kernel each bundle runs per card brand. A bundle is a snapshot of the kernels current when it was cut, so the same kernel often runs in several bundles: an L2 LOA applies to every bundle that runs its kernel. An older kernel in an older bundle can carry the longest renewal (a newer kernel is coming), and that is expected. Values read from a website page are filled in for you; type to correct them.</p>
+    <div class="row wrap">
+      <input type="file" ref=${file} class="hidden" accept=".xlsx,.csv,.txt" onChange=${importFile} />
+      <button class="btn" onClick=${() => file.current.click()}><${Icon} name="upload" /> Import Excel or CSV</button>
+      <button class="btn" onClick=${() => setPaste(paste == null ? '' : null)}><${Icon} name="edit" /> Paste a table</button>
+      <span class="faint small">Columns: Platform, Bundle, then one per card brand and EMV Contact. Or Platform, Bundle, Brand, Kernel.</span></div>
+    ${paste != null ? html`<div class="mt"><textarea rows="5" style="width:100%" placeholder=${'Platform\tBundle\tVisa\tMastercard\tAmex\tDiscover\nARC\tBundle 3\t0301\t0403\t0201\t0202'} value=${paste} onInput=${(e) => setPaste(e.target.value)} aria-label="Pasted kernel table"></textarea>
+      <button class="btn primary sm" disabled=${!paste.trim()} onClick=${importText}>Import pasted table</button></div>` : null}
+    <div class="table-wrap mt"><table class="mx bundle kcat"><thead><tr><th class="name">Bundle</th>${cols.map((c) => html`<th>${c}</th>`)}<th></th></tr></thead>
+      <tbody>${cat.bundles.length ? cat.bundles.map((b) => html`<tr><td class="name"><b>${b.platform}</b> ${b.bundle}${b.page ? html`<small class="faint" style="display:block">website page read</small>` : null}</td>
+        ${cols.map((c) => { const k = c === 'EMV Contact' ? b.l2Contact : b.kernels[c.toLowerCase()]; const sp = k && spanOf(b, c, k.value); const others = sp ? sp.bundles.filter((x) => x !== b.bundle) : [];
+          return html`<td><input type="text" class=${`kin ${others.length ? 'shared' : ''}`} key=${`${b.key}|${c}|${k ? k.value : ''}`} defaultValue=${k ? k.value : ''} placeholder="—" aria-label=${`${b.platform} ${b.bundle} ${c} kernel`}
+            title=${k ? `${k.source === 'page' ? 'From the website page' : 'Typed or imported'}${others.length ? `. Also runs in ${others.join(', ')}` : ''}` : 'Not known yet'} onBlur=${(e) => save(b, c, e.target.value)} onKeyDown=${(e) => { if (e.key === 'Enter') e.target.blur(); }} />
+            ${others.length ? html`<small class="faint" style="display:block">also ${others.map((x) => x.replace(/^(kernel\s+)?bundle\s*/i, 'B')).join(', ')}</small>` : null}</td>`; })}
+        <td>${b.inCatalog ? html`<button class="btn ghost sm icon" title="Remove what you typed for this bundle" aria-label="Remove" onClick=${() => remove(b)}><${Icon} name="x" /></button>` : null}</td></tr>`)
+        : html`<tr><td colspan=${cols.length + 2} class="muted">No bundles yet. Add one below, import a table, or read a bundle's website page.</td></tr>`}</tbody></table></div>
+    <div class="row mt"><input type="text" placeholder="Platform, e.g. ARC" value=${add.platform} onInput=${(e) => setAdd({ ...add, platform: e.target.value })} aria-label="Platform" style="width:150px" />
+      <input type="text" placeholder="Bundle, e.g. Bundle 3" value=${add.bundle} onInput=${(e) => setAdd({ ...add, bundle: e.target.value })} aria-label="Bundle" style="width:170px" />
+      <button class="btn" disabled=${!add.platform.trim() || !add.bundle.trim()} onClick=${addBundle}><${Icon} name="plus" /> Add bundle</button></div>
+    ${shared.length ? html`<div class="mt-l"><b>Kernels that run in more than one bundle</b>
+      <ul class="small difflist">${shared.map((x) => html`<li>${x.platform} ${x.brand} <b>${x.kernel}</b>: ${x.bundles.join(', ')}</li>`)}</ul></div>` : null}
   <//>`;
 }

@@ -34,6 +34,8 @@ export function sortCards(list, { order = 'newest', min = 0 } = {}) {
 function isSafe(p, letter, threshold) {
   return ['update', 'attach'].includes(p.action) && !(p.warnings || []).length && !(letter.warnings || []).length && p.score >= 80 && letter.confidence >= threshold;
 }
+// Optional proposals (a record in another bundle that runs the letter's kernel) wait for a tick.
+const itemSafe = (proposals, letter, threshold) => { const a = (proposals || []).filter((p) => !p.optional); return a.length > 0 && a.every((p) => isSafe(p, letter, threshold)); };
 
 export function FilePickers({ onFiles, compact }) {
   const files = useRef(), folder = useRef();
@@ -77,7 +79,7 @@ export function Inbox({ app, params }) {
   const [view, setView] = usePersist('inboxSort', { order: 'confident', onlyHigh: false });
   const shown = sortCards((items || []).filter((it) => !find || cardText(it).includes(find.toLowerCase())), tab === 'pending' ? { order: view.order, min: view.onlyHigh ? threshold : 0 } : {});
   const toggleSel = (id) => setSel((s0) => { const s1 = new Set(s0); if (s1.has(id)) s1.delete(id); else s1.add(id); return s1; });
-  const safeCount = pendingList.filter((it) => it.proposals.length && it.proposals.every((p) => isSafe(p, it.parsed, threshold))).length;
+  const safeCount = pendingList.filter((it) => itemSafe(it.proposals, it.parsed, threshold)).length;
 
   const [sheets, setSheets] = useState([]);
   const onFiles = (files) => {
@@ -211,7 +213,7 @@ function MapDuplicate({ documentId, app, onClose }) {
 
 /** Changes when matching or the AI rebuilds a letter's proposals, so its card starts fresh. */
 function proposalSig(it) {
-  return it.proposals.map((p) => `${p.action}:${p.record_id || p.device || ''}`).join('|');
+  return it.proposals.map((p) => `${p.action}:${p.record_id || p.device || ''}${p.pinBundle ? `@${p.bundle}` : ''}`).join('|');
 }
 
 /** What a card can be found by: file name, devices, brand, type, platform. */
@@ -329,7 +331,7 @@ function SheetImport({ file, app, onClose }) {
 function Review({ it, app, threshold, readOnly, selected, onSelect, onDone }) {
   const L = it.parsed;
   const defaults = L.recordDefaults || {};
-  const [checked, setChecked] = useState(() => it.proposals.map((p) => (p.action !== 'unmatched' || (p.suggest || []).length > 0) && !(p.warnings || []).some((w) => /Confirm it covers/.test(w))));
+  const [checked, setChecked] = useState(() => it.proposals.map((p) => !p.optional && (p.action !== 'unmatched' || (p.suggest || []).length > 0) && !(p.warnings || []).some((w) => /Confirm it covers/.test(w))));
   const [edits, setEdits] = useState(() => it.proposals.map(() => ({})));
   // Records picked for the same family name last time are ticked again.
   const [picks, setPicks] = useState(() => it.proposals.map((p) => p.suggest || []));
@@ -338,7 +340,7 @@ function Review({ it, app, threshold, readOnly, selected, onSelect, onDone }) {
   const [editing, setEditing] = useState(-1);
   const [busy, setBusy] = useState(false);
   const [text, setText] = useState(null);
-  const safe = it.proposals.length && it.proposals.every((p) => isSafe(p, L, threshold));
+  const safe = itemSafe(it.proposals, L, threshold);
 
   const approve = async () => {
     const decisions = it.proposals.map((p, i) => ({ index: i, edits: edits[i], recordIds: picks[i], create: creates[i] }))
@@ -427,7 +429,7 @@ function Proposal({ p, on, readOnly, edits, editing, picks, creates, L, app, onT
   const changes = Object.entries(p.changes || {});
   const editable = ['update', 'replacement', 'create'].includes(p.action);
   const fields = p.action === 'create' ? ['device', 'platform', 'bundle', 'approval_number', 'issue_date', 'expiry_date'] : ['approval_number', 'issue_date', 'expiry_date'];
-  const base = p.action === 'create' ? { ...p.record, ...Object.fromEntries(Object.entries(p.defaults || {}).filter(([, v]) => v)) } : p.action === 'replacement' ? p.replacement : Object.fromEntries(changes.map(([k, v]) => [k, v.to]));
+  const base = p.action === 'create' ? { ...p.record, ...Object.fromEntries(Object.entries(p.defaults || {}).filter(([, v]) => v && !p.pinBundle)) } : p.action === 'replacement' ? p.replacement : Object.fromEntries(changes.map(([k, v]) => [k, v.to]));
   return html`<div class=${`prop ${on ? '' : 'off'}`}>
     <div>${readOnly ? null : html`<input type="checkbox" checked=${on} onChange=${onToggle} aria-label="Include this change" />`}</div>
     <div>
@@ -439,7 +441,7 @@ function Proposal({ p, on, readOnly, edits, editing, picks, creates, L, app, onT
       ${p.note ? html`<div class="small muted mt" style="margin-top:4px">${p.note}</div>` : null}
       ${changes.length ? html`<div class="chg">${changes.map(([k, v]) => html`<div>${FIELD[k] || k}: ${v.from !== '' && v.from != null ? html`<s>${fmt(k, v.from)}</s> → ` : ''}<b>${fmt(k, edits[k] != null ? edits[k] : v.to)}</b></div>`)}</div>` : null}
       ${p.action === 'replacement' ? html`<div class="chg">New approval ${p.replacement.approval_number || ''}: effective <b>${fmtDate(edits.issue_date || p.replacement.issue_date)}</b>, expires <b>${fmtDate(edits.expiry_date || p.replacement.expiry_date)}</b>. The current approval stays in force until then.</div>` : null}
-      ${p.action === 'create' ? html`<div class="chg">Creates <b>${edits.device || p.record.device}</b> · ${p.scheme} ${p.category}${(edits.expiry_date || p.record.expiry_date) ? html`, expires <b>${fmtDate(edits.expiry_date || p.record.expiry_date)}</b>` : ''}${(() => { const pl = [edits.platform || p.defaults.platform || p.record.platform, edits.bundle || p.defaults.bundle || p.record.bundle].filter(Boolean); return pl.length ? ` · ${pl.join(' · ')}` : ''; })()}</div>` : null}
+      ${p.action === 'create' ? html`<div class="chg">Creates <b>${edits.device || p.record.device}</b> · ${p.scheme} ${p.category}${(edits.expiry_date || p.record.expiry_date) ? html`, expires <b>${fmtDate(edits.expiry_date || p.record.expiry_date)}</b>` : ''}${(() => { const d = p.pinBundle ? {} : p.defaults; const pl = [edits.platform || d.platform || p.record.platform, edits.bundle || d.bundle || p.record.bundle].filter(Boolean); return pl.length ? ` · ${pl.join(' · ')}` : ''; })()}</div>` : null}
       ${(p.warnings || []).map((w) => html`<div class="warnline"><${Icon} name="warn" />${w}</div>`)}
       ${editing ? html`<div class="grid3 mt">${fields.map((k) => html`<label class="field">${{ device: 'Device', platform: 'Platform', bundle: 'Bundle' }[k] || FIELD[k]}
         <input type=${k.endsWith('_date') ? 'date' : 'text'} value=${edits[k] != null ? edits[k] : (base && base[k]) || ''} onInput=${(e) => onEdits({ [k]: e.target.value })} /></label>`)}</div>

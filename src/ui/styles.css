@@ -423,3 +423,8 @@ table.cov thead tr + tr th { white-space: normal; line-height: 1.2; padding: 6px
 table.cov td.name, table.cov th.name { padding: 5px 10px; font-size: 12.5px; }
 a.devlink:hover { color: var(--brand); text-decoration: underline; }
 table.certs td:first-child, table.certs td:last-child { white-space: nowrap; }
+
+/* Kernel catalog */
+.kcat td { vertical-align: top; }
+.kcat input.kin { width: 76px; font-variant-numeric: tabular-nums; }
+.kcat input.kin.shared { border-color: var(--brand); background: var(--brand-soft); }
