@@ -194,7 +194,81 @@ function kernelMismatch(pages, r, kernel = r.kernel_version) {
   return { kernel, expected: k.kernel, platform: k.page.platform, bundle: k.page.bundle, fits: fits.join(', ') };
 }
 
+/**
+ * Every bundle's brand kernels, as one set of pages for the kernel checks: the website
+ * pages you read, overlaid with the kernel catalog you keep (Bundles > Kernel catalog).
+ * A bundle is a snapshot of the brand kernels current when it was cut, so the same
+ * kernel version often sits in several bundles of a platform.
+ * Each value: { platform, bundle, rows, ctx: { l2Contact, kernels: { Brand: version }, kernelIds }, source: { Brand: 'page'|'catalog' } }.
+ */
+function kernelPages(settings = {}) {
+  const out = {};
+  for (const [key, p] of Object.entries(settings.bundlePages || {})) {
+    if (!p) continue;
+    const ctx = p.ctx || {};
+    const kernels = { ...(ctx.kernels || {}) };
+    out[key] = { platform: p.platform, bundle: p.bundle, rows: p.rows || [], filename: p.filename, at: p.at,
+      ctx: { l2Contact: ctx.l2Contact || null, kernels, kernelIds: { ...(ctx.kernelIds || {}) } },
+      source: Object.fromEntries([...Object.keys(kernels).map((b) => [b, 'page']), ...(ctx.l2Contact && ctx.l2Contact.version ? [['EMV Contact', 'page']] : [])]) };
+  }
+  for (const [key, c] of Object.entries(settings.kernelCatalog || {})) {
+    if (!c) continue;
+    const o = out[key] || (out[key] = { platform: c.platform, bundle: c.bundle, rows: [], ctx: { l2Contact: null, kernels: {}, kernelIds: {} }, source: {} });
+    if (c.l2Contact) { o.ctx.l2Contact = { ...(o.ctx.l2Contact || {}), version: c.l2Contact }; o.source['EMV Contact'] = 'catalog'; }
+    for (const [b, v] of Object.entries(c.kernels || {})) {
+      if (!String(v || '').trim()) continue;
+      const had = Object.keys(o.ctx.kernels).find((x) => x.toLowerCase() === b.toLowerCase());
+      if (had) { delete o.ctx.kernels[had]; delete o.ctx.kernelIds[had]; delete o.source[had]; }
+      o.ctx.kernels[b] = String(v).trim();
+      o.source[b] = 'catalog';
+    }
+  }
+  return out;
+}
+
+const bundleNo = (b) => parseFloat((String(b || '').match(/\d+(?:\.\d+)?/) || ['0'])[0]);
+const positive = (a, b) => kernelIds(a).length > 0 && kernelIds(b).length > 0 && kernelMatches(a, b);
+
+/**
+ * Every bundle that runs this kernel for the record's approval (its brand's contactless
+ * kernel, or the EMV contact kernel for L2 Contact), oldest bundle first. Only bundles of
+ * the record's platform count when it has one. Returns [{ key, platform, bundle, kernel }].
+ */
+function kernelBundles(pages, r, kernel = r.kernel_version) {
+  if (!kernel || !/^EMV L2/.test(r.category || '')) return [];
+  const plat = r.platform ? bundleKey(r.platform, '').split('|')[0] : '';
+  const out = [];
+  for (const [key, p] of Object.entries(pages || {})) {
+    if (plat && key.split('|')[0] !== plat) continue;
+    const k = bundleKernel({ [key]: p }, { ...r, platform: p.platform, bundle: p.bundle });
+    if (k && positive(kernel, k.ids)) out.push({ key, platform: p.platform, bundle: p.bundle, kernel: k.kernel });
+  }
+  return out.sort((a, b) => a.platform.localeCompare(b.platform) || bundleNo(a.bundle) - bundleNo(b.bundle));
+}
+
+/**
+ * The kernel the platform's newest bundle runs for this approval, when it is not this
+ * kernel: the LOA is for an older kernel. Certification teams often renew an older kernel
+ * for the longest term (to 2029, say) because a newer kernel is coming, so customers can
+ * stay on it without paying to upgrade and recertify. That is normal, not a misread date.
+ * Returns { kernel, platform, bundle } of the newest bundle, or null.
+ */
+function newerKernel(pages, r, kernel = r.kernel_version) {
+  const fits = kernelBundles(pages, r, kernel);
+  if (!fits.length) return null;
+  const plat = bundleKey(fits[0].platform, '').split('|')[0];
+  const all = Object.entries(pages || {}).filter(([key]) => key.split('|')[0] === plat)
+    .map(([key, p]) => ({ key, p, k: bundleKernel({ [key]: p }, { ...r, platform: p.platform, bundle: p.bundle }) }))
+    .filter((x) => x.k).sort((a, b) => bundleNo(a.p.bundle) - bundleNo(b.p.bundle));
+  const last = all[all.length - 1];
+  if (!last || fits.some((f) => f.key === last.key)) return null;
+  return { kernel: last.k.kernel, platform: last.p.platform, bundle: last.p.bundle };
+}
+
+/** "Bundle 3, Bundle 4" from kernelBundles. */
+const bundleNames = (list) => list.map((b) => b.bundle).join(', ');
+
 /** "It fits Kernel Bundle 3", for messages about a wrong-kernel LOA. */
 const fitsNote = (km) => (km && km.fits ? ` Its kernel matches ${km.platform} ${km.fits}: the date belongs on ${km.fits.includes(',') ? 'those bundles\' pages' : 'that bundle\'s page'}.` : '');
 
-module.exports = { bundleKey, cellOf, layout, bundleCheck, pciVersion, kernelMatches, bundleKernel, kernelMismatch, fitsNote };
+module.exports = { bundleKey, cellOf, layout, bundleCheck, pciVersion, kernelMatches, bundleKernel, kernelMismatch, fitsNote, kernelPages, kernelBundles, newerKernel, bundleNames, bundleNo };

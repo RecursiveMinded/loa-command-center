@@ -1097,3 +1097,46 @@ test('platforms list their devices: letters, new records and blank platforms use
   api.setPlatformDevices('Tetra', []);
   assert.equal(api.listPlatformDevices().Tetra, undefined, 'an empty list removes the platform');
 });
+
+test('kernel catalog: one L2 LOA applies to every bundle that runs its kernel', async () => {
+  const { api } = await fresh();
+  const mk = (bundle, expiry) => api.store.createRecord({ device: 'Flex/3500-CL1', category: 'EMV L2 Contactless', scheme: 'Discover', platform: 'NWP', bundle, expiry_date: expiry, kernel_version: '' });
+  const b4 = mk('Kernel Bundle 4', '2027-03-01');
+  const b5 = mk('Kernel Bundle 5', '2027-03-01');
+  api.store.setAlias('Flex/3XXX CL1', 'Flex/3500-CL1');
+  // The same kernel sits in two bundles; the newest bundle runs a newer one.
+  await api.importKernelCatalog({ text: ['Platform\tBundle\tDiscover\tVisa\tEMV Contact', 'NWP\t3\t04.06\t0301\t4.10', 'NWP\tBundle 4\t0406\t0301\t', 'NWP\tKernel Bundle 5\t0407\t0302\t'].join('\n') });
+  const cat = api.kernelCatalog();
+  assert.deepEqual(cat.bundles.map((b) => b.key), ['NWP|3', 'NWP|4', 'NWP|5']);
+  assert.equal(cat.bundles[0].l2Contact.value, '4.10');
+  assert.equal(cat.bundles.find((b) => b.key === 'NWP|4').bundle, 'Kernel Bundle 4', 'the catalog keeps the spelling your records use');
+  assert.deepEqual(cat.spans.find((s) => s.brand === 'Discover' && s.kernel === '04.06').bundles, ['Bundle 3', 'Kernel Bundle 4'], 'one kernel spans bundles');
+  // A long renewal on the older kernel goes to the bundles that run it, not to the newest bundle.
+  api.ingestDocument({ filename: 'disc.pdf', bytes: Buffer.from('kc1'), pages: [L.discover] });
+  const it = api.listInbox('pending').find((i) => i.filename === 'disc.pdf');
+  const up = it.proposals.find((p) => p.action === 'update');
+  assert.equal(up.record_id, b4.id);
+  assert.match(up.note, /Older kernel 123 v0406 .*Kernel Bundle 5 runs 0407.*normal/);
+  assert.match(up.note, /Not applied to NWP Kernel Bundle 5/);
+  assert.ok(!it.proposals.some((p) => p.record_id === b5.id), 'the bundle running another kernel is left out');
+  const cr = it.proposals.find((p) => p.action === 'create');
+  assert.equal(cr.bundle, 'Bundle 3');
+  assert.ok(cr.optional && cr.pinBundle, 'a record in another bundle is offered, not ticked, when its page does not list the device');
+  assert.ok(!(up.warnings || []).length, 'no "different kernel" or validity warning for a kernel the bundle runs');
+  // Ticking it creates the record in that bundle, even with a bundle set for the letter.
+  api.setInboxDefaults([it.id], { platform: 'NWP', bundle: 'Kernel Bundle 5' });
+  api.applyInbox(it.id, [{ index: it.proposals.indexOf(up) }, { index: it.proposals.indexOf(cr) }]);
+  assert.equal(api.getRecord(b4.id).record.expiry_date, '2029-01-05');
+  assert.equal(api.getRecord(b5.id).record.expiry_date, '2027-03-01', 'the newest bundle keeps its date');
+  const made = api.listRecords().find((r) => r.bundle === 'Bundle 3');
+  assert.equal(made.expiry_date, '2029-01-05');
+  // Bundles screen names the other bundles a kernel runs in.
+  const v = api.bundleView('NWP|4');
+  assert.deepEqual(v.brands.find((b) => b.key === 'discover').alsoIn, ['Bundle 3']);
+  // Typing a kernel overrides; clearing removes it.
+  api.setKernelCatalog({ platform: 'NWP', bundle: 'Bundle 5', kernels: { Discover: '' } });
+  assert.equal(api.kernelCatalog().bundles.find((b) => b.key === 'NWP|5').kernels.discover, undefined);
+  api.removeKernelBundle('NWP|5');
+  assert.ok(!api.kernelCatalog().bundles.some((b) => b.key === 'NWP|5' && b.inCatalog));
+  await assert.rejects(api.importKernelCatalog({ text: 'nothing here' }), /No kernels found/);
+});

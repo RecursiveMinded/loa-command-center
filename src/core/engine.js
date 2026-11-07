@@ -5,7 +5,7 @@
 // The optional local LLM only rephrases and answers questions on top of this.
 
 const { todayIso, daysBetween, addDays, formatDate } = require('./dates');
-const { bundleKernel, kernelMismatch, fitsNote } = require('./bundles');
+const { bundleKernel, kernelMismatch, fitsNote, kernelPages, newerKernel } = require('./bundles');
 const { daysRemaining, effectiveStage, windowFor, health, isEol, WINDOWS } = require('./lifecycle');
 const { certHome } = require('./devices');
 
@@ -339,12 +339,14 @@ const DONE_STAGES = new Set(['Replacement Received', 'Certified']);
 /** One grouped action per escalation point, so the 18-month horizon is visible without one action per record. */
 // What an L2 renewal must cover: the kernel the bundle runs for this brand. A renewal keeps the kernel; only a kernel change needs a new approval.
 function kernelNote(r, settings = {}) {
-  const k = bundleKernel(settings.bundlePages, r);
+  const pages = kernelPages(settings);
+  const k = bundleKernel(pages, r);
   if (!k) return '';
   const what = r.category === 'EMV L2 Contact' ? 'EMV contact kernel' : `${r.scheme} kernel`;
-  const km = r.kernel_version && kernelMismatch(settings.bundlePages, r);
+  const km = r.kernel_version && kernelMismatch(pages, r);
   if (km) return ` This record's LOA is for kernel ${r.kernel_version}, but ${k.page.platform} ${k.page.bundle} runs ${what} ${k.kernel}: the renewal must cover ${k.kernel}.${fitsNote(km)}`;
-  return ` Renew on ${what} ${k.kernel}, the one ${k.page.platform} ${k.page.bundle} runs. A renewal keeps the kernel; it is not a kernel upgrade.`;
+  const nk = newerKernel(pages, r, k.kernel);
+  return ` Renew on ${what} ${k.kernel}, the one ${k.page.platform} ${k.page.bundle} runs. A renewal keeps the kernel; it is not a kernel upgrade.${nk ? ` ${nk.platform} ${nk.bundle} already runs ${nk.kernel}: renewing this older kernel for the longest term lets customers stay on it until they upgrade.` : ''}`;
 }
 
 function radarActions(rows, { add, asOf }) {

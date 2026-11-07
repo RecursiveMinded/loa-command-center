@@ -392,7 +392,7 @@ class AppApi {
       for (const r of check.extra) diff[r.id] = { kind: 'extra' };
     }
     const { kernelMismatch } = require('./bundles');
-    const pages = this.store.getSettings().bundlePages;
+    const pages = this.kernelPages();
     const cell = (r) => (r ? { id: r.id, wrongKernel: kernelMismatch(pages, r), expiry_date: r.expiry_date, health: r.health, days: r.days, approval_number: r.approval_number, eol: r.eol || '', kernel_version: r.kernel_version || '', doc_count: r.doc_count, diff: diff[r.id] || null } : null);
     const rows = (list) => list.map((row) => ({ row: row.row, device: row.device, version: row.version, cells: Object.fromEntries(Object.entries(row.cells).map(([k, r]) => [k, cell(r)])) }));
     const sections = Object.fromEntries(Object.entries(view.sections).map(([k, v]) => [k, rows(v)]));
@@ -419,15 +419,155 @@ class AppApi {
       (seen[k] = seen[k] || {})[r.kernel_version] = (seen[k][r.kernel_version] || 0) + 1;
     }
     for (const [k, m] of Object.entries(seen)) kernels[k] = Object.entries(m).sort((a, b) => b[1] - a[1])[0][0];
-    for (const [b, v] of Object.entries((page && page.ctx && page.ctx.kernels) || {})) kernels[b.toLowerCase()] = v;
+    const kp = pages[key];
+    for (const [b, v] of Object.entries((kp && kp.ctx.kernels) || {})) kernels[b.toLowerCase()] = v;
+    const { kernelBundles } = require('./bundles');
+    const platform = g ? g.platform : kp ? kp.platform : '';
+    // The same kernel often runs in several bundles: name the others.
+    const alsoIn = (category, scheme, kernel) => kernelBundles(pages, { category, scheme, platform }, kernel).filter((b) => b.key !== key).map((b) => b.bundle);
+    const l2k = view.l2contact ? view.l2contact.kernel_version || '' : (kp && kp.ctx.l2Contact ? kp.ctx.l2Contact.version : '');
     return {
       key, platform: g ? g.platform : page ? page.platform : '', bundle: g ? g.bundle : page ? page.bundle : '',
       sections, l2missing,
-      l2contact: cell(view.l2contact), l2contactKernel: view.l2contact ? view.l2contact.kernel_version || '' : (page && page.ctx && page.ctx.l2Contact ? page.ctx.l2Contact.version : ''),
-      brands: allBrands.map((b) => ({ ...b, kernel: kernels[b.key] || '' })), dates: view.dates, duplicates: view.duplicates.length,
+      l2contact: cell(view.l2contact), l2contactKernel: l2k, l2contactAlsoIn: l2k ? alsoIn('EMV L2 Contact', 'EMVCo', l2k) : [],
+      brands: allBrands.map((b) => ({ ...b, kernel: kernels[b.key] || '', alsoIn: kernels[b.key] ? alsoIn('EMV L2 Contactless', b.label, kernels[b.key]) : [] })), dates: view.dates, duplicates: view.duplicates.length,
       page: page ? { filename: page.filename, at: page.at, dates: check.pageDates, blanks: check.pageBlanks } : null,
       issues: check ? summarizeCheck(check) : null, missing,
     };
+  }
+
+  /** Brand kernels per bundle: website pages read, overlaid with the kernel catalog. */
+  kernelPages() { return require('./bundles').kernelPages(this.store.getSettings()); }
+
+  /**
+   * The kernel catalog: every bundle of every platform with the kernel it runs per card
+   * brand (and the EMV contact kernel), from the website pages you read and what you
+   * typed or imported. `spans` lists each brand kernel with every bundle that runs it.
+   */
+  kernelCatalog() {
+    const { bundleNo } = require('./bundles');
+    const pages = this.kernelPages();
+    const catalog = this.store.getSettings().kernelCatalog || {};
+    const known = this.coverageSlots().brands;
+    const brandSet = new Map(known.map((b) => [b.toLowerCase(), b]));
+    const bundles = Object.entries(pages).map(([key, p]) => {
+      const kernels = {};
+      for (const [b, v] of Object.entries(p.ctx.kernels || {})) {
+        if (!brandSet.has(b.toLowerCase())) brandSet.set(b.toLowerCase(), b);
+        kernels[b.toLowerCase()] = { value: v, source: p.source[b] || 'page' };
+      }
+      const l2 = p.ctx.l2Contact && p.ctx.l2Contact.version ? { value: p.ctx.l2Contact.version, source: p.source['EMV Contact'] || 'page' } : null;
+      return { key, platform: p.platform || key.split('|')[0], bundle: p.bundle || key.split('|')[1], l2Contact: l2, kernels, page: !!(this.store.getSettings().bundlePages || {})[key], inCatalog: !!catalog[key] };
+    });
+    // Bundles your records name with no kernels yet are listed too, as gaps to fill.
+    for (const g of this.bundleGroups().values()) {
+      if (!g.bundle || pages[g.key]) continue;
+      if (!g.records.some((r) => /^EMV L2/.test(r.category))) continue;
+      bundles.push({ key: g.key, platform: g.platform, bundle: g.bundle, l2Contact: null, kernels: {}, page: false, inCatalog: false });
+    }
+    bundles.sort((a, b) => a.platform.localeCompare(b.platform) || bundleNo(a.bundle) - bundleNo(b.bundle) || a.bundle.localeCompare(b.bundle));
+    const kernelIds = (v) => (String(v || '').match(/\d+(?:\.\d+)*/g) || []).map((t) => t.replace(/\./g, '').replace(/^0+/, '')).join('.');
+    const spans = [];
+    const add = (platform, brand, kernel, bundle) => {
+      const id = `${platform}|${brand.toLowerCase()}|${kernelIds(kernel) || kernel}`;
+      let x = spans.find((s) => s.id === id);
+      if (!x) spans.push(x = { id, platform, brand, kernel, bundles: [] });
+      x.bundles.push(bundle);
+    };
+    for (const b of bundles) {
+      if (b.l2Contact) add(b.platform, 'EMV Contact', b.l2Contact.value, b.bundle);
+      for (const [k, v] of Object.entries(b.kernels)) add(b.platform, brandSet.get(k) || k, v.value, b.bundle);
+    }
+    return { bundles, brands: [...brandSet.values()], spans };
+  }
+
+  /**
+   * Set one bundle's kernels in the catalog: { platform, bundle, l2Contact, kernels: { Brand: version } }.
+   * An empty version clears what you typed (a website page's value shows again).
+   */
+  setKernelCatalog({ platform, bundle, l2Contact, kernels = {} }) {
+    const { bundleKey } = require('./bundles');
+    platform = String(platform || '').trim(); bundle = String(bundle || '').trim();
+    if (!platform || !bundle) throw new Error('Give the platform and the bundle, e.g. ARC and Bundle 3');
+    const key = bundleKey(platform, bundle);
+    const all = { ...(this.store.getSettings().kernelCatalog || {}) };
+    // Keep the spelling your records use for this bundle.
+    const g = this.bundleGroups().get(key);
+    const cur = all[key] || { platform: g ? g.platform : platform, bundle: g ? g.bundle : bundle, kernels: {} };
+    const next = { ...cur, kernels: { ...cur.kernels } };
+    if (l2Contact !== undefined) next.l2Contact = String(l2Contact || '').trim();
+    for (const [b, v] of Object.entries(kernels)) {
+      const had = Object.keys(next.kernels).find((x) => x.toLowerCase() === b.toLowerCase());
+      if (had) delete next.kernels[had];
+      if (String(v || '').trim()) next.kernels[b] = String(v).trim();
+    }
+    all[key] = next;
+    this.store.setSettings({ kernelCatalog: all });
+    return { key };
+  }
+
+  /** Remove a bundle from the kernel catalog (a website page read for it stays). */
+  removeKernelBundle(key) {
+    const all = { ...(this.store.getSettings().kernelCatalog || {}) };
+    delete all[key];
+    this.store.setSettings({ kernelCatalog: all });
+    return { key };
+  }
+
+  /**
+   * Import kernels from a spreadsheet, CSV or pasted table. Either one row per bundle
+   * (Platform, Bundle, then a column per card brand and EMV Contact) or one row per
+   * kernel (Platform, Bundle, Brand, Kernel).
+   */
+  async importKernelCatalog({ filename = 'pasted.txt', bytes, text }) {
+    const { readWorkbook } = require('./importer');
+    let sheets;
+    if (text != null) {
+      const t = String(text);
+      const rows = t.split(/\r?\n/).filter((l) => l.trim()).map((l) => (l.includes('\t') ? l.split('\t') : null));
+      sheets = rows.every(Boolean) ? [{ name: 'Pasted', rows }] : await readWorkbook('pasted.csv', Buffer.from(t));
+    } else sheets = await readWorkbook(filename, bytes);
+    const h = (v) => String(v == null ? '' : v).trim();
+    const brands = this.coverageSlots().brands;
+    const brandOf = (v) => {
+      const x = h(v).toLowerCase().replace(/\s*(kernel|l2|contactless|version)\s*/g, ' ').trim();
+      if (/^(emv\s*)?contact$|^emvco$|^l2 contact$|^emv l2 contact$/.test(x) || /^emv contact/.test(h(v).toLowerCase())) return 'EMV Contact';
+      if (/^(mc|master ?card)/.test(x)) return 'Mastercard';
+      if (/^(amex|american express)/.test(x)) return 'Amex';
+      if (/^(upi|cup|union ?pay)/.test(x)) return brands.find((b) => /union|upi/i.test(b)) || 'UnionPay';
+      return brands.find((b) => b.toLowerCase() === x || x.startsWith(b.toLowerCase())) || (x ? h(v).replace(/\s*(kernel|version)\s*$/i, '') : '');
+    };
+    const found = new Map();
+    const put = (platform, bundle, brand, kernel) => {
+      platform = h(platform); bundle = h(bundle); kernel = h(kernel); brand = brandOf(brand);
+      if (!platform || !bundle || !brand || !kernel || /^[-—n\/a]+$/i.test(kernel)) return;
+      if (!/bundle/i.test(bundle) && /^\d+(\.\d+)?$/.test(bundle)) bundle = `Bundle ${bundle}`;
+      const k = `${platform}|${bundle}`;
+      if (!found.has(k)) found.set(k, { platform, bundle, l2Contact: undefined, kernels: {} });
+      const e = found.get(k);
+      if (brand === 'EMV Contact') e.l2Contact = kernel; else e.kernels[brand] = kernel;
+    };
+    for (const sh of sheets) {
+      const rows = sh.rows.map((r) => (r || []).map(h));
+      const hi = rows.findIndex((r) => r.some((c) => /^platform$/i.test(c)) && r.some((c) => /bundle/i.test(c)));
+      if (hi < 0) continue;
+      const head = rows[hi].map((c) => c.toLowerCase());
+      const pi = head.findIndex((c) => c === 'platform');
+      const bi = head.findIndex((c) => /bundle/.test(c));
+      const ri = head.findIndex((c) => /^(brand|card brand|scheme)$/.test(c));
+      const ki = head.findIndex((c) => /^(kernel|kernel version|version)$/.test(c));
+      for (const r of rows.slice(hi + 1)) {
+        if (ri >= 0 && ki >= 0) put(r[pi], r[bi], r[ri], r[ki]);
+        else head.forEach((c, i) => { if (i !== pi && i !== bi && c) put(r[pi], r[bi], rows[hi][i], r[i]); });
+      }
+    }
+    if (!found.size) throw new Error('No kernels found. Use columns Platform, Bundle and one column per card brand (or Platform, Bundle, Brand, Kernel).');
+    let kernels = 0;
+    for (const e of found.values()) {
+      this.setKernelCatalog(e);
+      kernels += Object.keys(e.kernels).length + (e.l2Contact ? 1 : 0);
+    }
+    return { bundles: found.size, kernels };
   }
 
   /**
@@ -594,7 +734,7 @@ class AppApi {
       }
     }
     // An LOA for another kernel than the bundle runs does not apply to the bundle.
-    const km = (keyChanged || dateChanged) && kernelMismatch(this.store.getSettings().bundlePages, r);
+    const km = (keyChanged || dateChanged) && kernelMismatch(this.kernelPages(), r);
     if (km) out.push({ level: 'stop', title: `Wrong kernel: this approval is for kernel ${km.kernel}, ${km.platform} ${km.bundle} runs ${km.expected}`, detail: `${r.scheme ? `${r.scheme} ` : ''}${r.category} dates only apply to the kernel the bundle runs. Find the LOA for kernel ${km.expected}, or leave the website date as it is.${fitsNote(km)}` });
     if (keyChanged && r.kernel_version && /^EMV L1/.test(r.category)) out.push({ level: 'warn', title: 'Kernel versions belong to L2 approvals', detail: 'An L1 approval covers the hardware interface, not a kernel build. Leave the kernel empty on L1 records.' });
     return out;
@@ -1240,7 +1380,7 @@ class AppApi {
   changeRequest() {
     const { bundleKernel, kernelMismatch, fitsNote } = require('./bundles');
     const { deviceFromFilename, splitVariant } = require('./devices');
-    const pages = this.store.getSettings().bundlePages || {};
+    const pages = this.kernelPages();
     const norm = this.store.norm();
     const records = this.store.listRecords();
     const byId = new Map(records.map((r) => [r.id, r]));
@@ -1310,7 +1450,7 @@ class AppApi {
   aiAsk(question) { return this.ai.ask(question, this.analysis(), this.store.listRecords()); }
 
   /** Data integrity spot checks (dates, conflicting approval numbers, typos, missing foundations...). */
-  dataChecks() { return require('./integrity').dataChecks(this.listRecords(), { norm: this.store.norm(), pages: this.store.getSettings().bundlePages }); }
+  dataChecks() { return require('./integrity').dataChecks(this.listRecords(), { norm: this.store.norm(), pages: this.kernelPages() }); }
 
   /** The data checks with clean-up recommendations from the local AI when it is on. */
   async aiDataReview() {
@@ -1415,7 +1555,7 @@ class AppApi {
 const PUBLIC_METHODS = [
   'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'deleteRecords', 'bulkUpdate',
   'listArchive', 'archiveCount', 'expiredRecords', 'archiveExpired', 'restoreArchived', 'purgeArchived',
-  'activateReplacement', 'deviceCoverage', 'deviceProfile', 'listBundles', 'bundleView', 'readBundlePage', 'bundleDifferences', 'cleanBundle', 'bundleReport', 'checkRecord', 'listReaderGroups', 'setReaderGroup', 'listFamilyNotes', 'setCoverageNA', 'createMissing', 'createSlot', 'addCertWithLoa', 'listTags', 'knownDevices', 'listAliases', 'listLearned', 'forgetLearned', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'listPlatformDevices', 'setPlatformDevices', 'platformForDevice', 'devicesOnPlatform', 'applyPlatformDevices', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
+  'activateReplacement', 'deviceCoverage', 'deviceProfile', 'listBundles', 'bundleView', 'kernelCatalog', 'setKernelCatalog', 'removeKernelBundle', 'importKernelCatalog', 'readBundlePage', 'bundleDifferences', 'cleanBundle', 'bundleReport', 'checkRecord', 'listReaderGroups', 'setReaderGroup', 'listFamilyNotes', 'setCoverageNA', 'createMissing', 'createSlot', 'addCertWithLoa', 'listTags', 'knownDevices', 'listAliases', 'listLearned', 'forgetLearned', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'listPlatformDevices', 'setPlatformDevices', 'platformForDevice', 'devicesOnPlatform', 'applyPlatformDevices', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
   'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
   'documentText', 'deviceView', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'setEol', 'dataChecks', 'aiDataReview', 'briefingReport', 'exportL3Sheet', 'duplicateInfo', 'mapDuplicate', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'heldChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',

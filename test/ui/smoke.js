@@ -332,6 +332,19 @@ function pdfFromPages(pages) {
     check(await p.locator('.modal >> text=/website shows/').count() > 0, 'editing a date that disagrees with the website pops up a warning');
     await p.click('.modal button:has-text("Go back and fix")');
     await p.click('.drawer button:has-text("Close")');
+    // Kernel catalog: paste each bundle's brand kernels; a kernel in two bundles is marked shared.
+    await p.click('button:has-text("Kernel catalog")');
+    await p.click('.modal button:has-text("Paste a table")');
+    await p.fill('textarea[aria-label="Pasted kernel table"]', 'Platform\tBundle\tVisa\tDiscover\nARC\tBundle 3\t0301\t0202\nARC\tBundle 4\t0301\t0203\nARC\tBundle 5\t0302\t0203');
+    await p.click('.modal button:has-text("Import pasted table")');
+    await p.waitForSelector('.modal >> text=Kernels that run in more than one bundle', { timeout: 5000 });
+    check(await p.locator('.modal input.kin.shared').count() === 4, 'kernel catalog imported; shared kernels marked across bundles');
+    await p.fill('.modal input[aria-label="ARC Bundle 5 Visa kernel"]', '0303');
+    await p.press('.modal input[aria-label="ARC Bundle 5 Visa kernel"]', 'Enter');
+    await p.waitForFunction(() => document.querySelector('.modal input[aria-label="ARC Bundle 5 Visa kernel"]').value === '0303');
+    if (process.env.LOA_SHOTS) await p.locator('.modal').screenshot({ path: path.join(process.env.LOA_SHOTS, 'kernel-catalog.png') });
+    check(true, 'a kernel typed in the catalog is saved');
+    await p.click('.modal button[aria-label="Close"]');
     check(!errors.length, `no page errors${errors.length ? `: ${errors.join(' | ')}` : ''}`);
   } catch (e) {
     check(false, e.message.split('\n')[0]);

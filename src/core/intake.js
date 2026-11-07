@@ -10,7 +10,7 @@ const { parseDocument } = require('./loa-parser');
 const { deviceScore, wildcardRegex, splitVariant, deviceFromFilename, categoryFromFilename, schemeFromFilename } = require('./devices');
 const { todayIso, daysBetween } = require('./dates');
 const { coverage } = require('./lifecycle');
-const { kernelMismatch, fitsNote } = require('./bundles');
+const { kernelMismatch, fitsNote, kernelPages, kernelBundles, newerKernel, bundleNames, bundleKey } = require('./bundles');
 
 const RENEWAL_STAGES = new Set(['Renewal Requested', 'Pending New LOA', 'Replacement Received']);
 
@@ -104,6 +104,14 @@ function buildProposals(letter, records, { norm, aliases = {}, noiseWords = [], 
       const learnedName = aliases[norm(prod.value)];
       const device = learnedName || displayDevice(prod.value, noiseWords);
       const place = inferPlace(device, records, norm, platformDevices);
+      // An L2 letter belongs in a bundle that runs its kernel: the newest one, when the usual bundle runs another.
+      const kv = /^EMV L2/.test(letter.category || '') && val(letter.kernelVersion);
+      const fits = kv && place.fields.platform ? kernelBundles(pages, { category: letter.category, scheme: letter.scheme, platform: place.fields.platform }, kv) : [];
+      if (fits.length && !fits.some((b) => b.key === bundleKey(place.fields.platform, place.fields.bundle))) {
+        const b = fits[fits.length - 1];
+        place.fields.bundle = b.bundle;
+        place.note = [place.note, `${b.bundle} because it runs kernel ${b.kernel}${fits.length > 1 ? ` (so do ${bundleNames(fits.slice(0, -1))})` : ''}`].filter(Boolean).join('; ');
+      }
       proposals.push({
         action: 'create',
         device,
@@ -122,19 +130,74 @@ function buildProposals(letter, records, { norm, aliases = {}, noiseWords = [], 
     // Exact/strong matches; a family name may legitimately match many records.
     const top = scored[0].s;
     let chosen = scored.filter((x) => x.s >= Math.min(top, isFamily ? 60 : 80));
-    // Several records for one device (e.g. PCI v5 and v6): prefer the one this letter is about.
-    const exact = chosen.filter((x) => (pExpiry && x.r.expiry_date === pExpiry) || (approval && x.r.approval_number === approval));
-    if (exact.length) chosen = exact;
+    // Several records for one device in one bundle (e.g. PCI v5 and v6): prefer the one this letter is about.
+    // Each bundle is narrowed on its own: the same device sits in several bundles.
+    const perBundle = new Map();
+    for (const x of chosen) {
+      const k = bundleKey(x.r.platform, x.r.bundle);
+      if (!perBundle.has(k)) perBundle.set(k, []);
+      perBundle.get(k).push(x);
+    }
+    chosen = [...perBundle.values()].flatMap((list) => {
+      const exact = list.filter((x) => (pExpiry && x.r.expiry_date === pExpiry) || (approval && x.r.approval_number === approval));
+      return exact.length ? exact : list;
+    });
     // "Lane/5000" may match both the CL2 and CL3 readers; a person has to pick.
     const ambiguous = chosen.length > 1 && !isFamily && !splitVariant(norm(prod.value)).variant
       && chosen.some((x) => splitVariant(norm(x.r.device)).variant);
+    let mine = [];
     for (const { r, s } of chosen) {
       const p = proposalFor(r, s, { ...letter, approval: prod.label || approval, expiry: pExpiry, issue }, { asOf, auditFor, pages });
       if (ambiguous) p.warnings = [...p.warnings, `The letter says "${prod.value}" without a reader version (CL1, CL2...). Confirm it covers ${r.device}.`];
-      proposals.push(p);
+      mine.push(p);
     }
+    mine = spreadOverBundles(mine, chosen, letter, prod, { norm, pages, kv: val(letter.kernelVersion) });
+    proposals.push(...mine);
   }
   return dedupe(proposals);
+}
+
+/**
+ * An L2 letter applies to every bundle that runs its kernel, not only the one its record
+ * sits in: a bundle is a snapshot of the kernels current when it was cut, so one kernel
+ * version often spans several bundles. For a letter whose kernel the catalog knows:
+ *  - offer a record in each bundle that runs the kernel where the device has none yet
+ *    (ticked when that bundle's website page lists the device, otherwise left for you)
+ *  - leave out the bundles that run another kernel once the letter applies somewhere.
+ */
+function spreadOverBundles(props, chosen, letter, prod, { norm, pages, kv }) {
+  if (!kv || !/^EMV L2/.test(letter.category || '')) return props;
+  const devices = [...new Set(chosen.map((x) => norm(x.r.device)))];
+  const out = [...props];
+  if (devices.length === 1) {
+    const r0 = chosen[0].r;
+    const have = new Set(chosen.map((x) => bundleKey(x.r.platform, x.r.bundle)));
+    const fits = [...new Set(chosen.map((x) => x.r.platform).filter(Boolean))]
+      .flatMap((platform) => kernelBundles(pages, { category: letter.category, scheme: letter.scheme, platform }, kv));
+    const expiry = prod.expiry || val(letter.expiryDate);
+    for (const b of fits) {
+      if (have.has(b.key)) continue;
+      const page = pages[b.key] || {};
+      const listed = (page.rows || []).some((x) => x.category === letter.category && sameScheme(x.scheme, letter.scheme) && norm(x.device) === devices[0]);
+      out.push({
+        action: 'create', device: r0.device, from: prod.value, category: letter.category, scheme: letter.scheme, platform: b.platform, bundle: b.bundle,
+        score: chosen[0].s, pinBundle: true, optional: !listed, changes: {},
+        record: { ...letterRecord(letter, r0.device, prod), platform: b.platform, bundle: b.bundle },
+        note: `${b.platform} ${b.bundle} also runs ${letter.scheme && letter.category === 'EMV L2 Contactless' ? `${letter.scheme} ` : ''}kernel ${b.kernel}, and ${r0.device} has no record there yet.${listed ? ' Its website page lists this device.' : ' Tick it if the device is in that bundle.'}`,
+        warnings: expiry ? [] : ['No expiry date: the record will show as "Missing date"'],
+      });
+    }
+  }
+  const applies = out.some((p) => !p.kernelMismatch && !p.optional);
+  if (!applies) return out;
+  const skipped = out.filter((p) => p.kernelMismatch);
+  const kept = out.filter((p) => !p.kernelMismatch);
+  if (skipped.length) {
+    const first = kept.find((p) => !p.optional) || kept[0];
+    const other = skipped.map((p) => `${p.kernelMismatch.platform} ${p.kernelMismatch.bundle} (runs ${p.kernelMismatch.expected})`).join(', ');
+    first.note = [first.note, `Not applied to ${other}: that bundle runs another kernel.`].filter(Boolean).join(' ');
+  }
+  return kept;
 }
 
 /**
@@ -319,7 +382,11 @@ function proposalFor(r, score, L, { asOf, auditFor, pages }) {
   if (L.restricted && !r.restricted) changes.restricted = { from: false, to: true };
 
   const warnings = [];
-  if (newKernel) warnings.push(`Different kernel: this letter approves ${kv}, the record has ${r.kernel_version}. Check that the new kernel replaces the old one and is not a second approval to track separately`);
+  // The catalog says this bundle runs the letter's kernel: the record's old kernel value was out of date.
+  const runs = kv && kernelBundles(pages, r, kv).some((b) => b.key === bundleKey(r.platform, r.bundle));
+  if (newKernel && !runs) warnings.push(`Different kernel: this letter approves ${kv}, the record has ${r.kernel_version}. Check that the new kernel replaces the old one and is not a second approval to track separately`);
+  const nk = runs && newerKernel(pages, r, kv);
+  const older = nk ? `Older kernel ${kv} (${nk.platform} ${nk.bundle} runs ${nk.kernel}): a long renewal on an older kernel is normal when a newer one is coming, so customers can stay on it without recertifying.` : '';
   if (L.expiryBasis && L.expiryBasis.startsWith('Calculated')) warnings.push('Expiry was calculated from the validity period');
   if (auditFor) {
     const last = auditFor(r.id, 'expiry_date');
@@ -339,17 +406,23 @@ function proposalFor(r, score, L, { asOf, auditFor, pages }) {
   if (RENEWAL_STAGES.has(r.stage)) changes.stage = { from: r.stage, to: '' };
   if (r.archived) changes.archived = { from: true, to: false };
   const gain = cur ? daysBetween(cur, L.expiry) : null;
-  return { ...base, action: 'update', changes, warnings, note: gain != null ? `Extends coverage by ${gain} days` : 'Sets the first known expiry' };
+  return { ...base, action: 'update', changes, warnings, note: [gain != null ? `Extends coverage by ${gain} days.` : 'Sets the first known expiry.', older].filter(Boolean).join(' ') };
 }
 
 function dedupe(list) {
   const seen = new Set();
   return list.filter((p) => {
-    const k = `${p.action}|${p.record_id || p.device}|${p.category}|${p.scheme}`;
+    const k = `${p.action}|${p.record_id || p.device}|${p.category}|${p.scheme}|${p.record_id ? '' : p.pinBundle ? bundleKey(p.platform, p.bundle) : ''}`;
     if (seen.has(k)) return false;
     seen.add(k);
     return true;
   });
+}
+
+/** A letter is safe to apply unattended when every proposal it would apply is (optional ones are left out). */
+function itemSafe(proposals, letter, threshold) {
+  const apply = (proposals || []).filter((p) => !p.optional);
+  return apply.length > 0 && apply.every((p) => isSafe(p, letter, threshold));
 }
 
 /** A proposal is "safe" when it can be applied without a human looking at it. */
@@ -375,7 +448,7 @@ class Intake {
       aliases: this.store.aliases(),
       noiseWords: s.noiseWords,
       learned: s.learned || [],
-      pages: s.bundlePages || {},
+      pages: kernelPages(s),
       platformDevices: s.platformDevices || {},
       asOf: todayIso(),
       auditFor: (id, f) => db.get("SELECT ts, source FROM audit WHERE record_id=? AND field=? AND action='update' ORDER BY id DESC LIMIT 1", [id, f]),
@@ -569,7 +642,9 @@ class Intake {
         if (!p) continue;
         this.learn(p, d, edits, item);
         if (p.action === 'create') {
-          const rec = { ...p.record, ...nonEmpty(defaults), ...edits, source: 'loa', verified_at: new Date().toISOString(), verified_by: actor };
+          // A record offered for another bundle that runs the letter's kernel keeps that bundle.
+          const pin = p.pinBundle ? { platform: p.record.platform, bundle: p.record.bundle } : {};
+          const rec = { ...p.record, ...nonEmpty(defaults), ...pin, ...edits, source: 'loa', verified_at: new Date().toISOString(), verified_by: actor };
           let r = this.store.findByKey(rec);
           if (!r) r = this.store.createRecord(rec, { source: src, actor });
           this.store.linkDocument(item.document_id, r.id);
@@ -585,7 +660,7 @@ class Intake {
           let action = p.action;
           let changes = p.changes || {};
           if (p.action === 'unmatched') {
-            const fresh = proposalFor(r, 100, { ...L, approval: val(L.approvalNumber), expiry: val(L.expiryDate), issue: val(L.issueDate) }, { asOf: todayIso(), pages: this.store.getSettings().bundlePages || {} });
+            const fresh = proposalFor(r, 100, { ...L, approval: val(L.approvalNumber), expiry: val(L.expiryDate), issue: val(L.issueDate) }, { asOf: todayIso(), pages: kernelPages(this.store.getSettings()) });
             action = fresh.action; changes = fresh.changes;
             if (fresh.action === 'replacement') p.replacement = fresh.replacement;
           }
@@ -687,7 +762,7 @@ class Intake {
       const it = this.store.getInbox(id);
       if (!it || it.status !== 'pending') continue;
       const decisions = it.proposals.map((p, i) => ({ p, index: i }))
-        .filter(({ p }) => p.action !== 'unmatched' && !(p.warnings || []).some((w) => /Confirm it covers/.test(w)))
+        .filter(({ p }) => p.action !== 'unmatched' && !p.optional && !(p.warnings || []).some((w) => /Confirm it covers/.test(w)))
         .map(({ index }) => ({ index }));
       if (!decisions.length) {
         skipped.push({ id, filename: it.filename, reason: it.proposals.length ? 'needs you to choose the records it covers' : 'no device or record to update' });
@@ -726,9 +801,8 @@ class Intake {
     const recordIds = new Set();
     for (const it of this.store.listInbox({ status: 'pending' })) {
       if (!it.proposals.length) continue;
-      const allSafe = it.proposals.every((p) => isSafe(p, it.parsed, threshold));
-      if (!allSafe) continue;
-      const res = this.apply(it.id, it.proposals.map((_, i) => ({ index: i })), { actor });
+      if (!itemSafe(it.proposals, it.parsed, threshold)) continue;
+      const res = this.apply(it.id, it.proposals.map((p, i) => ({ p, index: i })).filter(({ p }) => !p.optional).map(({ index }) => ({ index })), { actor });
       items++;
       changes += res.length;
       for (const r of res) if (r.record_id) recordIds.add(r.record_id);
@@ -747,4 +821,4 @@ function pick(o, keys) {
   return out;
 }
 
-module.exports = { Intake, buildProposals, proposalFor, isSafe, sha256, archiveFile, displayDevice, presetPlatform };
+module.exports = { Intake, buildProposals, proposalFor, isSafe, itemSafe, sha256, archiveFile, displayDevice, presetPlatform };

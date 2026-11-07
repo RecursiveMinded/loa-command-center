@@ -44,6 +44,15 @@ function dataChecks(records, { norm = defaultNorm, pages = {} } = {}) {
     'Find the LOA for the kernel the bundle runs, or move this record to the bundle that runs its kernel. These are left out of website change requests.',
     live.filter((r) => kernelMismatch(pages, r)));
 
+  // Once you keep a kernel catalog, L2 approvals in a bundle it has no kernel for cannot be checked.
+  const { bundleKernel } = require('./bundles');
+  if (Object.keys(pages || {}).length) {
+    add('kernel-catalog-gap', 'low', (n) => `${n} L2 approval${n === 1 ? ' is' : 's are'} in a bundle the kernel catalog has no kernel for`,
+      'Each bundle runs one kernel per card brand, and the same kernel often runs in several bundles. Without it, the app cannot tell which bundles an L2 LOA applies to.',
+      'Open Bundles > Kernel catalog and fill in the kernel for these bundles and brands (or read the bundle\'s website page).',
+      live.filter((r) => /^EMV L2/.test(r.category) && r.platform && r.bundle && !bundleKernel(pages, r)));
+  }
+
   // Dates that cannot be right.
   add('dates-order', 'high', (n) => `${n} record${n === 1 ? ' expires' : 's expire'} before ${n === 1 ? 'it was' : 'they were'} issued`,
     'The expiry date is earlier than the issue date, usually a misread or swapped date.', 'Open the LOA and correct the dates.',
