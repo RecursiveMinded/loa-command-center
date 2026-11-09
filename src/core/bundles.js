@@ -319,4 +319,4 @@ const bundleNames = (list) => list.map((b) => b.bundle).join(', ');
 /** "It fits Kernel Bundle 3", for messages about a wrong-kernel LOA. */
 const fitsNote = (km) => (km && km.fits ? ` Its kernel matches ${km.platform} ${km.fits}: the date belongs on ${km.fits.includes(',') ? 'those bundles\' pages' : 'that bundle\'s page'}.` : '');
 
-module.exports = { bundleKey, cellOf, layout, bundleCheck, pciVersion, kernelMatches, bundleKernel, kernelMismatch, fitsNote, kernelPages, kernelBundles, newerKernel, bundleNames, bundleNo, kernelFit };
+module.exports = { bundleKey, cellOf, layout, bundleCheck, pciVersion, kernelMatches, bundleKernel, kernelMismatch, fitsNote, kernelPages, kernelBundles, newerKernel, bundleNames, bundleNo, kernelFit, kernelIds };

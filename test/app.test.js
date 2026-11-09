@@ -1264,3 +1264,112 @@ test('website pages: the specification table gives each brand kernel, and Bundle
   api.cleanBundle('NWP|2', { missing: true });
   assert.equal(api.listRecords().find((r) => r.scheme === 'Visa').restriction, 'waiver', 'a struck date on the page is a waiver');
 });
+
+test('cert team loop: questions with kernels, status by kernel, and a pasted reply applied', async () => {
+  const { api } = await fresh();
+  const soon = addDays(todayIso(), 60), past = addDays(todayIso(), -30), far = addDays(todayIso(), 900);
+  const a = api.store.createRecord({ device: 'DX4000', category: 'EMV L2 Contactless', scheme: 'Visa', platform: 'ARC', bundle: 'Kernel Bundle 3', kernel_version: '0301', expiry_date: soon });
+  const b = api.store.createRecord({ device: 'DX8000', category: 'EMV L2 Contactless', scheme: 'Visa', platform: 'ARC', bundle: 'Kernel Bundle 3', kernel_version: '0301', expiry_date: soon });
+  const c = api.store.createRecord({ device: 'DX4000', category: 'EMV L2 Contactless', scheme: 'JCB', platform: 'ARC', bundle: 'Kernel Bundle 3', kernel_version: '0106', expiry_date: past });
+  const d = api.store.createRecord({ device: 'Lane/3000', category: 'EMV L1 Contact', scheme: 'EMVCo', expiry_date: far });
+  const q = api.certQuestions({ months: 12 });
+  const renew = q.sections.find((s) => s.key === 'renewal');
+  assert.ok(renew.items.some((x) => /kernel 0301/.test(x.text) && /DX4000, DX8000/.test(x.text)), 'expiring L2 approvals are asked about with their kernel');
+  assert.ok(q.sections.find((s) => s.key === 'expired').items.some((x) => /kernel 0106/.test(x.text)));
+  let st = api.certStatus();
+  const row = (id) => st.rows.find((r) => r.ids.includes(id));
+  assert.equal(row(a.id).status, 'expiring');
+  assert.equal(row(a.id).kernel, '0301');
+  assert.equal(row(c.id).status, 'expired');
+  assert.equal(row(d.id).status, 'certified');
+
+  const reply = [
+    'Hi Brian,',
+    '> ARC Bundle 3: Visa L2 Contactless, kernel 0301, expires soon: DX4000, DX8000',
+    'Renewal submitted to the lab, expected 03/31/2027.',
+    'JCB kernel 1.06: cannot be renewed due to the scheme mandate, replacement kernel 0202.',
+    'Something about nothing in particular we will renew.',
+    'Thanks, Simon',
+  ].join('\n');
+  const r = api.readCertReply(reply);
+  const visa = r.items.find((x) => x.ids.includes(a.id));
+  assert.equal(visa.decision, 'renew');
+  assert.deepEqual(visa.ids.sort(), [a.id, b.id].sort());
+  assert.equal(visa.date, '2027-03-31');
+  const jcb = r.items.find((x) => x.ids.includes(c.id));
+  assert.equal(jcb.decision, 'mandate');
+  assert.equal(jcb.replacement, '0202');
+  assert.deepEqual(jcb.ids, [c.id], 'a kernel number picks only the records running it');
+  assert.equal(r.unread.length, 1);
+
+  const out = api.applyCertReply(r.items);
+  assert.equal(out.changed, 3);
+  assert.equal(api.store.getRecord(a.id).stage, 'Renewal Requested');
+  assert.match(api.store.getRecord(a.id).notes, /cert team: Renewal coming/);
+  assert.equal(api.store.getRecord(c.id).restriction, 'mandate');
+  st = api.certStatus();
+  assert.equal(row(a.id).status, 'renewing');
+  assert.equal(row(c.id).status, 'mandate');
+  assert.ok(!api.certQuestions({ months: 12 }).sections.some((s) => s.key === 'renewal'), 'answered items stop being asked');
+
+  // "Letting it expire" / "no longer certified" close the question too.
+  const e = api.readCertReply('DX4000 Visa kernel 0301: we are letting it expire.\nLane/3000: end of life, no longer certified.');
+  assert.deepEqual(e.items.map((x) => x.decision), ['letexpire', 'eol']);
+  api.applyCertReply(e.items);
+  assert.equal(api.store.getRecord(d.id).disposition, 'Market Approved Expiration');
+  assert.ok(api.store.getRecord(d.id).eol);
+});
+
+test('new devices listed under a platform with no LOA are asked about and shown as in certification', async () => {
+  const { api } = await fresh();
+  api.store.createRecord({ device: 'DX4000', category: 'EMV L2 Contactless', scheme: 'Visa', platform: 'ARC', bundle: 'Kernel Bundle 5', kernel_version: '0302', expiry_date: addDays(todayIso(), 900), approval_number: 'V1' });
+  api.setPlatformDevices('ARC', ['DX4000', 'DX2', 'DX4', 'RX9']);
+  const q = api.certQuestions({ months: 12 });
+  const s = q.sections.find((x) => x.key === 'newdevices');
+  assert.equal(s.items[0].text, 'ARC: DX2, DX4, RX9', 'DX4 is its own device, not DX4000');
+  const st = api.certStatus();
+  const row = st.rows.find((r) => r.status === 'incert');
+  assert.equal(row.devices, 'DX2, DX4, RX9');
+  assert.equal(st.counts.incert, 3);
+});
+
+test('a letter naming a device without CL is about CL1, not the CL2 that came later', async () => {
+  const { api } = await fresh();
+  const cl1 = api.store.createRecord({ device: 'NX200-CL1', category: 'EMV L2 Contactless', scheme: 'Amex', expiry_date: '2024-05-01' });
+  const cl2 = api.store.createRecord({ device: 'NX200-CL2', category: 'EMV L2 Contactless', scheme: 'Amex', expiry_date: '2025-05-01' });
+  api.ingestDocument({ filename: 'amex.pdf', bytes: Buffer.from('cl'), pages: [L.amex] });
+  const it = api.listInbox().find((i) => i.parsed.scheme === 'Amex');
+  const ids = it.proposals.map((p) => p.record_id).filter(Boolean);
+  assert.ok(ids.includes(cl1.id), 'the bare name lands on CL1');
+  assert.ok(!ids.includes(cl2.id), 'and never on CL2');
+});
+
+test('L2 kernel: read from the file name, asked for when missing, and learned from what you type', async () => {
+  const { api } = await fresh();
+  const { findKernel, learnLabel } = require('../src/core/kernelfind');
+  const pages = { 'ARC|3': { ctx: { kernels: { Mastercard: '0403' } } }, 'ARC|5': { ctx: { kernels: { Mastercard: '0404' } } } };
+  const L1 = { category: 'EMV L2 Contactless', scheme: 'Mastercard', warnings: [] };
+  assert.ok(findKernel(L1, { filename: 'DX8000CL1_MC_0403_0203.pdf', pages }));
+  assert.equal(L1.kernelVersion.value, '0403', 'the number a bundle runs wins over the other one');
+  assert.equal(L1.kernelVersion.source, 'filename');
+  const L2 = { category: 'EMV L2 Contactless', scheme: 'Mastercard', warnings: [] };
+  findKernel(L2, { filename: 'DX8000CL1_MC_0203.pdf', pages });
+  assert.match(L2.kernelVersion.evidence, /no bundle you track runs it/);
+  assert.ok(!findKernel({ category: 'EMV L1 Contactless', warnings: [] }, { filename: 'X_0403.pdf', pages }), 'L1 letters carry no kernel');
+  assert.equal(learnLabel('Terminal: NX200\nPayment Application Release 4.2.1 approved', '4.2.1'), 'Payment Application Release');
+  assert.equal(learnLabel('Terminal: NX200', '4.2.1'), '', 'nothing learned when the letter does not print it');
+
+  // A letter with no kernel in its text: typing it teaches the label, and the next letter is read.
+  const page = (n) => `${L.amex.replace(/(?:using )?Firmware Version:? 01\.00/g, "")}\nContactless Module Release: 04.0${n}\n`;
+  api.ingestDocument({ filename: 'a.pdf', bytes: Buffer.from('k1'), pages: [page(1)] });
+  api.ingestDocument({ filename: 'b.pdf', bytes: Buffer.from('k2'), pages: [page(2)] });
+  const items = api.listInbox();
+  const a = items.find((i) => i.filename === 'a.pdf');
+  assert.ok(!a.parsed.kernelVersion, "the text reader does not know this label"); {
+    const r = api.setInboxKernel(a.id, '04.01');
+    assert.equal(r.learned, 'Contactless Module Release');
+    const b = api.listInbox().find((i) => i.filename === 'b.pdf');
+    assert.equal(b.parsed.kernelVersion.value, '04.02');
+    assert.equal(api.listLetterTemplates().kernelLabels[0].label, 'Contactless Module Release');
+  }
+});
