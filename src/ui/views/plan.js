@@ -36,6 +36,7 @@ export function ActionItem({ a, app, onChange, compact }) {
       <div class="meta">
         <span class=${`pill ${a.priority === 1 ? 'expired' : a.priority === 2 ? 'critical' : a.priority === 3 ? 'warning' : ''}`}>${a.priorityLabel || PRI[a.priority]}</span>
         <span class="tag">${KINDS[a.kind] || a.kind}</span>
+        ${a.kernels ? a.kernels.map((k) => html`<span class=${`pill ${/not known/.test(k) ? 'expired' : 'info'}`}>${/not known/.test(k) ? 'Kernel not known' : `Kernel ${k}`}</span>`) : null}
         ${a.due ? html`<span class="tag">Do by ${fmtDate(a.due)}</span>` : null}
         ${ids.length > 1 ? html`<span class="tag link" onClick=${open}>${plural(ids.length, 'record')}</span>` : null}
         ${a.status === 'snoozed' && a.snoozeUntil ? html`<span class="tag">Snoozed until ${fmtDate(a.snoozeUntil)}</span>` : null}

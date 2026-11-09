@@ -73,6 +73,8 @@ class AppApi {
     const api = new AppApi(db, dataDir, actor);
     api.upgradeBackup(before);
     api.autoBackup();
+    // Pages read before this version still fill kernels and place records.
+    try { api.syncFromBundlePages(); } catch (_) { /* never blocks opening */ }
     return api;
   }
 
@@ -613,6 +615,7 @@ class AppApi {
     }
     all[key] = next;
     this.store.setSettings({ kernelCatalog: all });
+    this.syncFromBundlePages();
     return { key };
   }
 
@@ -701,8 +704,10 @@ class AppApi {
     const pages = { ...(this.store.getSettings().bundlePages || {}) };
     pages[key] = { filename, at: new Date().toISOString(), platform: g ? g.platform : ctx.platform, bundle: g ? g.bundle : ctx.bundle, ctx: { l2Contact: ctx.l2Contact || null, kernels: { ...(ctx.kernels || {}) }, kernelIds: ctx.kernelIds || {} }, rows };
     this.store.setSettings({ bundlePages: pages });
-    const check = bundleCheck(rows, g ? g.records : [], { norm: this.store.norm() });
-    return { key, filename: pages[key].filename, platform: pages[key].platform, bundle: pages[key].bundle, ...summarizeCheck(check), details: checkDetails(check) };
+    const sync = this.syncFromBundlePages();
+    const g2 = this.bundleGroups().get(key) || g;
+    const check = bundleCheck(rows, g2 ? g2.records : [], { norm: this.store.norm() });
+    return { key, sync, filename: pages[key].filename, platform: pages[key].platform, bundle: pages[key].bundle, ...summarizeCheck(check), details: checkDetails(check) };
   }
 
   /** The differences between a bundle and its page, listed for review. */
@@ -1142,9 +1147,77 @@ class AppApi {
   analysis(asOf = todayIso()) {
     const replacements = this.db.all("SELECT * FROM approvals WHERE role='replacement'");
     const inboxPending = this.db.get("SELECT COUNT(*) AS n FROM inbox WHERE status='pending'").n;
-    return engine.analyze(this.store.listRecords(), {
+    const records = this.store.listRecords();
+    const a = engine.analyze(records, {
       settings: this.store.getSettings(), asOf, tasks: this.store.taskStates(), inboxPending, replacements, norm: this.store.norm(),
     });
+    // Every action names the kernel(s) its records run: decisions are made per kernel.
+    const byId = new Map(records.map((r) => [r.id, r]));
+    for (const x of a.actions) {
+      const ks = [...new Set((x.recordIds || []).map((id) => byId.get(id)).filter((r) => r && /^EMV L2/.test(r.category)).map((r) => r.kernel_version || 'kernel not known'))];
+      if (ks.length) x.kernels = ks;
+    }
+    return a;
+  }
+
+  /**
+   * Bring records in line with the website bundle pages that have been read, with no typing:
+   * 1. place records that have no bundle into the bundle whose page lists the same device,
+   *    approval and date (a kernel on the record must be the one that bundle runs; a record
+   *    typed "Other" takes the page's approval type when only one row fits);
+   * 2. fill the kernel of every L2 record from its bundle's page (the kernel per brand at the
+   *    top of the page; the EMV contact kernel for L2 Contact).
+   * Each change is audited as "bundle page". Returns { placed, kernels }.
+   */
+  syncFromBundlePages() {
+    const { bundleKernel, kernelMatches, bundleKey } = require('./bundles');
+    const { certHome } = require('./devices');
+    const pages = this.store.getSettings().bundlePages || {};
+    const kp = this.kernelPages();
+    if (!Object.keys(kp).length) return { placed: 0, kernels: 0 };
+    const norm = this.store.norm();
+    const home = (d, c) => certHome(norm(d), c).key;
+    let placed = 0, kernels = 0;
+    this.store.db.tx(() => {
+      const recs = this.store.listRecords().filter((r) => !r.archived);
+      const taken = new Set(recs.filter((r) => r.bundle).map((r) => `${bundleKey(r.platform, r.bundle)}|${home(r.device, r.category)}|${r.category}|${r.scheme || ''}`));
+      for (const r of recs) {
+        if (r.bundle || !r.expiry_date || !r.device) continue;
+        const loose = !r.category || r.category === 'Other';
+        const hits = [];
+        for (const [key, pg] of Object.entries(pages)) {
+          if (r.platform && pg.platform && r.platform.toLowerCase() !== String(pg.platform).toLowerCase()) continue;
+          for (const row of pg.rows || []) {
+            if (row.expiry_date !== r.expiry_date) continue;
+            const cat = loose ? row.category : r.category;
+            if (!loose && (row.category !== r.category || (row.scheme || '') !== (r.scheme || ''))) continue;
+            if (home(row.device, cat) !== home(r.device, cat)) continue;
+            if (r.kernel_version && /^EMV L2/.test(cat)) { const k = bundleKernel(kp, { ...r, category: cat, scheme: row.scheme, platform: pg.platform, bundle: pg.bundle }); if (k && !kernelMatches(r.kernel_version, k.ids)) continue; }
+            hits.push({ key, pg, row });
+          }
+        }
+        if (loose && new Set(hits.map((h) => `${h.row.category}|${h.row.scheme || ''}`)).size !== 1) continue;
+        const free = hits.filter((h) => !taken.has(`${h.key}|${home(r.device, h.row.category)}|${h.row.category}|${h.row.scheme || ''}`))
+          .sort((a, b) => (parseFloat(a.pg.bundle.replace(/\D+/, '')) || 0) - (parseFloat(b.pg.bundle.replace(/\D+/, '')) || 0));
+        if (!free.length) continue;
+        const h = free[0];
+        const patch = { platform: h.pg.platform, bundle: h.pg.bundle, ...(loose ? { category: h.row.category, scheme: h.row.scheme || '' } : {}) };
+        try {
+          this.store.updateRecord(r.id, patch, { source: 'bundle page' });
+          taken.add(`${h.key}|${home(r.device, h.row.category)}|${h.row.category}|${h.row.scheme || ''}`);
+          placed++;
+        } catch (_) { /* would clash with another record: left for review */ }
+      }
+      for (const r of this.store.listRecords()) {
+        if (r.archived || r.kernel_version || !/^EMV L2/.test(r.category || '')) continue;
+        const k = bundleKernel(kp, r);
+        if (!k || !k.kernel) continue;
+        this.store.updateRecord(r.id, { kernel_version: k.kernel }, { source: 'bundle page' });
+        kernels++;
+      }
+    });
+    if (placed || kernels) this.store.setSettings({ lastPageSync: { at: new Date().toISOString(), placed, kernels } });
+    return { placed, kernels };
   }
 
   getDashboard() {
@@ -1824,7 +1897,7 @@ const PUBLIC_METHODS = [
   'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'deleteRecords', 'bulkUpdate',
   'listArchive', 'archiveCount', 'expiredRecords', 'archiveExpired', 'restoreArchived', 'purgeArchived',
   'activateReplacement', 'deviceCoverage', 'deviceProfile', 'listBundles', 'bundleView', 'kernelCatalog', 'setKernelCatalog', 'removeKernelBundle', 'importKernelCatalog', 'readBundlePage', 'bundleDifferences', 'cleanBundle', 'bundleReport', 'checkRecord', 'listReaderGroups', 'setReaderGroup', 'listFamilyNotes', 'setCoverageNA', 'createMissing', 'createSlot', 'addCertWithLoa', 'listTags', 'knownDevices', 'listAliases', 'listLearned', 'forgetLearned', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'listPlatformDevices', 'setPlatformDevices', 'platformForDevice', 'devicesOnPlatform', 'applyPlatformDevices', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
-  'ingestDocument', 'documentFile', 'listInbox', 'setInboxKernel', 'certQuestions', 'clCleanupPlan', 'applyClCleanup', 'removeKernelLabel', 'certStatus', 'readCertReply', 'applyCertReply', 'listLetterTemplates', 'saveLetterTemplate', 'removeLetterTemplate', 'previewLetterTemplate', 'sampleLetterType', 'platformReference', 'setBundleCount', 'allBundles', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
+  'ingestDocument', 'documentFile', 'listInbox', 'setInboxKernel', 'certQuestions', 'syncFromBundlePages', 'clCleanupPlan', 'applyClCleanup', 'removeKernelLabel', 'certStatus', 'readCertReply', 'applyCertReply', 'listLetterTemplates', 'saveLetterTemplate', 'removeLetterTemplate', 'previewLetterTemplate', 'sampleLetterType', 'platformReference', 'setBundleCount', 'allBundles', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
   'documentText', 'deviceView', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'setEol', 'dataChecks', 'aiDataReview', 'briefingReport', 'exportL3Sheet', 'duplicateInfo', 'mapDuplicate', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'heldChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
   'aiDraftEmail', 'backup', 'listBackups', 'restore', 'health',

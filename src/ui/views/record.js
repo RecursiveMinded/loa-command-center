@@ -112,7 +112,7 @@ export function RecordDrawer({ id, app, onClose, tab: startTab }) {
   if (!form) return html`<${Drawer} title="Loading…" onClose=${onClose}><${Spinner} /><//>`;
   const r = data && data.record;
   const title = id ? `${r.device}` : 'New certification record';
-  const sub = id ? html`<span class="row wrap"><span>${r.scheme} · ${r.category}</span>${r.platform ? html`<span class="tag">${[r.platform, r.bundle].filter(Boolean).join(' · ')}</span>` : null}<${HealthPill} r=${r} /><span class="tag">${r.stageNow}</span></span>` : 'Fill in what you know. Dates can be added later from an LOA.';
+  const sub = id ? html`<span class="row wrap"><span>${r.scheme} · ${r.category}</span>${r.platform ? html`<span class="tag">${[r.platform, r.bundle].filter(Boolean).join(' · ')}</span>` : null}<${HealthPill} r=${r} />${/^EMV L2/.test(r.category || '') ? (r.kernel_version ? html`<span class="pill info" title="The kernel this approval is for">Kernel ${r.kernel_version}</span>` : html`<span class="pill expired" title="Read this bundle's website page (Bundles > Check against website page) and the kernel is filled in from it">Kernel not known</span>`) : null}<span class="tag">${r.stageNow}</span></span>` : 'Fill in what you know. Dates can be added later from an LOA.';
   const F = (k, label, type = 'text', extra = {}) => html`<label class="field">${label}<input type=${type} value=${form[k] || ''} onInput=${set(k)} ...${extra} /></label>`;
   const footer = html`${id ? html`<button class="btn danger" onClick=${del}><${Icon} name="trash" /> Delete</button><span class="grow"></span>` : null}
     <button class="btn" onClick=${onClose}>Close</button><button class="btn primary" disabled=${busy} onClick=${save}>${id ? 'Save changes' : 'Create record'}</button>`;

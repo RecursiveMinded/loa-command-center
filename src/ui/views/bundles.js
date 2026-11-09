@@ -47,6 +47,8 @@ export function Bundles({ app }) {
       }
       if (!done.length) return;
       const r = done[done.length - 1];
+      const placed = done.reduce((n, x) => n + ((x.sync || {}).placed || 0), 0), kfill = done.reduce((n, x) => n + ((x.sync || {}).kernels || 0), 0);
+      if (placed || kfill) toast(`From the website pages: ${[placed && `${plural(placed, 'record')} placed in the bundle that lists it`, kfill && `${plural(kfill, 'kernel')} filled in from the bundle's kernel table`].filter(Boolean).join(', ')}.`, 'ok');
       setPick(r.key); setPlat(r.platform);
       app.refresh();
       if (done.length === 1) {
