@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'preact/hooks';
 import { html, Icon, fmtDate, fmtWhen, plural, useLoad, Spinner, toast, toastError, Modal, bytes, recLabel, usePersist } from '../lib.js';
-import { call } from '../api.js';
+import { call, native } from '../api.js';
 import { CertQuestions } from '../questions.js';
 import { subscribe, addFiles, clearFinished, filesFromDrop } from '../queue.js';
 import { DocButtons, openDoc } from '../docs.js';
@@ -392,13 +392,16 @@ function Review({ it, app, threshold, readOnly, selected, onSelect, onDone }) {
       <div class="row wrap"><h3>${letterTitle(L)}</h3>
         <span class="pill brand">${L.scheme || 'Unknown brand'}</span><span class="tag">${L.category}</span>
         <span class=${`pill ${confCls}`} title="How sure the reader is about the extracted values">${L.confidence}% confident</span>
+        ${L.notice ? html`<span class=${`pill ${L.notice === 'expired' ? 'expired' : L.notice === 'expiring' ? 'warning' : 'info'}`} title="Read from a certification database notice email">${L.noticeText}</span>` : null}
         ${L.template ? html`<span class="pill info" title=${`Read from the boxes you marked: ${L.template.fields.join(', ')}`}><${Icon} name="grid" size="12" /> ${L.template.label} template</span>` : null}
         ${safe && !readOnly ? html`<span class="pill good"><${Icon} name="shield" size="12" /> Safe to auto-approve</span>` : null}
         ${defaults.platform || defaults.bundle ? html`<span class="pill info" title="Platform/bundle for the records this letter creates">${[defaults.platform, defaults.bundle].filter(Boolean).join(' · ')}</span>` : null}
         ${it.status !== 'pending' ? html`<span class="tag">${it.status}${it.decided_at ? ` · ${fmtWhen(it.decided_at)}` : ''}</span>` : null}</div>
       <div class="muted small mt" style="margin-top:4px"><${Icon} name="file" size="12" /> ${it.filename}${L.pageStart ? ` · page ${L.pageStart}${L.pageEnd && L.pageEnd !== L.pageStart ? `–${L.pageEnd}` : ''}` : ''}</div></div>
     <div class="row"><button class="btn sm ghost" onClick=${showText}><${Icon} name="eye" /> Text</button>
-      <button class="btn sm ghost" onClick=${() => openDoc({ id: it.document_id })}><${Icon} name="file" /> Open LOA</button></div></div>
+      ${L.link ? html`<button class="btn sm primary" title=${L.link} onClick=${() => native('openExternal', { url: L.link })}><${Icon} name="external" /> Open LOA link</button>
+        <button class="btn sm ghost" onClick=${() => openDoc({ id: it.document_id })}><${Icon} name="mail" /> Notice</button>`
+        : html`<button class="btn sm ghost" onClick=${() => openDoc({ id: it.document_id })}><${Icon} name="file" /> Open LOA</button>`}</div></div>
     <div class="bd">
       <div class="facts">
         <${Fact} k="Device(s)" v=${L.products.map((p) => p.value).join(', ')} ev=${L.products[0] && L.products[0].evidence} />

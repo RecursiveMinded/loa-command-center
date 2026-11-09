@@ -26,6 +26,7 @@ const P = {
   plus: 'M12 5v14M5 12h14',
   download: 'M12 4v12M7 11l5 5 5-5M4 20h16',
   mail: 'M3 6h18v12H3zM3 6l9 7 9-7',
+  external: 'M14 4h6v6M20 4l-9 9M18 14v6H4V6h6',
   bell: 'M6 16V11a6 6 0 1 1 12 0v5l2 2H4zM10 20a2 2 0 0 0 4 0',
   table: 'M3 5h18v14H3zM3 10h18M3 15h18M9 5v14',
   edit: 'M4 20h4L19 9l-4-4L4 16zM14 6l4 4',

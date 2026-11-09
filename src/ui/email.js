@@ -10,6 +10,9 @@ const htmlToText = (h) => {
   try {
     const doc = new DOMParser().parseFromString(String(h || ''), 'text/html');
     doc.querySelectorAll('br').forEach((b) => b.replaceWith('\n'));
+    // Table cells keep apart, and a link whose words are not its address keeps the address.
+    doc.querySelectorAll('td,th').forEach((b) => b.append('\t'));
+    doc.querySelectorAll('a[href]').forEach((a) => { const h = a.getAttribute('href'); if (/^https?:/i.test(h) && a.textContent.trim() !== h) a.append(` ${h} `); });
     doc.querySelectorAll('p,div,tr,li,h1,h2,h3,h4').forEach((b) => b.append('\n'));
     return doc.body ? doc.body.textContent || '' : '';
   } catch (_) { return String(h || '').replace(/<[^>]+>/g, ' '); }
@@ -35,14 +38,14 @@ export async function readEmail(name, bytes) {
         attachments.push({ name: a.innerMsgContent && !/\.msg$/i.test(fname) ? `${fname}.msg` : fname, bytes: got.content, inline: !!(a.attachmentHidden || a.pidContentId) });
       } catch (_) { /* unreadable attachment: skipped */ }
     }
-    return { subject: data.subject || '', from: data.senderName || data.senderEmail || '', date: data.messageDeliveryTime || data.clientSubmitTime || '', text: data.body || htmlToText(data.bodyHtml), attachments };
+    return { subject: data.subject || '', from: data.senderName || data.senderEmail || '', date: data.messageDeliveryTime || data.clientSubmitTime || '', text: /<table/i.test(data.bodyHtml || '') ? htmlToText(data.bodyHtml) : data.body || htmlToText(data.bodyHtml), attachments };
   }
   const mail = await PostalMime.parse(bytes);
   return {
     subject: mail.subject || '',
     from: (mail.from && (mail.from.name || mail.from.address)) || '',
     date: mail.date || '',
-    text: mail.text || htmlToText(mail.html),
+    text: /<table/i.test(mail.html || '') ? htmlToText(mail.html) : mail.text || htmlToText(mail.html),
     attachments: (mail.attachments || []).map((a) => ({
       name: a.filename || (a.mimeType === 'message/rfc822' ? 'attached message.eml' : 'attachment'),
       bytes: a.content instanceof Uint8Array ? a.content : new Uint8Array(a.content),
