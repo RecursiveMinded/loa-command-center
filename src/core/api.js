@@ -1202,6 +1202,49 @@ class AppApi {
 
   setInboxKernel(id, kernel) { return this.intake.setKernel(id, kernel); }
 
+  // ------------------------------------------------------------ letter templates
+  /**
+   * Letter templates: regions marked on a sample letter of each type (PCI, L1 Contact,
+   * L1 Contact TQM, L1 Contactless, L1 Contactless TQM, L2 Contactless per brand) that
+   * say where the device, approval number, dates and kernel are printed.
+   */
+  listLetterTemplates() {
+    const { LETTER_TYPES, FIELDS } = require('./templates');
+    const saved = this.store.getSettings().letterTemplates || {};
+    return { types: LETTER_TYPES.map((t) => ({ ...t, template: saved[t.key] || null })), fields: FIELDS };
+  }
+
+  saveLetterTemplate(key, { regions = [], sample = null } = {}) {
+    const { LETTER_TYPES, FIELDS } = require('./templates');
+    const type = LETTER_TYPES.find((t) => t.key === key);
+    if (!type) throw new Error('Unknown letter type');
+    const ok = new Set(FIELDS.map((f) => f.key));
+    const clamp = (v) => Math.max(0, Math.min(1, Number(v) || 0));
+    const clean = regions.filter((r) => ok.has(r.field) && Number(r.w) > 0.002 && Number(r.h) > 0.002)
+      .map((r) => ({ field: r.field, page: Math.max(0, Math.floor(Number(r.page) || 0)), x: clamp(r.x), y: clamp(r.y), w: clamp(r.w), h: clamp(r.h) }));
+    const all = { ...(this.store.getSettings().letterTemplates || {}) };
+    if (!clean.length) delete all[key];
+    else all[key] = { label: type.label, regions: clean, sample: sample || (all[key] && all[key].sample) || null, savedAt: new Date().toISOString() };
+    this.store.setSettings({ letterTemplates: all });
+    return all[key] || null;
+  }
+
+  removeLetterTemplate(key) { return this.saveLetterTemplate(key, { regions: [] }); }
+
+  /** What each region reads on a sample: [{ field, text, value }]. */
+  previewLetterTemplate(regions = [], words = []) {
+    const { regionText, valueFor } = require('./templates');
+    return regions.map((r) => { const text = regionText(words, r); return { field: r.field, text, value: valueFor(r.field, text) }; });
+  }
+
+  /** Guess the letter type of a sample from its text, to open the right template. */
+  sampleLetterType(pages = []) {
+    const { parseDocument } = require('./loa-parser');
+    const { letterTypeOf } = require('./templates');
+    const L = parseDocument(pages).find((x) => !x.informational);
+    return L ? letterTypeOf(L) : '';
+  }
+
   applyInbox(id, decisions) { return this.intake.apply(id, decisions); }
 
   rejectInbox(id, note) { this.intake.reject(id, note); return true; }
@@ -1675,7 +1718,7 @@ const PUBLIC_METHODS = [
   'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'deleteRecords', 'bulkUpdate',
   'listArchive', 'archiveCount', 'expiredRecords', 'archiveExpired', 'restoreArchived', 'purgeArchived',
   'activateReplacement', 'deviceCoverage', 'deviceProfile', 'listBundles', 'bundleView', 'kernelCatalog', 'setKernelCatalog', 'removeKernelBundle', 'importKernelCatalog', 'readBundlePage', 'bundleDifferences', 'cleanBundle', 'bundleReport', 'checkRecord', 'listReaderGroups', 'setReaderGroup', 'listFamilyNotes', 'setCoverageNA', 'createMissing', 'createSlot', 'addCertWithLoa', 'listTags', 'knownDevices', 'listAliases', 'listLearned', 'forgetLearned', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'listPlatformDevices', 'setPlatformDevices', 'platformForDevice', 'devicesOnPlatform', 'applyPlatformDevices', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
-  'ingestDocument', 'documentFile', 'listInbox', 'setInboxKernel', 'platformReference', 'setBundleCount', 'allBundles', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
+  'ingestDocument', 'documentFile', 'listInbox', 'setInboxKernel', 'listLetterTemplates', 'saveLetterTemplate', 'removeLetterTemplate', 'previewLetterTemplate', 'sampleLetterType', 'platformReference', 'setBundleCount', 'allBundles', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
   'documentText', 'deviceView', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'setEol', 'dataChecks', 'aiDataReview', 'briefingReport', 'exportL3Sheet', 'duplicateInfo', 'mapDuplicate', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'heldChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
   'aiDraftEmail', 'backup', 'listBackups', 'restore', 'health',

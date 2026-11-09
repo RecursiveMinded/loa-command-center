@@ -471,13 +471,23 @@ class Store {
   }
 
   addDocument(d) {
-    this.db.run('INSERT INTO documents(sha256, filename, stored_path, size, page_count, ocr_pages, text, uploaded_at) VALUES(?,?,?,?,?,?,?,?)',
-      [d.sha256, d.filename, d.stored_path || null, d.size || 0, d.page_count || 0, d.ocr_pages || 0, d.text || '', nowIso()]);
+    this.db.run('INSERT INTO documents(sha256, filename, stored_path, size, page_count, ocr_pages, text, words, uploaded_at) VALUES(?,?,?,?,?,?,?,?,?)',
+      [d.sha256, d.filename, d.stored_path || null, d.size || 0, d.page_count || 0, d.ocr_pages || 0, d.text || '', d.words && d.words.length ? JSON.stringify(d.words) : '', nowIso()]);
     return this.db.lastId();
   }
 
   getDocument(id) {
     return this.db.get('SELECT id, sha256, filename, stored_path, size, page_count, ocr_pages, uploaded_at FROM documents WHERE id=?', [id]);
+  }
+
+  /** Word positions of a document ([{ p, x, y, w, h, t }]), for letter templates. */
+  documentWords(id) {
+    const r = this.db.get('SELECT words FROM documents WHERE id=?', [id]);
+    try { return r && r.words ? JSON.parse(r.words) : []; } catch (_) { return []; }
+  }
+
+  setDocumentWords(id, words) {
+    this.db.run('UPDATE documents SET words=? WHERE id=?', [words && words.length ? JSON.stringify(words) : '', id]);
   }
 
   documentText(id) {

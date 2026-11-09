@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'preact/hooks';
 import { html, Icon, fmtWhen, plural, useLoad, Spinner, toast, toastError, Select, bytes, fmtDate } from '../lib.js';
 import { call, native, isDesktop, saveAs } from '../api.js';
 import { extractPdf } from '../extract.js';
+import { LetterTemplates } from './templates.js';
 import { useUpdate, checkForUpdates, installUpdate } from '../update.js';
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -14,17 +15,18 @@ export function Settings({ app, params }) {
   const save = async (patch, msg = 'Saved') => {
     try { const ns = await call('setSettings', patch); app.setSettings(ns); toast(msg, 'ok'); } catch (e) { toastError(e); }
   };
-  const tabs = [['general', 'General'], ['notify', 'Notifications'], ['planning', 'Planning'], ['ai', 'AI assistant'], ['data', 'Data and import'], ['matching', 'Matching']];
+  const tabs = [['general', 'General'], ['notify', 'Notifications'], ['planning', 'Planning'], ['ai', 'AI assistant'], ['data', 'Data and import'], ['matching', 'Matching'], ['letters', 'Letter templates']];
   return html`
     <div class="page-head"><div><h1>Settings</h1><p>Everything is stored on this computer, in your data folder.</p></div></div>
     <div class="tabs">${tabs.map(([k, l]) => html`<button class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${l}</button>`)}</div>
-    <div style="max-width:880px">
+    <div style=${tab === 'letters' ? '' : 'max-width:880px'}>
       ${tab === 'general' ? html`<${General} s=${s} setS=${setS} save=${save} app=${app} />` : null}
       ${tab === 'notify' ? html`<${Notify} s=${s} save=${save} />` : null}
       ${tab === 'planning' ? html`<${Planning} s=${s} save=${save} app=${app} />` : null}
       ${tab === 'ai' ? html`<${Ai} s=${s} save=${save} />` : null}
       ${tab === 'data' ? html`<${Data} app=${app} />` : null}
       ${tab === 'matching' ? html`<${Matching} s=${s} save=${save} app=${app} />` : null}
+      ${tab === 'letters' ? html`<${LetterTemplates} />` : null}
     </div>`;
 }
 

@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { parseDocument } = require('./loa-parser');
+const { applyTemplates } = require('./templates');
 const { deviceScore, wildcardRegex, splitVariant, deviceFromFilename, categoryFromFilename, schemeFromFilename } = require('./devices');
 const { todayIso, daysBetween } = require('./dates');
 const { coverage } = require('./lifecycle');
@@ -486,6 +487,7 @@ class Intake {
       pages: kernelPages(s),
       platformDevices: s.platformDevices || {},
       brands: s.requiredBrands && s.requiredBrands.length ? s.requiredBrands : DEFAULT_BRANDS,
+      templates: s.letterTemplates || {},
       asOf: todayIso(),
       auditFor: (id, f) => db.get("SELECT ts, source FROM audit WHERE record_id=? AND field=? AND action='update' ORDER BY id DESC LIMIT 1", [id, f]),
     };
@@ -495,7 +497,8 @@ class Intake {
    * Ingest one document. `pages` is an array of page strings already
    * extracted by the UI (text layer or OCR). Returns a summary.
    */
-  ingest({ filename, bytes, pages, ocrPages = 0 }) {
+  ingest({ filename, bytes, pages, ocrPages = 0, words = [] }) {
+    const boxes = words;
     const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes || []);
     let hash = sha256(buf.length ? buf : Buffer.from((pages || []).join('\n')));
     let existing = this.store.findDocumentByHash(hash);
@@ -522,6 +525,7 @@ class Intake {
         // A newer extraction replaces the stored text unless it reads much less.
         const words = (x) => x.replace(/[^A-Za-z0-9]/g, '').length;
         if (words(fresh) >= 40 && words(fresh) >= 0.9 * words(this.store.documentText(existing.id))) this.store.db.run('UPDATE documents SET text=?, page_count=?, ocr_pages=? WHERE id=?', [fresh, pages.length, ocrPages, existing.id]);
+        if (boxes && boxes.length) this.store.setDocumentWords(existing.id, boxes);
         const r = this.reread(waiting.map((x) => x.id));
         const items = r.items.map((id) => this.store.getInbox(id));
         return { filename, status: 'ok', documentId: existing.id, letters: items.length, pending: items.filter((x) => x.status === 'pending').length,
@@ -539,6 +543,7 @@ class Intake {
     const ctx = this.context();
     const records = this.store.listRecords();
     fromFilename(letters, filename, records, ctx.norm);
+    applyTemplates(letters, ctx.templates, words);
     archiveOtherBrands(letters, ctx.brands);
     const stored = existing ? existing.stored_path : buf.length && this.archiveDir ? archiveFile(this.archiveDir, filename, buf) : null;
 
@@ -548,9 +553,10 @@ class Intake {
         documentId = existing.id;
         this.store.db.run("DELETE FROM inbox WHERE document_id=? AND status IN ('pending','rejected','info')", [documentId]);
         this.store.db.run('UPDATE documents SET text=?, page_count=?, ocr_pages=? WHERE id=?', [text, pages.length, ocrPages, documentId]);
+        if (words && words.length) this.store.setDocumentWords(documentId, words);
       } else {
         documentId = this.store.addDocument({
-          sha256: hash, filename, stored_path: stored, size: buf.length, page_count: pages.length, ocr_pages: ocrPages, text,
+          sha256: hash, filename, stored_path: stored, size: buf.length, page_count: pages.length, ocr_pages: ocrPages, text, words,
         });
       }
       let pending = 0, info = 0;
@@ -596,6 +602,7 @@ class Intake {
         const defaults = mine.map((x) => x.parsed.recordDefaults).find((d) => d && (d.platform || d.bundle));
         const fresh = parseDocument(text.split('\n\f\n'));
         fromFilename(fresh, doc.filename, records, ctx.norm);
+        applyTemplates(fresh, ctx.templates, this.store.documentWords(docId));
         archiveOtherBrands(fresh, ctx.brands);
         const stale = mine.filter((x) => x.status === 'pending' || x.status === 'info');
         this.store.db.run("DELETE FROM inbox WHERE document_id=? AND status IN ('pending','info')", [docId]);

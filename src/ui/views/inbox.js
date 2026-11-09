@@ -378,6 +378,7 @@ function Review({ it, app, threshold, readOnly, selected, onSelect, onDone }) {
       <div class="row wrap"><h3>${letterTitle(L)}</h3>
         <span class="pill brand">${L.scheme || 'Unknown brand'}</span><span class="tag">${L.category}</span>
         <span class=${`pill ${confCls}`} title="How sure the reader is about the extracted values">${L.confidence}% confident</span>
+        ${L.template ? html`<span class="pill info" title=${`Read from the boxes you marked: ${L.template.fields.join(', ')}`}><${Icon} name="grid" size="12" /> ${L.template.label} template</span>` : null}
         ${safe && !readOnly ? html`<span class="pill good"><${Icon} name="shield" size="12" /> Safe to auto-approve</span>` : null}
         ${defaults.platform || defaults.bundle ? html`<span class="pill info" title="Platform/bundle for the records this letter creates">${[defaults.platform, defaults.bundle].filter(Boolean).join(' · ')}</span>` : null}
         ${it.status !== 'pending' ? html`<span class="tag">${it.status}${it.decided_at ? ` · ${fmtWhen(it.decided_at)}` : ''}</span>` : null}</div>

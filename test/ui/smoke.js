@@ -345,6 +345,26 @@ function pdfFromPages(pages) {
     if (process.env.LOA_SHOTS) await p.locator('.modal').screenshot({ path: path.join(process.env.LOA_SHOTS, 'kernel-catalog.png') });
     check(true, 'a kernel typed in the catalog is saved');
     await p.click('.modal button[aria-label="Close"]');
+    // Bundles side by side, then a letter template drawn on a sample LOA.
+    await p.waitForSelector('text=What is in each');
+    check(true, 'bundle reference shows the bundles side by side');
+    await p.click('nav >> text=Settings');
+    await p.click('text=Letter templates');
+    await p.click('.tpl-type:has-text("L2 Contactless Discover")');
+    const sample = path.join(tmp, 'Discover sample.pdf');
+    fs.writeFileSync(sample, pdfFromPages([L.discover]));
+    await p.setInputFiles('.tpl-main input[type=file]', sample);
+    await p.waitForSelector('.tpl-stage img');
+    await p.click('.chip:has-text("Expiry date")');
+    const bb = await p.locator('.tpl-stage').boundingBox();
+    await p.mouse.move(bb.x + bb.width * 0.05, bb.y + bb.height * 0.195);
+    await p.mouse.down();
+    await p.mouse.move(bb.x + bb.width * 0.95, bb.y + bb.height * 0.218, { steps: 4 });
+    await p.mouse.up();
+    await p.waitForSelector('table.tpl-read >> text=Jan 5, 2029');
+    await p.click('button:has-text("Save template")');
+    await p.waitForSelector('.tpl-type.on >> text=1 box');
+    check(true, 'letter template: a box drawn on a sample reads the expiry date and is saved');
     check(!errors.length, `no page errors${errors.length ? `: ${errors.join(' | ')}` : ''}`);
   } catch (e) {
     check(false, e.message.split('\n')[0]);

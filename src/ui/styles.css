@@ -445,3 +445,18 @@ table.kref tr.hl td.name { font-weight: 700; }
 .kv.knew, .knew-key { background: var(--good-soft); color: var(--good); }
 .knew-key { padding: 0 6px; border-radius: 4px; font-weight: 600; }
 .kv small { display: block; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+
+/* Letter templates: mark regions on a sample LOA */
+.tpl { display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: start; }
+.tpl-types { padding-bottom: 4px; }
+.tpl-type { display: flex; width: 100%; align-items: center; gap: 8px; padding: 8px 16px; border: 0; background: none; text-align: left; cursor: pointer; color: var(--text); font: inherit; font-size: 13px; }
+.tpl-type:hover { background: var(--none-soft); }
+.tpl-type.on { background: var(--brand-soft); color: var(--brand); font-weight: 600; }
+.tpl-stage { position: relative; display: inline-block; max-width: 100%; border: 1px solid var(--line-2); cursor: crosshair; user-select: none; line-height: 0; }
+.tpl-stage img { max-width: 100%; display: block; pointer-events: none; }
+.tpl-box { position: absolute; border: 2px solid; border-radius: 3px; pointer-events: none; }
+.tpl-box span { position: absolute; left: -2px; top: -18px; color: #fff; font-size: 10.5px; line-height: 16px; padding: 0 5px; border-radius: 3px 3px 0 0; white-space: nowrap; }
+table.tpl-read { width: 100%; border-collapse: collapse; }
+table.tpl-read th, table.tpl-read td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); font-size: 12.5px; vertical-align: top; }
+table.tpl-read .sw, .tpl .chip .sw { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
+@media (max-width: 900px) { .tpl { grid-template-columns: 1fr; } }

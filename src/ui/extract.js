@@ -37,6 +37,48 @@ export function ocrImage(image) {
   return job;
 }
 
+/**
+ * OCR one image and keep where each word sits, as fractions of the image (for letter
+ * templates). Returns { text, words: [{ x, y, w, h, t }] }.
+ */
+export function ocrImageWords(image, width, height) {
+  const job = ocrBusy.then(async () => {
+    const w = await getOcr();
+    const { data } = await w.recognize(image, {}, { text: true, blocks: true });
+    const words = [];
+    for (const b of data.blocks || []) for (const p of b.paragraphs || []) for (const l of p.lines || []) for (const wd of l.words || []) {
+      const bb = wd.bbox;
+      if (!wd.text || !wd.text.trim() || !width || !height) continue;
+      words.push({ x: bb.x0 / width, y: bb.y0 / height, w: (bb.x1 - bb.x0) / width, h: (bb.y1 - bb.y0) / height, t: wd.text });
+    }
+    return { text: data.text || '', words };
+  });
+  ocrBusy = job.catch(() => {});
+  return job;
+}
+
+/** Word boxes of a pdf.js page's text layer, as fractions of the page (top-left origin). */
+function textWords(items, vp) {
+  const out = [];
+  for (const it of items) {
+    if (!it.str || !it.str.trim()) continue;
+    const [a, , , d, e, f] = it.transform;
+    const h = Math.abs(d) || it.height || 10;
+    const width = it.width || Math.abs(a) * it.str.length * 0.5;
+    const [x0, y0] = vp.convertToViewportPoint(e, f + h);
+    const [x1, y1] = vp.convertToViewportPoint(e + width, f);
+    const left = Math.min(x0, x1), top = Math.min(y0, y1), W = Math.abs(x1 - x0), H = Math.abs(y1 - y0);
+    // One item often holds several words: share its width out by characters.
+    const n = it.str.length || 1;
+    const re = /\S+/g;
+    let m;
+    while ((m = re.exec(it.str))) {
+      out.push({ x: (left + (W * m.index) / n) / vp.width, y: top / vp.height, w: ((W * m[0].length) / n) / vp.width, h: H / vp.height, t: m[0] });
+    }
+  }
+  return out;
+}
+
 export async function stopOcr() {
   if (ocrWorker) { const w = ocrWorker; ocrWorker = null; await w.terminate(); }
 }
@@ -109,7 +151,7 @@ export async function extractPdf(bytes, { onProgress = () => {}, ocr = true, kee
     standardFontDataUrl: `${base}vendor/standard_fonts/`,
     isEvalSupported: false,
   }).promise;
-  const pages = [], lines = [];
+  const pages = [], lines = [], words = [];
   let ocrPages = 0;
   try {
     for (let i = 1; i <= doc.numPages; i++) {
@@ -118,15 +160,18 @@ export async function extractPdf(bytes, { onProgress = () => {}, ocr = true, kee
       const tc = await page.getTextContent();
       const rows = toLines(tc.items);
       let text = pageText(rows);
+      let pageWords = textWords(tc.items, page.getViewport({ scale: 1 }));
       if (ocr && text.replace(/[^A-Za-z0-9]/g, '').length < MIN_TEXT) {
         onProgress(i - 1, doc.numPages, `Scanning page ${i} of ${doc.numPages} (OCR)`);
         const canvas = await renderPage(page);
-        const ocrText = await ocrImage(canvas);
-        if (ocrText.replace(/[^A-Za-z0-9]/g, '').length > text.replace(/[^A-Za-z0-9]/g, '').length) {
-          text = ocrText;
+        const o = await ocrImageWords(canvas, canvas.width, canvas.height);
+        if (o.text.replace(/[^A-Za-z0-9]/g, '').length > text.replace(/[^A-Za-z0-9]/g, '').length) {
+          text = o.text;
+          pageWords = o.words;
           ocrPages++;
         }
       }
+      for (const w of pageWords) words.push({ p: i - 1, ...w });
       pages.push(text);
       if (keepLines) lines.push(rows.map((r) => ({ y: r.y, items: r.items.map((it) => ({ x: it.x, str: it.str })) })));
       page.cleanup();
@@ -135,7 +180,7 @@ export async function extractPdf(bytes, { onProgress = () => {}, ocr = true, kee
     await doc.destroy();
   }
   onProgress(doc.numPages, doc.numPages, 'Done');
-  return { pages, lines, ocrPages, pageCount: pages.length };
+  return { pages, lines, words, ocrPages, pageCount: pages.length };
 }
 
 /** Extract any supported LOA file: PDF, image, or plain text. */
@@ -144,8 +189,10 @@ export async function extractFile(name, bytes, opts = {}) {
   if (ext === 'pdf') return extractPdf(bytes, opts);
   if (['png', 'jpg', 'jpeg', 'tif', 'tiff', 'bmp', 'webp'].includes(ext)) {
     (opts.onProgress || (() => {}))(0, 1, 'Scanning image (OCR)');
-    const text = await ocrImage(bytes);
-    return { pages: [text], lines: [], ocrPages: 1, pageCount: 1 };
+    let size = { width: 0, height: 0 };
+    try { const bmp = await createImageBitmap(new Blob([bytes])); size = { width: bmp.width, height: bmp.height }; bmp.close(); } catch (_) { /* positions unknown */ }
+    const o = await ocrImageWords(bytes, size.width, size.height);
+    return { pages: [o.text], lines: [], words: o.words.map((w) => ({ p: 0, ...w })), ocrPages: 1, pageCount: 1 };
   }
   if (['txt', 'text'].includes(ext)) {
     const text = new TextDecoder().decode(bytes);
@@ -155,3 +202,45 @@ export async function extractFile(name, bytes, opts = {}) {
 }
 
 export const LOA_EXTENSIONS = ['pdf', 'png', 'jpg', 'jpeg', 'tif', 'tiff', 'bmp', 'webp', 'txt', 'eml', 'msg'];
+
+/**
+ * A sample letter for marking template regions: each page as an image (data URL)
+ * and every word with its position. PDFs and images.
+ */
+export async function samplePages(name, bytes, { maxPages = 3, width = 1000 } = {}) {
+  const ext = name.toLowerCase().split('.').pop();
+  if (ext === 'pdf') {
+    const data = bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes);
+    const doc = await pdfjs.getDocument({ data, cMapUrl: `${base}vendor/cmaps/`, cMapPacked: true, standardFontDataUrl: `${base}vendor/standard_fonts/`, isEvalSupported: false }).promise;
+    const out = { pages: [], words: [], texts: [] };
+    try {
+      for (let i = 1; i <= Math.min(doc.numPages, maxPages); i++) {
+        const page = await doc.getPage(i);
+        const vp1 = page.getViewport({ scale: 1 });
+        const canvas = await renderPage(page, width / vp1.width);
+        const tc = await page.getTextContent();
+        let words = textWords(tc.items, vp1);
+        let text = pageText(toLines(tc.items));
+        if (text.replace(/[^A-Za-z0-9]/g, '').length < MIN_TEXT) {
+          const big = await renderPage(page, 2.2);
+          const o = await ocrImageWords(big, big.width, big.height);
+          words = o.words; text = o.text;
+        }
+        out.pages.push(canvas.toDataURL('image/jpeg', 0.72));
+        out.texts.push(text);
+        for (const w of words) out.words.push({ p: i - 1, ...w });
+        page.cleanup();
+      }
+    } finally { await doc.destroy(); }
+    return out;
+  }
+  const blob = new Blob([bytes]);
+  const bmp = await createImageBitmap(blob);
+  const scale = Math.min(1, width / bmp.width);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(bmp.width * scale); canvas.height = Math.round(bmp.height * scale);
+  canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  const o = await ocrImageWords(bytes, bmp.width, bmp.height);
+  bmp.close();
+  return { pages: [canvas.toDataURL('image/jpeg', 0.72)], words: o.words.map((w) => ({ p: 0, ...w })), texts: [o.text] };
+}
