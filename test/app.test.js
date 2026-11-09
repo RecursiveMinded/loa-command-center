@@ -1404,3 +1404,41 @@ test('a certification database notice email becomes one review card per LOA, wit
   const p = amex.proposals.find((x) => x.record_id === rec.id);
   assert.equal(p.changes.expiry_date.to, '2026-07-16');
 });
+
+test('CL clean-up: bare names become CL1 once a CL2 exists, shared approvals sit on the device, duplicates merge', async () => {
+  const { api } = await fresh();
+  const mk = (device, category, scheme, expiry) => api.store.createRecord({ device, category, scheme, platform: 'NWP', bundle: 'Kernel Bundle 5', expiry_date: expiry });
+  const bare = mk('NX500', 'EMV L2 Contactless', 'Visa', '2028-01-01');
+  mk('NX500-CL2', 'EMV L2 Contactless', 'Visa', '2030-01-01');
+  const pciCl = mk('NX500-CL2', 'PCI PTS', 'PCI SSC', '2029-04-30');
+  const dupBare = mk('NX500', 'EMV L2 Contactless', 'Mastercard', '2027-01-01');
+  const dupCl1 = mk('NX500-CL1', 'EMV L2 Contactless', 'Mastercard', '2029-06-01');
+  const lone = mk('NX600', 'EMV L2 Contactless', 'Visa', '2028-01-01');
+  const plan = api.clCleanupPlan();
+  const of = (id) => plan.find((x) => x.id === id);
+  assert.equal(of(bare.id).to, 'NX500-CL1');
+  assert.equal(of(pciCl.id).to, 'NX500');
+  assert.equal(of(dupBare.id).action, 'merge');
+  assert.equal(of(dupBare.id).into.id, dupCl1.id);
+  assert.ok(!of(lone.id), 'a device with only one version keeps its bare name');
+  const r = api.applyClCleanup(plan.map((x) => x.id));
+  assert.equal(r.renamed, 2);
+  assert.equal(r.merged, 1);
+  assert.equal(api.store.getRecord(bare.id).device, 'NX500-CL1');
+  assert.equal(api.store.getRecord(pciCl.id).device, 'NX500');
+  assert.equal(api.store.getRecord(dupCl1.id).expiry_date, '2029-06-01', 'the later expiry is kept');
+  assert.ok(!api.listRecords().some((x) => x.id === dupBare.id), 'the older duplicate is archived');
+  assert.equal(api.clCleanupPlan().length, 0);
+});
+
+test('bundles: unnumbered bundle names are not counted, Bundle 0 only where it exists, non-bundle pages are skipped', async () => {
+  const { api } = await fresh();
+  for (const n of [1, 2, 3, 4, 5]) api.store.createRecord({ device: `NX${n}00`, category: 'PCI PTS', scheme: 'PCI SSC', platform: 'NWP', bundle: `Kernel Bundle ${n}`, expiry_date: '2030-01-01' });
+  const loose = api.store.createRecord({ device: 'NX900', category: 'PCI PTS', scheme: 'PCI SSC', platform: 'NWP', bundle: '', expiry_date: '2030-01-01' });
+  const nwp = api.allBundles().filter((b) => b.platform === 'NWP');
+  assert.deepEqual(nwp.map((b) => b.no), [1, 2, 3, 4, 5], 'no Bundle 0 and no blank bundle');
+  const ref = api.platformReference('NWP');
+  assert.deepEqual(ref.unnumbered[0].ids, [loose.id], 'records without a bundle number are listed to fix');
+  assert.ok(api.listBundles().find((b) => b.platform === 'NWP' && b.unnumbered));
+  assert.throws(() => api.readBundlePage({ filename: '5.xx.xx.html', bytes: Buffer.from('<html><head><title>5.xx.xx - EMV LoA</title></head><body><h1>5.xx.xx</h1><p>This kernel bundle for NWP ... Kernel Bundle 5</p></body></html>') }), /not a kernel bundle page/);
+});

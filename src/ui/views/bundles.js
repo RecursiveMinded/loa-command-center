@@ -75,7 +75,7 @@ export function Bundles({ app }) {
           <button class="btn" onClick=${excel}><${Icon} name="download" /> Excel</button>` : null}</div></div>
 
     ${!list.length ? html`<div class="card"><div class="empty"><${Icon} name="grid" /><h3>No bundles yet</h3><div>Read a kernel bundle page (PDF or saved web page) to load its matrix, fill in the kernel catalog, or give your records a platform and bundle.</div></div></div>` : html`
-    <div class="tabs">${platforms.map((p) => html`<button class=${p === pf ? 'on' : ''} onClick=${() => setPlat(p)}>${p} <span class="faint">· ${plural(list.filter((b) => b.platform === p).length, 'bundle')}</span></button>`)}</div>
+    <div class="tabs">${platforms.map((p) => html`<button class=${p === pf ? 'on' : ''} onClick=${() => setPlat(p)}>${p} <span class="faint">· ${plural(list.filter((b) => b.platform === p && !b.unnumbered).length, 'bundle')}</span></button>`)}</div>
 
     ${ref ? html`<${Reference} r=${ref} selected=${key} onPick=${(k) => setPick(k)} app=${app} onChanged=${() => { reload(); reloadRef(); }} />` : html`<div class="row"><${Spinner} /> Loading…</div>`}
 
@@ -115,7 +115,16 @@ function Reference({ r, selected, onPick, app, onChanged }) {
   };
   const head = html`<th class="name"></th>${r.bundles.map((x) => html`<th class=${`bcol ${x.key === selected ? 'sel' : ''} ${x.gap ? 'gapcol' : ''}`}>
     <a onClick=${() => onPick(x.key)} title=${x.gap ? 'Not filled in yet' : `Show ${x.platform} ${x.bundle} below`}>${x.bundle}</a>${x.gap ? html`<small class="faint" style="display:block;font-weight:400">not filled in</small>` : x.page ? html`<small class="faint" style="display:block;font-weight:400">website read</small>` : null}</th>`)}`;
+  const showIds = (ids, label) => app.go('register', { filter: { ids, idsLabel: label } });
+  const trim = async (n) => { try { await call('setBundleCount', r.platform, n); onChanged(); toast(`${r.platform}: ${plural(n, 'bundle')} tracked`, 'ok'); } catch (e) { toastError(e); } };
+  const loose = r.unnumbered.reduce((n, g) => n + g.ids.length, 0);
   return html`
+    ${r.notOnSite.length ? html`<div class="callout warn mt"><${Icon} name="warn" /> <b>${r.notOnSite.map((b) => b.bundle).join(', ')} ${r.notOnSite.length === 1 ? 'is' : 'are'} not on the ${r.platform} website pages you read</b> (the website lists ${r.siteBundles.map((n) => `Bundle ${n}`).join(', ')}).
+      ${r.notOnSite.map((b) => (b.ids.length ? html` <button class="btn sm" onClick=${() => showIds(b.ids, `${r.platform} ${b.bundle}`)}>Show the ${plural(b.ids.length, 'record')} in ${b.bundle}</button>` : null))}
+      ${r.notOnSite.some((b) => !b.ids.length && b.no > r.siteMax) ? html` <button class="btn sm primary" onClick=${() => trim(r.siteMax)}>Track ${r.siteMax} bundles, like the website</button>` : null}
+      ${r.notOnSite.some((b) => !b.ids.length && b.no < r.siteMax) ? html` <span class="small">Read the missing bundle pages too, or ignore the empty columns.</span>` : null}</div>` : null}
+    ${loose ? html`<div class="callout warn mt row"><${Icon} name="warn" /><span class="grow"><b>${plural(loose, `${r.platform} record`)} ${loose === 1 ? 'has' : 'have'} no bundle number</b> (${r.unnumbered.map((g) => (g.bundle ? `"${g.bundle}"` : 'blank')).join(', ')}). They are not counted as a bundle. Give each its bundle, or leave the bundle blank if it is not in one.</span>
+      <button class="btn sm" onClick=${() => showIds(r.unnumbered.flatMap((g) => g.ids), `${r.platform} records without a bundle number`)}>Show them</button></div>` : null}
     <div class="card mt"><div class="hd"><h3>What is in each ${r.platform} bundle</h3>
       <span class="muted small grow">The kernel each bundle runs per card brand. <span class="knew-key">New</span> marks the bundle where a new kernel arrived; the same kernel often runs in several bundles.</span>
       ${count == null ? html`<button class="btn sm ghost" onClick=${() => setCount(String(r.bundles.length))} title="How many bundles this platform has, so all of them are tracked">${r.platform} has ${plural(r.bundles.length, 'bundle')}</button>`

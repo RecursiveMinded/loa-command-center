@@ -202,6 +202,14 @@ function htmlKernelTable(tables) {
 function parseHtml(raw) {
   const html = mhtmlToHtml(raw);
   const ctx = contextFromText(htmlText(html));
+  // The page's own title says which bundle it is ("Kernel Bundle 1 Rev 02"). Overview pages and
+  // release pages ("5.xx.xx") mention bundles in passing but are not bundle pages.
+  const title = ((html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i) || html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (title) {
+    const n = (title.match(/Kernel\s+Bundle\s+(\d+[A-Za-z]?)/i) || [])[1];
+    if (n) ctx.bundle = `Kernel Bundle ${n}`;
+    else ctx.notBundle = title.replace(/\s*-\s*EMV LoA.*$/i, '');
+  }
   const tables = htmlTables(html);
   const kt = htmlKernelTable(tables);
   if (kt) {
