@@ -1203,6 +1203,51 @@ class AppApi {
 
   setInboxKernel(id, kernel) { return this.intake.setKernel(id, kernel); }
 
+  /**
+   * Questions for the certification team, as an email to copy: LOAs whose bundle cannot be
+   * decided (kernel not stated, or no bundle runs it), bundle kernels not known yet, renewal
+   * status for L2 approvals expiring soon (with their kernel), and kernels a mandate blocks.
+   */
+  certQuestions({ months = 12 } = {}) {
+    const s = this.store.getSettings();
+    return require('./questions').certQuestions({
+      records: this.listRecords(), inbox: this.store.listInbox({ status: 'pending' }), pages: this.kernelPages(), bundles: this.allBundles(),
+      months: Number(months) || 12, userName: s.userName || '', platformDevices: s.platformDevices || {},
+    });
+  }
+
+  /** Every live approval's certification status, grouped with its kernel version leading. */
+  certStatus() {
+    return require('./questions').certStatus({ records: this.listRecords(), pages: this.kernelPages(), platformDevices: this.store.getSettings().platformDevices || {} });
+  }
+
+  /** Read a reply pasted from the certifications team into decisions to review. Changes nothing. */
+  readCertReply(text) {
+    return require('./questions').readCertReply({ text, records: this.listRecords(), pages: this.kernelPages() });
+  }
+
+  /**
+   * Apply the decisions picked from a cert team reply: items [{ decision, ids, line, replacement, date }].
+   * Each record gets the decision and a dated note quoting the team.
+   */
+  applyCertReply(items = []) {
+    const { decisionPatch } = require('./questions');
+    let changed = 0;
+    const skipped = [];
+    this.store.db.tx(() => {
+      for (const it of items || []) {
+        for (const id of it.ids || []) {
+          const r = this.store.getRecord(id);
+          if (!r) continue;
+          const p = decisionPatch(it, r);
+          if (!p) continue;
+          try { if (this.store.updateRecord(id, p, { source: 'cert team reply' }).length) changed++; } catch (e) { skipped.push({ id, reason: e.message }); }
+        }
+      }
+    });
+    return { changed, skipped };
+  }
+
   // ------------------------------------------------------------ letter templates
   /**
    * Letter templates: regions marked on a sample letter of each type (PCI, L1 Contact,
@@ -1719,7 +1764,7 @@ const PUBLIC_METHODS = [
   'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'deleteRecords', 'bulkUpdate',
   'listArchive', 'archiveCount', 'expiredRecords', 'archiveExpired', 'restoreArchived', 'purgeArchived',
   'activateReplacement', 'deviceCoverage', 'deviceProfile', 'listBundles', 'bundleView', 'kernelCatalog', 'setKernelCatalog', 'removeKernelBundle', 'importKernelCatalog', 'readBundlePage', 'bundleDifferences', 'cleanBundle', 'bundleReport', 'checkRecord', 'listReaderGroups', 'setReaderGroup', 'listFamilyNotes', 'setCoverageNA', 'createMissing', 'createSlot', 'addCertWithLoa', 'listTags', 'knownDevices', 'listAliases', 'listLearned', 'forgetLearned', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'listPlatformDevices', 'setPlatformDevices', 'platformForDevice', 'devicesOnPlatform', 'applyPlatformDevices', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
-  'ingestDocument', 'documentFile', 'listInbox', 'setInboxKernel', 'listLetterTemplates', 'saveLetterTemplate', 'removeLetterTemplate', 'previewLetterTemplate', 'sampleLetterType', 'platformReference', 'setBundleCount', 'allBundles', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
+  'ingestDocument', 'documentFile', 'listInbox', 'setInboxKernel', 'certQuestions', 'certStatus', 'readCertReply', 'applyCertReply', 'listLetterTemplates', 'saveLetterTemplate', 'removeLetterTemplate', 'previewLetterTemplate', 'sampleLetterType', 'platformReference', 'setBundleCount', 'allBundles', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
   'documentText', 'deviceView', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'setEol', 'dataChecks', 'aiDataReview', 'briefingReport', 'exportL3Sheet', 'duplicateInfo', 'mapDuplicate', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'heldChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
   'aiDraftEmail', 'backup', 'listBackups', 'restore', 'health',

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'preact/hooks';
 import { html, Icon, Ring, fmtDate, fmtMonth, fmtWhen, plural, useLoad, Spinner, toast, toastError, Modal, Select } from '../lib.js';
+import { CertQuestions } from '../questions.js';
 import { call, saveAs, printHtml } from '../api.js';
 import { ActionItem } from './plan.js';
 
@@ -26,6 +27,7 @@ export function Dashboard({ app }) {
     <div class="page-head"><div><h1>${hello}</h1><p>${fmtDate(d.asOf)} · ${plural(s.total, 'active certification')} · ${plural(d.openActions, 'open action')}</p></div></div>
 
     <${BundleAlerts} app=${app} />
+    <${QuestionsBanner} app=${app} />
     <div class="kpis">
       <div class="card kpi row gap-l" onClick=${() => app.go('reports')} title="Share of records that are current, dated, owned and evidenced">
         <${Ring} value=${s.healthScore} /><div><div class="l">Portfolio health</div><div class="s">${s.compliancePct}% current · ${s.evidencePct}% with LOA</div></div></div>
@@ -140,4 +142,17 @@ function Welcome({ app }) {
         <div><b>3. Act</b><p class="muted small">The planner groups renewals into waves, flags final expiries and gaps, and sends you a daily, weekly or monthly digest.</p></div>
       </div></div>
   </div>`;
+}
+
+/** Today's questions for the certification team: check daily until every attribute is understood. */
+function QuestionsBanner({ app }) {
+  const [q] = useLoad(() => call('certQuestions', { months: 12 }), [app.version]);
+  const [open, setOpen] = useState('');
+  if (!q) return null;
+  return html`<div class=${`callout ${q.count ? 'warn' : ''} row wrap mb`}>
+    <${Icon} name="mail" /><span class="grow">${q.count ? html`<b>${plural(q.count, 'question')} for the certifications team today.</b> ${q.sections.map((x) => `${x.items.length} ${x.title.toLowerCase()}`).join(' · ')}` : html`<b>No open questions for the certifications team.</b>`}</span>
+    ${q.count ? html`<button class="btn sm primary" onClick=${() => setOpen('email')}>Write the email</button>` : null}
+    <button class="btn sm" onClick=${() => setOpen('reply')}>Paste their reply</button>
+    <button class="btn sm" onClick=${() => setOpen('status')}>Status by kernel</button>
+    ${open ? html`<${CertQuestions} app=${app} start=${open} onClose=${() => setOpen('')} />` : null}</div>`;
 }

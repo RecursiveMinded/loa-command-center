@@ -365,6 +365,17 @@ function pdfFromPages(pages) {
     await p.click('button:has-text("Save template")');
     await p.waitForSelector('.tpl-type.on >> text=1 box');
     check(true, 'letter template: a box drawn on a sample reads the expiry date and is saved');
+    await p.click('nav >> text=Today');
+    await p.click('button:has-text("Status by kernel")');
+    await p.waitForSelector('.modal >> text=Platform / bundle');
+    await p.click('.modal .tabs >> text=Paste their reply');
+    await p.fill('.modal textarea', 'Anything at all: we will renew it.');
+    await p.click('button:has-text("Read the reply")');
+    await p.waitForSelector('.modal >> text=Not matched to any approval');
+    await p.click('.modal .tabs >> text=Questions to send');
+    await p.waitForSelector('.modal >> text=Renewal status for approvals expiring');
+    await p.keyboard.press('Escape');
+    check(true, 'cert team: status by kernel, reply reader and questions open');
     check(!errors.length, `no page errors${errors.length ? `: ${errors.join(' | ')}` : ''}`);
   } catch (e) {
     check(false, e.message.split('\n')[0]);

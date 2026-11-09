@@ -1264,3 +1264,71 @@ test('website pages: the specification table gives each brand kernel, and Bundle
   api.cleanBundle('NWP|2', { missing: true });
   assert.equal(api.listRecords().find((r) => r.scheme === 'Visa').restriction, 'waiver', 'a struck date on the page is a waiver');
 });
+
+test('cert team loop: questions with kernels, status by kernel, and a pasted reply applied', async () => {
+  const { api } = await fresh();
+  const soon = addDays(todayIso(), 60), past = addDays(todayIso(), -30), far = addDays(todayIso(), 900);
+  const a = api.store.createRecord({ device: 'DX4000', category: 'EMV L2 Contactless', scheme: 'Visa', platform: 'ARC', bundle: 'Kernel Bundle 3', kernel_version: '0301', expiry_date: soon });
+  const b = api.store.createRecord({ device: 'DX8000', category: 'EMV L2 Contactless', scheme: 'Visa', platform: 'ARC', bundle: 'Kernel Bundle 3', kernel_version: '0301', expiry_date: soon });
+  const c = api.store.createRecord({ device: 'DX4000', category: 'EMV L2 Contactless', scheme: 'JCB', platform: 'ARC', bundle: 'Kernel Bundle 3', kernel_version: '0106', expiry_date: past });
+  const d = api.store.createRecord({ device: 'Lane/3000', category: 'EMV L1 Contact', scheme: 'EMVCo', expiry_date: far });
+  const q = api.certQuestions({ months: 12 });
+  const renew = q.sections.find((s) => s.key === 'renewal');
+  assert.ok(renew.items.some((x) => /kernel 0301/.test(x.text) && /DX4000, DX8000/.test(x.text)), 'expiring L2 approvals are asked about with their kernel');
+  assert.ok(q.sections.find((s) => s.key === 'expired').items.some((x) => /kernel 0106/.test(x.text)));
+  let st = api.certStatus();
+  const row = (id) => st.rows.find((r) => r.ids.includes(id));
+  assert.equal(row(a.id).status, 'expiring');
+  assert.equal(row(a.id).kernel, '0301');
+  assert.equal(row(c.id).status, 'expired');
+  assert.equal(row(d.id).status, 'certified');
+
+  const reply = [
+    'Hi Brian,',
+    '> ARC Bundle 3: Visa L2 Contactless, kernel 0301, expires soon: DX4000, DX8000',
+    'Renewal submitted to the lab, expected 03/31/2027.',
+    'JCB kernel 1.06: cannot be renewed due to the scheme mandate, replacement kernel 0202.',
+    'Something about nothing in particular we will renew.',
+    'Thanks, Simon',
+  ].join('\n');
+  const r = api.readCertReply(reply);
+  const visa = r.items.find((x) => x.ids.includes(a.id));
+  assert.equal(visa.decision, 'renew');
+  assert.deepEqual(visa.ids.sort(), [a.id, b.id].sort());
+  assert.equal(visa.date, '2027-03-31');
+  const jcb = r.items.find((x) => x.ids.includes(c.id));
+  assert.equal(jcb.decision, 'mandate');
+  assert.equal(jcb.replacement, '0202');
+  assert.deepEqual(jcb.ids, [c.id], 'a kernel number picks only the records running it');
+  assert.equal(r.unread.length, 1);
+
+  const out = api.applyCertReply(r.items);
+  assert.equal(out.changed, 3);
+  assert.equal(api.store.getRecord(a.id).stage, 'Renewal Requested');
+  assert.match(api.store.getRecord(a.id).notes, /cert team: Renewal coming/);
+  assert.equal(api.store.getRecord(c.id).restriction, 'mandate');
+  st = api.certStatus();
+  assert.equal(row(a.id).status, 'renewing');
+  assert.equal(row(c.id).status, 'mandate');
+  assert.ok(!api.certQuestions({ months: 12 }).sections.some((s) => s.key === 'renewal'), 'answered items stop being asked');
+
+  // "Letting it expire" / "no longer certified" close the question too.
+  const e = api.readCertReply('DX4000 Visa kernel 0301: we are letting it expire.\nLane/3000: end of life, no longer certified.');
+  assert.deepEqual(e.items.map((x) => x.decision), ['letexpire', 'eol']);
+  api.applyCertReply(e.items);
+  assert.equal(api.store.getRecord(d.id).disposition, 'Market Approved Expiration');
+  assert.ok(api.store.getRecord(d.id).eol);
+});
+
+test('new devices listed under a platform with no LOA are asked about and shown as in certification', async () => {
+  const { api } = await fresh();
+  api.store.createRecord({ device: 'DX4000', category: 'EMV L2 Contactless', scheme: 'Visa', platform: 'ARC', bundle: 'Kernel Bundle 5', kernel_version: '0302', expiry_date: addDays(todayIso(), 900), approval_number: 'V1' });
+  api.setPlatformDevices('ARC', ['DX4000', 'DX2', 'DX4', 'RX9']);
+  const q = api.certQuestions({ months: 12 });
+  const s = q.sections.find((x) => x.key === 'newdevices');
+  assert.equal(s.items[0].text, 'ARC: DX2, DX4, RX9', 'DX4 is its own device, not DX4000');
+  const st = api.certStatus();
+  const row = st.rows.find((r) => r.status === 'incert');
+  assert.equal(row.devices, 'DX2, DX4, RX9');
+  assert.equal(st.counts.incert, 3);
+});

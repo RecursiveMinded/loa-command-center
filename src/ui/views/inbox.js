@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'preact/hooks';
 import { html, Icon, fmtDate, fmtWhen, plural, useLoad, Spinner, toast, toastError, Modal, bytes, recLabel, usePersist } from '../lib.js';
 import { call } from '../api.js';
+import { CertQuestions } from '../questions.js';
 import { subscribe, addFiles, clearFinished, filesFromDrop } from '../queue.js';
 import { DocButtons, openDoc } from '../docs.js';
 import { addRecent, recentIds, clearRecent, onRecent } from '../recent.js';
@@ -59,6 +60,7 @@ export function Inbox({ app, params }) {
   const [find, setFind] = useState('');
   const [dup, setDup] = useState(null);
   const [pasted, setPasted] = useState(null);
+  const [ask, setAsk] = useState(false);
   useEffect(() => onRecent(setRecent), []);
   // Paste anywhere on the page: copied files and screenshots are read at once,
   // copied text opens the paste box to check it first.
@@ -111,6 +113,8 @@ export function Inbox({ app, params }) {
   return html`
     <div class="page-head"><div><h1>LOA inbox</h1><p>Drop letters here. Each one is read on this computer, split into letters, and matched to your records. You approve the changes.</p></div>
       <div class="row">${safeCount ? html`<button class="btn primary" disabled=${busy} onClick=${approveSafe} title="Apply letters where every change is a confident match with no warnings"><${Icon} name="check" /> Approve ${safeCount} safe</button>` : null}
+      <button class="btn" onClick=${() => setAsk(true)} title="LOAs whose kernel bundle cannot be decided, and renewal status for approvals expiring soon, as an email to copy"><${Icon} name="mail" /> Questions for cert team</button>
+      ${ask ? html`<${CertQuestions} app=${app} onClose=${() => setAsk(false)} />` : null}
       <button class="btn" onClick=${async () => { try { const n = await call('rematch'); toast(`Re-matched ${plural(n, 'letter')}`); app.refresh(); } catch (e) { toastError(e); } }} title="Run matching again, e.g. after adding records or aliases"><${Icon} name="refresh" /> Re-match</button></div></div>
 
     <div class=${`drop ${over ? 'over' : ''}`} onDragOver=${(e) => { e.preventDefault(); setOver(true); }} onDragLeave=${() => setOver(false)} onDrop=${drop}
