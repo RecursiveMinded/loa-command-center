@@ -1,14 +1,16 @@
 // Device coverage: every device against the certifications it needs. A contact
 // device holds PCI, L1 Contact and L2 Contact for all its versions; a hardware version (CL1, CL2...) needs
 // L1 Contactless, TQM and an L2 Contactless approval from each required brand.
-import { useMemo } from 'preact/hooks';
-import { html, Icon, fmtDate, useLoad, Spinner, unique, usePersist, Select, HEALTH, daysLabel, plural, toast, toastError } from '../lib.js';
+import { useMemo, useState } from 'preact/hooks';
+import { html, Icon, fmtDate, useLoad, Spinner, unique, usePersist, Select, HEALTH, daysLabel, plural, toast, toastError, Modal } from '../lib.js';
 import { call, saveAs } from '../api.js';
 import { addCertFromLoa } from './record.js';
 
 export function Devices({ app }) {
   const [cov, reload] = useLoad(() => call('deviceCoverage'), [app.version]);
   const [f, setF] = usePersist('devices', { platform: '', bundle: '', gaps: false });
+  const [cl, setCl] = useState(false);
+  const [clPlan] = useLoad(() => call('clCleanupPlan'), [app.version]);
   const rows = useMemo(() => {
     if (!cov) return [];
     const q = (app.search || '').toLowerCase();
@@ -39,8 +41,10 @@ export function Devices({ app }) {
 
   return html`
     <div class="page-head"><div><h1>Devices</h1><p>Click a device to see everything it is certified for. What each device needs to be certified. PCI, L1 Contact and L2 Contact are held once per device and shared by all its hardware versions. Each hardware version (CL1, CL2, CL3; a name without a suffix is CL1) needs its own L1 Contactless, TQM and L2 Contactless from each brand. Certifications marked end of life are not gaps.</p></div>
-      <div class="row"><button class="btn" onClick=${l3} title="Every device's L1, L2 and brand approval numbers, for acquirers' Level 3 work"><${Icon} name="download" /> L3 sheet</button>
+      <div class="row">${clPlan && clPlan.length ? html`<button class="btn" onClick=${() => setCl(true)} title="Device names that do not follow the hardware version (CL) rules"><${Icon} name="warn" /> Clean up ${plural(clPlan.length, 'CL name')}</button>` : null}
+        <button class="btn" onClick=${l3} title="Every device's L1, L2 and brand approval numbers, for acquirers' Level 3 work"><${Icon} name="download" /> L3 sheet</button>
         ${gaps.length && oneGroup ? html`<button class="btn" onClick=${createAll} title="Creates placeholders marked Needs LOA. They stay gaps until each letter is added."><${Icon} name="plus" /> Create ${plural(gaps.length, 'placeholder')}</button>` : null}</div></div>
+    ${cl ? html`<${ClCleanup} plan=${clPlan} app=${app} onClose=${() => setCl(false)} />` : null}
     <div class="filters">
       <${Select} value=${f.platform} onChange=${(v) => setF({ ...f, platform: v, bundle: '' })} placeholder="All platforms" options=${platforms} />
       <${Select} value=${f.bundle} onChange=${(v) => setF({ ...f, bundle: v })} placeholder="All bundles" options=${bundles} />
@@ -74,4 +78,32 @@ export function Devices({ app }) {
           return html`<td></td>`;
         })}</tr>`;
       })}</tbody></table></div>`}`;
+}
+
+/**
+ * Hardware version clean-up: a bare name is CL1 once a CL2 exists (or other records already
+ * say CL1) for contactless, TQM and L2 contactless; PCI and contact approvals sit on the device.
+ */
+function ClCleanup({ plan, app, onClose }) {
+  const [on, setOn] = useState(() => new Set(plan.map((x) => x.id)));
+  const [busy, setBusy] = useState(false);
+  const flip = (id) => { const n = new Set(on); if (n.has(id)) n.delete(id); else n.add(id); setOn(n); };
+  const apply = async () => {
+    setBusy(true);
+    try {
+      const r = await call('applyClCleanup', [...on]);
+      toast(`${plural(r.renamed, 'record')} renamed, ${plural(r.merged, 'duplicate')} merged${r.skipped.length ? `, ${r.skipped.length} skipped: ${r.skipped.map((x) => `${x.label} (${x.reason})`).join('; ')}` : ''}. A backup was taken first.`, r.skipped.length ? '' : 'ok');
+      app.refresh(); onClose();
+    } catch (e) { toastError(e); } finally { setBusy(false); }
+  };
+  return html`<${Modal} title="Clean up hardware version (CL) names" wide onClose=${onClose}>
+    <p class="muted small" style="margin-top:0">CL1, CL2 and CL3 are separate device models. A name without CL is the only version until a CL2 arrives; from then on the first version is CL1. L1 Contactless, TQM and L2 Contactless belong to one version; PCI, L1 Contact and L2 Contact belong to the device and are shared. A merge keeps the record with the later expiry, moves the other's LOAs to it and archives the other.</p>
+    <div style="max-height:56vh;overflow:auto"><table><thead><tr><th></th><th>Now</th><th>Becomes</th><th>Approval</th><th>Where</th><th>Why</th></tr></thead><tbody>
+      ${plan.map((x) => html`<tr><td><input type="checkbox" checked=${on.has(x.id)} onChange=${() => flip(x.id)} aria-label=${`Fix ${x.from}`} /></td>
+        <td>${x.from}</td><td><b>${x.to}</b>${x.action === 'merge' ? html`<div class="small"><span class="pill warning">merge</span> with the ${x.into.device} record${x.into.expiry_date ? ` (expires ${fmtDate(x.into.expiry_date)})` : ''}</div>` : null}</td>
+        <td class="small">${x.scheme && x.scheme !== 'EMVCo' ? `${x.scheme} ` : ''}${x.category}${x.expiry_date ? html`<div class="faint">expires ${fmtDate(x.expiry_date)}</div>` : null}</td>
+        <td class="small">${[x.platform, x.bundle].filter(Boolean).join(' · ') || '—'}</td><td class="small muted">${x.why}</td></tr>`)}
+    </tbody></table></div>
+    <div class="row mt"><button class="btn primary" disabled=${busy || !on.size} onClick=${apply}>${busy ? html`<${Spinner} />` : null} Apply ${plural(on.size, 'change')}</button><span class="faint small">A backup is taken first.</span></div>
+  <//>`;
 }

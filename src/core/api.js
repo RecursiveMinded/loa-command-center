@@ -366,7 +366,9 @@ class AppApi {
     const s = this.store.getSettings();
     const seen = new Map();
     const put = (platform, bundle) => {
-      if (!platform || !bundle) return;
+      // Only numbered bundles count ("Kernel Bundle 3"); a blank or unnumbered bundle name is
+      // a record to fix, not a bundle (see platformReference().unnumbered).
+      if (!platform || !bundle || !/\d/.test(bundle)) return;
       const key = bundleKey(platform, bundle);
       if (!seen.has(key)) seen.set(key, { key, platform, bundle, no: bundleNo(bundle), gap: false });
     };
@@ -442,7 +444,16 @@ class AppApi {
       }
     }
     const l2rows = Object.fromEntries(Object.entries(l2).map(([b, m]) => [b, Object.values(m).sort((x, y) => x.device.localeCompare(y.device, undefined, { numeric: true }))]));
-    return { platform, bundles: bundles.map((b) => ({ ...b, records: (groups.get(b.key) || { records: [] }).records.length, page: !!(this.store.getSettings().bundlePages || {})[b.key] })), kernelRows, brands, l2: l2rows };
+    const sitePages = this.store.getSettings().bundlePages || {};
+    const list = bundles.map((b) => ({ ...b, records: (groups.get(b.key) || { records: [] }).records.length, page: !!sitePages[b.key] }));
+    // Records on this platform whose bundle has no number (blank, "TBD", a release such as "5.xx.xx").
+    const unnumbered = [...groups.values()].filter((g) => g.platform && g.platform.toLowerCase() === String(platform).toLowerCase() && !/\d/.test(String(g.bundle || '')))
+      .map((g) => ({ bundle: g.bundle || '', ids: g.records.map((r) => r.id) })).filter((g) => g.ids.length);
+    // Once website pages are read for a platform, a bundle without one is not on the website.
+    const read = list.filter((b) => b.page);
+    const notOnSite = read.length ? list.filter((b) => !b.page).map((b) => ({ key: b.key, bundle: b.bundle, no: b.no, gap: b.gap, ids: (groups.get(b.key) || { records: [] }).records.map((r) => r.id) })) : [];
+    const siteMax = read.length ? Math.max(...read.map((b) => Math.floor(b.no))) : 0;
+    return { platform, bundles: list, kernelRows, brands, l2: l2rows, unnumbered, notOnSite, siteBundles: read.map((b) => b.no), siteMax };
   }
 
   /** Every bundle: how many dates it holds, and how it compares with its published page. */
@@ -463,6 +474,7 @@ class AppApi {
         dates: g.records.filter((r) => r.expiry_date && require('./bundles').cellOf(r, norm)).length,
         page: page ? { filename: page.filename, at: page.at, dates: check.pageDates } : null,
         issues: check ? summarizeCheck(check) : null, gap: !!g.gap && !g.records.length && !page,
+        unnumbered: !/\d/.test(String(g.bundle || '')),
       });
     }
     return out.sort((a, b) => a.platform.localeCompare(b.platform) || a.bundle.localeCompare(b.bundle, undefined, { numeric: true }));
@@ -681,6 +693,7 @@ class AppApi {
     else if (lines && lines.length) parsed = portal.parsePdfLines(lines, text);
     else parsed = portal.parsePlainText(text || '');
     const ctx = parsed.ctx || {};
+    if (ctx.notBundle) throw new Error(`"${ctx.notBundle}" is not a kernel bundle page (a bundle page is titled "Kernel Bundle N"), so it was skipped.`);
     if (!ctx.platform && !ctx.bundle) throw new Error('The page does not say which platform and bundle it is for. Check that it is a kernel bundle page.');
     const key = bundleKey(ctx.platform, ctx.bundle);
     const g = this.bundleGroups().get(key);
@@ -1665,6 +1678,46 @@ class AppApi {
   aiAsk(question) { return this.ai.ask(question, this.analysis(), this.store.listRecords()); }
 
   /** Data integrity spot checks (dates, conflicting approval numbers, typos, missing foundations...). */
+  /** Renames and merges that make device names follow the hardware version (CL) rules. Changes nothing. */
+  clCleanupPlan() { return require('./clcleanup').plan(this.listRecords(), this.store.norm()); }
+
+  /**
+   * Apply picked items from clCleanupPlan (by record id). A rename changes the device name; a
+   * merge keeps the record with the later expiry, moves the other's LOAs and missing values to
+   * it, and moves the other to the Archive. A backup is taken first.
+   */
+  applyClCleanup(ids = []) {
+    const want = new Set(ids);
+    const items = this.clCleanupPlan().filter((x) => want.has(x.id));
+    if (!items.length) return { renamed: 0, merged: 0, skipped: [] };
+    this.backup('before-cl-cleanup');
+    let renamed = 0, merged = 0;
+    const skipped = [];
+    const FILL = ['approval_number', 'issue_date', 'expiry_date', 'kernel_version', 'expiry_basis', 'restriction', 'notes'];
+    for (const it of items) {
+      try {
+        if (it.action === 'rename') {
+          this.store.updateRecord(it.id, { device: it.to }, { source: 'CL clean-up' });
+          renamed++;
+          continue;
+        }
+        const a = this.store.getRecord(it.id), b = this.store.getRecord(it.into.id);
+        if (!a || !b) continue;
+        const [keep, drop] = String(a.expiry_date || '') > String(b.expiry_date || '') ? [a, b] : [b, a];
+        this.store.db.tx(() => {
+          for (const d of this.store.documentsFor(drop.id)) this.store.linkDocument(d.id, keep.id);
+          const fill = {};
+          for (const f of FILL) if (!keep[f] && drop[f]) fill[f] = drop[f];
+          if (keep.id === a.id) fill.device = it.to;
+          this.store.archiveRecords([drop.id], { reason: `Merged into ${it.to} (CL clean-up)` });
+          if (Object.keys(fill).length) this.store.updateRecord(keep.id, fill, { source: 'CL clean-up' });
+        });
+        merged++;
+      } catch (e) { skipped.push({ id: it.id, label: `${it.from} · ${it.scheme} ${it.category}`, reason: e.message }); }
+    }
+    return { renamed, merged, skipped };
+  }
+
   dataChecks() { return require('./integrity').dataChecks(this.listRecords(), { norm: this.store.norm(), pages: this.kernelPages() }); }
 
   /** The data checks with clean-up recommendations from the local AI when it is on. */
@@ -1771,7 +1824,7 @@ const PUBLIC_METHODS = [
   'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'deleteRecords', 'bulkUpdate',
   'listArchive', 'archiveCount', 'expiredRecords', 'archiveExpired', 'restoreArchived', 'purgeArchived',
   'activateReplacement', 'deviceCoverage', 'deviceProfile', 'listBundles', 'bundleView', 'kernelCatalog', 'setKernelCatalog', 'removeKernelBundle', 'importKernelCatalog', 'readBundlePage', 'bundleDifferences', 'cleanBundle', 'bundleReport', 'checkRecord', 'listReaderGroups', 'setReaderGroup', 'listFamilyNotes', 'setCoverageNA', 'createMissing', 'createSlot', 'addCertWithLoa', 'listTags', 'knownDevices', 'listAliases', 'listLearned', 'forgetLearned', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'listPlatformDevices', 'setPlatformDevices', 'platformForDevice', 'devicesOnPlatform', 'applyPlatformDevices', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
-  'ingestDocument', 'documentFile', 'listInbox', 'setInboxKernel', 'certQuestions', 'removeKernelLabel', 'certStatus', 'readCertReply', 'applyCertReply', 'listLetterTemplates', 'saveLetterTemplate', 'removeLetterTemplate', 'previewLetterTemplate', 'sampleLetterType', 'platformReference', 'setBundleCount', 'allBundles', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
+  'ingestDocument', 'documentFile', 'listInbox', 'setInboxKernel', 'certQuestions', 'clCleanupPlan', 'applyClCleanup', 'removeKernelLabel', 'certStatus', 'readCertReply', 'applyCertReply', 'listLetterTemplates', 'saveLetterTemplate', 'removeLetterTemplate', 'previewLetterTemplate', 'sampleLetterType', 'platformReference', 'setBundleCount', 'allBundles', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
   'documentText', 'deviceView', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'setEol', 'dataChecks', 'aiDataReview', 'briefingReport', 'exportL3Sheet', 'duplicateInfo', 'mapDuplicate', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'heldChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
   'aiDraftEmail', 'backup', 'listBackups', 'restore', 'health',
