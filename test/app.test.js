@@ -1373,3 +1373,34 @@ test('L2 kernel: read from the file name, asked for when missing, and learned fr
     assert.equal(api.listLetterTemplates().kernelLabels[0].label, 'Contactless Module Release');
   }
 });
+
+test('a certification database notice email becomes one review card per LOA, with its link', async () => {
+  const { api } = await fresh();
+  const { parseNotice, dmy } = require('../src/core/notice');
+  assert.equal(dmy('16-07-2026'), '2026-07-16', 'notices print day-month-year');
+  const rec = api.store.createRecord({ device: 'Desk/3500-CL3', category: 'EMV L2 Contactless', scheme: 'Amex', platform: 'UPP', bundle: 'Kernel Bundle 2', expiry_date: '2025-07-16' });
+  const url = 'https://example.sharepoint.com/sites/Loa/L2CL/American%20Express/T3%202023.07.16%20LoA%20L2%20American%20Express%20v4.0.2%20T3.EMVC4-070100%20Desk3500-CL3%20402.LAB.NORTHWIND.DESK3500CL3.20230716-RF.pdf?csf=1&web=1';
+  const text = [
+    'Subject: Your subscribed Product(s) is updated.', '', 'Dear Pat,',
+    'Thanks for your subscription. Please be noted that the LoA(s) related to your subscribed product(s) is updated:',
+    'No.\tFamily (Product)\tContact and Contactless Configuration (Product)\tProduct Reference\tApproval Categories\tLoA links\tExpired date',
+    `1\tDesk/3500\tCL3\tTCD3xxxxxxxx\tL2 Contactless American Express\t${url}\t16-07-2026`,
+    `2\tLane/3000\t\tTLA3xxxx\tL1 Contact\thttps://example.sharepoint.com/sites/Loa/L1/Lane3000%20L1%20Contact%20EMV-L1-0001.pdf\t01-02-2027`,
+  ].join('\n');
+  const letters = parseNotice(text);
+  assert.equal(letters.length, 2);
+  assert.equal(letters[0].products[0].value, 'Desk/3500-CL3');
+  assert.equal(letters[0].scheme, 'Amex');
+  assert.equal(letters[0].kernelVersion.value, 'T3.EMVC4-070100');
+  assert.equal(letters[0].approvalNumber.value, '402.LAB.NORTHWIND.DESK3500CL3.20230716-RF');
+  assert.equal(letters[1].category, 'EMV L1 Contact');
+
+  api.ingestDocument({ filename: 'Your subscribed Product(s) is updated (email text).txt', bytes: Buffer.from(text), pages: [text] });
+  const items = api.listInbox();
+  assert.equal(items.length, 2);
+  const amex = items.find((i) => i.parsed.scheme === 'Amex');
+  assert.equal(amex.parsed.link, url);
+  assert.equal(amex.parsed.notice, 'updated');
+  const p = amex.proposals.find((x) => x.record_id === rec.id);
+  assert.equal(p.changes.expiry_date.to, '2026-07-16');
+});

@@ -50,6 +50,12 @@ function pdfFromPages(pages) {
     'Content-Type: multipart/mixed; boundary="b1"', '', '--b1', 'Content-Type: text/plain; charset=utf-8', '', 'Hello, please find the approval letter attached.', '',
     '--b1', 'Content-Type: image/png', 'Content-Disposition: inline; filename="logo.png"', 'Content-ID: <logo>', 'Content-Transfer-Encoding: base64', '', 'iVBORw0KGgo=', '',
     '--b1', 'Content-Type: application/pdf; name="NX100 PTS letter.pdf"', 'Content-Disposition: attachment; filename="NX100 PTS letter.pdf"', 'Content-Transfer-Encoding: base64', '', att, '--b1--', ''].join('\r\n'));
+  // A certification database notice: an HTML table of LOAs with links and day-month-year dates.
+  const notice = path.join(tmp, 'Notice.eml');
+  const nurl = 'https://example.sharepoint.com/sites/Loa/L2CL/T3%202023.07.16%20LoA%20L2%20Visa%20T3.VCPS-070803%20NX100-CL1%20VISA.LAB.NX100.20230716.pdf?web=1';
+  fs.writeFileSync(notice, ['From: AfterSales <after@example.com>', 'To: you@example.com', 'Subject: Your subscribed Product(s) is updated.', 'Date: Tue, 8 Sep 2026 09:56:00 +0000', 'MIME-Version: 1.0',
+    'Content-Type: text/html; charset=utf-8', '',
+    `<p>Thanks for your subscription. Please be noted that the LoA(s) related to your subscribed product(s) is updated:</p><table><tr><th>No.</th><th>Family (Product)</th><th>Contact and Contactless Configuration (Product)</th><th>Product Reference</th><th>Approval Categories</th><th>LoA links</th><th>Expired date</th></tr><tr><td>1</td><td>NX100</td><td>CL1</td><td>TNX1xxxx</td><td>L2 Contactless Visa</td><td><a href="${nurl}">${nurl}</a></td><td>16-07-2029</td></tr></table>`, ''].join('\r\n'));
   // A kernel bundle page (as text) for a bundle the register does not have yet.
   const bundlePage = path.join(tmp, 'NWP bundle 9.txt');
   fs.writeFileSync(bundlePage, ['Kernel Bundle 9', 'This kernel bundle for NWP uses the EMV Contact kernel v4.10, which expires on 01/01/28 located here.',
@@ -242,6 +248,11 @@ function pdfFromPages(pages) {
     await p.waitForSelector('.qitem >> text=/Email "PCI approval NX100": 1 file added/', { timeout: 30000 });
     await p.waitForSelector('.card.review:has-text("NX100 PTS letter.pdf")', { timeout: 60000 });
     check(true, 'email dropped: its LOA attachment is read');
+    const [chn] = await Promise.all([p.waitForEvent('filechooser'), p.click('text=Choose files')]);
+    await chn.setFiles(notice);
+    await p.waitForSelector('.card.review:has-text("LOA updated") >> text=Open LOA link', { timeout: 60000 });
+    await p.waitForSelector('.card.review:has-text("LOA updated") >> text=Jul 16, 2029');
+    check(true, 'certification database notice email: one card per LOA, with its link and day-month-year expiry');
     if (process.env.LOA_MSG) {
       const [chm] = await Promise.all([p.waitForEvent('filechooser'), p.click('text=Choose files')]);
       await chm.setFiles(process.env.LOA_MSG.split(','));

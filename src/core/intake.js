@@ -9,6 +9,7 @@ const path = require('path');
 const { parseDocument } = require('./loa-parser');
 const { applyTemplates } = require('./templates');
 const { findKernel, learnLabel, letterText } = require('./kernelfind');
+const { isNotice, parseNotice } = require('./notice');
 const { VERSION_CATEGORIES, deviceScore, wildcardRegex, splitVariant, deviceFromFilename, categoryFromFilename, schemeFromFilename } = require('./devices');
 const { todayIso, daysBetween } = require('./dates');
 const { coverage } = require('./lifecycle');
@@ -548,10 +549,11 @@ class Intake {
     if (text.replace(/[^A-Za-z0-9]/g, '').length < 40) {
       return { filename, status: 'unreadable', letters: 0, message: 'No readable text found, even after OCR' };
     }
-    const letters = parseDocument(pages);
+    // A certification database notice lists several LOAs, one per table row, with links.
+    const letters = isNotice(text) ? parseNotice(text) : parseDocument(pages);
     const ctx = this.context();
     const records = this.store.listRecords();
-    fromFilename(letters, filename, records, ctx.norm);
+    if (!letters.some((l) => l.type === 'notice')) fromFilename(letters, filename, records, ctx.norm);
     applyTemplates(letters, ctx.templates, words);
     for (const L of letters) findKernel(L, { filename, text: letterText(text, L), pages: ctx.pages, labels: ctx.kernelLabels });
     archiveOtherBrands(letters, ctx.brands);
@@ -610,8 +612,8 @@ class Intake {
         const done = mine.filter((x) => x.status === 'applied').map((x) => x.parsed);
         // Platform/bundle chosen for this file's letters carry over.
         const defaults = mine.map((x) => x.parsed.recordDefaults).find((d) => d && (d.platform || d.bundle));
-        const fresh = parseDocument(text.split('\n\f\n'));
-        fromFilename(fresh, doc.filename, records, ctx.norm);
+        const fresh = isNotice(text) ? parseNotice(text) : parseDocument(text.split('\n\f\n'));
+        if (!fresh.some((l) => l.type === 'notice')) fromFilename(fresh, doc.filename, records, ctx.norm);
         applyTemplates(fresh, ctx.templates, this.store.documentWords(docId));
         for (const L of fresh) findKernel(L, { filename: doc.filename, text: letterText(text, L), pages: ctx.pages, labels: ctx.kernelLabels });
         archiveOtherBrands(fresh, ctx.brands);
@@ -668,7 +670,7 @@ class Intake {
       for (const it of all.filter((x) => x.status === 'pending')) {
         const patch = {};
         // Letters read before the file-name fallback existed get it now.
-        if (!it.parsed.informational && lettersIn(it.document_id) === 1 && !it.parsed.products.some((p) => p.source === 'filename')) {
+        if (!it.parsed.informational && it.parsed.type !== 'notice' && lettersIn(it.document_id) === 1 && !it.parsed.products.some((p) => p.source === 'filename')) {
           const before = JSON.stringify(it.parsed.products);
           fromFilename([it.parsed], it.filename, records, ctx.norm);
           if (JSON.stringify(it.parsed.products) !== before) patch.parsed = it.parsed;
