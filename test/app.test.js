@@ -1442,3 +1442,26 @@ test('bundles: unnumbered bundle names are not counted, Bundle 0 only where it e
   assert.ok(api.listBundles().find((b) => b.platform === 'NWP' && b.unnumbered));
   assert.throws(() => api.readBundlePage({ filename: '5.xx.xx.html', bytes: Buffer.from('<html><head><title>5.xx.xx - EMV LoA</title></head><body><h1>5.xx.xx</h1><p>This kernel bundle for NWP ... Kernel Bundle 5</p></body></html>') }), /not a kernel bundle page/);
 });
+
+test('website bundle pages fill every L2 kernel and place records that have no bundle', async () => {
+  const { api } = await fresh();
+  const page = (n, visa, rows) => ['Kernel Bundle ' + n, 'This kernel bundle for NWP uses the EMV Contact kernel v9.01, which expires on 01/01/30 located here.',
+    'Specification Kernel', 'EMV Contact 9.01', `Visa Paywave ${visa}`, 'Mastercard Paypass 087300 0306', '',
+    'EMV Contactless', 'Terminal   Visa   Mastercard', ...rows].join('\n');
+  const inB1 = api.store.createRecord({ device: 'NX100-CL1', category: 'EMV L2 Contactless', scheme: 'Visa', platform: 'NWP', bundle: 'Kernel Bundle 1', expiry_date: '2028-12-03' });
+  const loose = api.store.createRecord({ device: 'NX200', category: 'EMV L2 Contactless', scheme: 'Mastercard', platform: 'NWP', expiry_date: '2028-03-11' });
+  const other = api.store.createRecord({ device: 'NX300', category: 'Other', scheme: 'Other', platform: 'NWP', expiry_date: '2029-05-05' });
+  api.readBundlePage({ filename: 'b1.txt', text: page(1, '070000', ['NX100-CL1   12/03/28   03/11/28', 'NX200-CL1   01/01/29   03/11/28']) });
+  const r = api.readBundlePage({ filename: 'b2.txt', text: page(2, '070803', ['NX300-CL1   05/05/29   06/06/29']) });
+  assert.equal(api.store.getRecord(inB1.id).kernel_version, '070000', 'kernel from the bundle page, no typing');
+  assert.equal(api.store.getRecord(loose.id).bundle, 'Kernel Bundle 1', 'placed where the page lists the same device, approval and date');
+  assert.match(api.store.getRecord(loose.id).kernel_version, /087300/);
+  const o = api.store.getRecord(other.id);
+  assert.equal(o.bundle, 'Kernel Bundle 2');
+  assert.equal(o.category, 'EMV L2 Contactless', 'a record typed Other takes the approval type of the only row that fits');
+  assert.equal(o.scheme, 'Visa');
+  assert.equal(o.kernel_version, '070803');
+  assert.ok(r.sync);
+  const acts = api.analysis().actions.filter((a) => a.kernels);
+  assert.ok(acts.every((a) => a.kernels.length));
+});
