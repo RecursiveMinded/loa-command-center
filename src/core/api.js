@@ -380,7 +380,8 @@ class AppApi {
       const max = Math.max(Number(counts[pf]) || 0, ...list.map((b) => Math.floor(b.no) || 0));
       // Name a missing bundle the way this platform's bundles are named ("Bundle 3", "Kernel Bundle 3").
       const sample = (list.find((b) => /\d/.test(b.bundle)) || {}).bundle || 'Bundle 1';
-      for (let n = 1; n <= max; n++) {
+      // Numbering starts at 0 on platforms that have a Bundle 0.
+      for (let n = list.some((b) => b.no === 0) ? 0 : 1; n <= max; n++) {
         if (list.some((b) => Math.floor(b.no) === n)) continue;
         const bundle = sample.replace(/\d+(?:\.\d+)?/, String(n));
         const key = bundleKey(pf, bundle);

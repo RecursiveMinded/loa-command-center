@@ -166,10 +166,50 @@ function htmlText(html) {
   return decodeEntities(html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ');
 }
 
+/**
+ * The bundle's specification table as an HTML table:
+ *   Specification | Card Version | Kernel Version      (newer pages)
+ *   Specification | Kernel                              (older pages: "087300 0306")
+ *   Specification | Kernel Version | App Version        (ARC pages)
+ * Returns { kernels: { Brand: version }, kernelIds: { Brand: [numbers] }, l2Contact } or null.
+ */
+function htmlKernelTable(tables) {
+  for (const t of tables) {
+    const hi = t.findIndex((r) => /specification/i.test(cleanCell(r[0])));
+    if (hi < 0) continue;
+    const head = t[hi].map((c) => cleanCell(c).toLowerCase());
+    let kc = head.findIndex((c) => /kernel\s*version/.test(c));
+    if (kc < 0) kc = head.findIndex((c) => /kernel/.test(c));
+    if (kc < 0) continue;
+    const skip = new Set(head.map((c, i) => (/card\s*version/.test(c) ? i : -1)).filter((i) => i >= 0));
+    const out = { kernels: {}, kernelIds: {}, l2Contact: null };
+    for (const row of t.slice(hi + 1)) {
+      const name = cleanCell(row[0]);
+      const kernel = cleanCell(row[kc]);
+      if (!name || !kernel || !/\d/.test(kernel)) continue;
+      if (/emv\s*contact\b/i.test(name) && !/contactless/i.test(name)) { out.l2Contact = { version: kernel.split(/\s+/)[0] }; continue; }
+      if (/entry\s*point/i.test(name)) continue;
+      const brand = normalizeScheme(name.replace(/\s+(paywave|paypass|expresspay|dpas|d-pas|zip|quickpay|quickpass|speedy|flash|contactless)$/i, '').trim());
+      if (!brand || out.kernels[brand]) continue; // Discover DPAS comes before Discover ZIP
+      out.kernels[brand] = kernel;
+      out.kernelIds[brand] = row.map((c, i) => (i && !skip.has(i) ? cleanCell(c) : '')).join(' ').split(/\s+/).filter((x) => /\d/.test(x));
+    }
+    if (Object.keys(out.kernels).length) return out;
+  }
+  return null;
+}
+
 function parseHtml(raw) {
   const html = mhtmlToHtml(raw);
   const ctx = contextFromText(htmlText(html));
-  return { ctx, records: tablesToRecords(htmlTables(html), ctx) };
+  const tables = htmlTables(html);
+  const kt = htmlKernelTable(tables);
+  if (kt) {
+    ctx.kernels = { ...kt.kernels, ...ctx.kernels };
+    ctx.kernelIds = { ...kt.kernelIds, ...ctx.kernelIds };
+    if (!ctx.l2Contact && kt.l2Contact) ctx.l2Contact = kt.l2Contact;
+  }
+  return { ctx, records: tablesToRecords(tables, ctx) };
 }
 
 // ---------------------------------------------------------------- PDF input

@@ -1204,7 +1204,7 @@ test('other card brands are archived; struck or XX dates mean a customer waiver'
   assert.equal(api.getRecord(mc.id).record.restriction, 'waiver');
   // The plan says what to do: customers request their own waiver, not a plain "expired, renew".
   const acts = api.analysis().actions;
-  assert.ok(acts.some((a) => a.kind === 'waiver' && a.recordIds.includes(visa.id) && /request their own extension waiver/.test(a.why)));
+  assert.ok(acts.some((a) => a.kind === 'waiver' && a.recordIds.includes(visa.id) && a.recordIds.includes(mc.id) && /request their own extension waiver/.test(a.why)), 'one grouped action per bundle');
   assert.ok(!acts.some((a) => a.kind === 'expired' && a.recordIds.includes(visa.id)));
   // A scheme mandate blocks renewal: a new kernel is needed.
   api.saveRecord(mc.id, { restriction: 'mandate', kernel_version: 'v1.6' });
@@ -1242,4 +1242,25 @@ test('letter templates: boxes marked on a sample are read on every later letter 
   assert.equal(again.parsed.kernelVersion.value, '123 v0406', 'the text reader fills what no box covers');
   api.removeLetterTemplate('l2cl-discover');
   assert.equal(api.listLetterTemplates().types.find((t) => t.key === 'l2cl-discover').template, null);
+});
+
+test('website pages: the specification table gives each brand kernel, and Bundle 0 counts', async () => {
+  const { api } = await fresh();
+  const pg = (n, visa, mc) => `<p>Kernel Bundle ${n}</p><p>This kernel bundle for NWP devices</p>
+    <table><thead><tr><th><strong>Specification</strong></th><th>Card Version</th><th>Kernel Version</th></tr></thead><tbody>
+    <tr><td>EMV Contact</td><td>x</td><td><code>9.06</code></td></tr><tr><td>Visa Paywave</td><td>2.2</td><td><code>${visa}</code></td></tr>
+    <tr><td>Mastercard Paypass</td><td>4.0</td><td><code>${mc}</code></td></tr><tr><td>Discover DPAS</td><td>1</td><td>0311</td></tr><tr><td>Discover ZIP</td><td>1</td><td>0200</td></tr></tbody></table>
+    <table><tr><th>Terminal</th><th>Visa</th><th>Mastercard</th></tr><tr><td>NX100-CL1</td><td><del class=critic>04/30/24</del></td><td>01/01/30</td></tr></table>`;
+  api.readBundlePage({ filename: 'b0.html', bytes: Buffer.from(pg(0, '070000', '087300 0306')) });
+  api.readBundlePage({ filename: 'b2.html', bytes: Buffer.from(pg(2, '070803', '088100 0307')) });
+  const cat = api.kernelCatalog().bundles.filter((b) => b.platform === 'NWP');
+  assert.deepEqual(cat.map((b) => [b.key, !!b.gap]), [['NWP|0', false], ['NWP|1', true], ['NWP|2', false]]);
+  const b2 = cat.find((b) => b.key === 'NWP|2');
+  assert.equal(b2.kernels.visa.value, '070803');
+  assert.equal(b2.kernels.discover.value, '0311', 'Discover DPAS, not ZIP');
+  assert.equal(b2.l2Contact.value, '9.06');
+  const d = api.bundleDifferences('NWP|2');
+  assert.equal(d.missing, 2);
+  api.cleanBundle('NWP|2', { missing: true });
+  assert.equal(api.listRecords().find((r) => r.scheme === 'Visa').restriction, 'waiver', 'a struck date on the page is a waiver');
 });
