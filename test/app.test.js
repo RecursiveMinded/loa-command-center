@@ -1332,3 +1332,14 @@ test('new devices listed under a platform with no LOA are asked about and shown 
   assert.equal(row.devices, 'DX2, DX4, RX9');
   assert.equal(st.counts.incert, 3);
 });
+
+test('a letter naming a device without CL is about CL1, not the CL2 that came later', async () => {
+  const { api } = await fresh();
+  const cl1 = api.store.createRecord({ device: 'NX200-CL1', category: 'EMV L2 Contactless', scheme: 'Amex', expiry_date: '2024-05-01' });
+  const cl2 = api.store.createRecord({ device: 'NX200-CL2', category: 'EMV L2 Contactless', scheme: 'Amex', expiry_date: '2025-05-01' });
+  api.ingestDocument({ filename: 'amex.pdf', bytes: Buffer.from('cl'), pages: [L.amex] });
+  const it = api.listInbox().find((i) => i.parsed.scheme === 'Amex');
+  const ids = it.proposals.map((p) => p.record_id).filter(Boolean);
+  assert.ok(ids.includes(cl1.id), 'the bare name lands on CL1');
+  assert.ok(!ids.includes(cl2.id), 'and never on CL2');
+});

@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { parseDocument } = require('./loa-parser');
 const { applyTemplates } = require('./templates');
-const { deviceScore, wildcardRegex, splitVariant, deviceFromFilename, categoryFromFilename, schemeFromFilename } = require('./devices');
+const { VERSION_CATEGORIES, deviceScore, wildcardRegex, splitVariant, deviceFromFilename, categoryFromFilename, schemeFromFilename } = require('./devices');
 const { todayIso, daysBetween } = require('./dates');
 const { coverage } = require('./lifecycle');
 const { kernelMismatch, fitsNote, kernelPages, kernelBundles, newerKernel, bundleNames, bundleKey, bundleKernel } = require('./bundles');
@@ -146,7 +146,14 @@ function buildProposals(letter, records, { norm, aliases = {}, noiseWords = [], 
       const exact = list.filter((x) => (pExpiry && x.r.expiry_date === pExpiry) || (approval && x.r.approval_number === approval));
       return exact.length ? exact : list;
     });
-    // "Lane/5000" may match both the CL2 and CL3 readers; a person has to pick.
+    // A letter naming the device without a hardware version is about the first version (CL1):
+    // CL1 is only written once a CL2 exists. So a bare name never lands on CL2/CL3 records
+    // when the CL1 (or bare-named) record is there.
+    if (!isFamily && VERSION_CATEGORIES.has(letter.category) && !splitVariant(norm(prod.value)).variant) {
+      const first = chosen.filter((x) => /^(CL1)?$/i.test(splitVariant(norm(x.r.device)).variant));
+      if (first.length && first.length < chosen.length) chosen = first;
+    }
+    // "Lane/5000" may match only the CL2 and CL3 readers; a person has to pick.
     const ambiguous = chosen.length > 1 && !isFamily && !splitVariant(norm(prod.value)).variant
       && chosen.some((x) => splitVariant(norm(x.r.device)).variant);
     let mine = [];
