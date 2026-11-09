@@ -28,23 +28,35 @@ export function Bundles({ app }) {
   const [catalog, setCatalog] = useState(false);
   const input = useRef();
 
+  // One page, or every bundle page of every platform at once (e.g. ARC 1-5 and UPP 0-6):
+  // each fills its bundle's kernels and dates, so the app knows the whole history.
   const readPage = async (e) => {
-    const f = e.target.files[0]; e.target.value = '';
-    if (!f) return;
+    const files = [...e.target.files]; e.target.value = '';
+    if (!files.length) return;
     setBusy(true);
+    const done = [];
     try {
-      const b = new Uint8Array(await f.arrayBuffer());
-      const lower = f.name.toLowerCase();
-      let p;
-      if (/\.(html?|mhtml?|mht)$/.test(lower)) p = { filename: f.name, bytes: b };
-      else if (lower.endsWith('.pdf')) { const ex = await extractPdf(b, { ocr: false, keepLines: true }); p = { filename: f.name, text: ex.pages.join('\n'), lines: ex.lines }; }
-      else p = { filename: f.name, text: new TextDecoder().decode(b) };
-      const r = await call('readBundlePage', p);
+      for (const f of files) {
+        const b = new Uint8Array(await f.arrayBuffer());
+        const lower = f.name.toLowerCase();
+        let p;
+        if (/\.(html?|mhtml?|mht)$/.test(lower)) p = { filename: f.name, bytes: b };
+        else if (lower.endsWith('.pdf')) { const ex = await extractPdf(b, { ocr: false, keepLines: true }); p = { filename: f.name, text: ex.pages.join('\n'), lines: ex.lines }; }
+        else p = { filename: f.name, text: new TextDecoder().decode(b) };
+        try { done.push(await call('readBundlePage', p)); } catch (er) { toastError(new Error(`${f.name}: ${er.message || er}`)); }
+      }
+      if (!done.length) return;
+      const r = done[done.length - 1];
       setPick(r.key); setPlat(r.platform);
       app.refresh();
-      // Differences pop up straight away, so they are dealt with now.
-      if (!r.ok) setDiff(r);
-      else toast(`${r.platform} ${r.bundle} matches the page: ${plural(r.pageDates, 'date')}`, 'ok');
+      if (done.length === 1) {
+        // Differences pop up straight away, so they are dealt with now.
+        if (!r.ok) setDiff(r);
+        else toast(`${r.platform} ${r.bundle} matches the page: ${plural(r.pageDates, 'date')}`, 'ok');
+      } else {
+        const off = done.filter((x) => !x.ok);
+        toast(`Read ${plural(done.length, 'bundle page')}: kernels filled in for each.${off.length ? ` ${off.map((x) => `${x.platform} ${x.bundle}`).join(', ')} differ from your records: open each bundle and press Review and fix.` : ' All match your records.'}`, off.length ? undefined : 'ok');
+      }
     } catch (er) { toastError(er); } finally { setBusy(false); }
   };
   const openDiff = async () => { try { setDiff(await call('bundleDifferences', key)); } catch (e) { toastError(e); } };
@@ -55,8 +67,8 @@ export function Bundles({ app }) {
   const cur = list.find((b) => b.key === key);
   return html`
     <div class="page-head"><div><h1>Kernel bundles</h1><p>A bundle is a set of kernel versions packaged, loaded and certified together. An L2 LOA belongs to the bundles that run its kernel, not to every bundle with that device: renewals often land one to three bundles back.</p></div>
-      <div class="row"><input ref=${input} type="file" accept=".pdf,.html,.htm,.mhtml,.mht,.txt" class="hidden" onChange=${readPage} />
-        <button class="btn primary" disabled=${busy} onClick=${() => input.current.click()} title="Read the published bundle page (PDF printout or saved web page) and compare it with your records">
+      <div class="row"><input ref=${input} type="file" multiple accept=".pdf,.html,.htm,.mhtml,.mht,.txt" class="hidden" onChange=${readPage} />
+        <button class="btn primary" disabled=${busy} onClick=${() => input.current.click()} title="Read one or more published bundle pages (saved web pages or PDF printouts): pick every ARC and UPP page at once to load the whole bundle history">
           ${busy ? html`<${Spinner} />` : html`<${Icon} name="globe" />`} Check against website page</button>
         <button class="btn" onClick=${() => setCatalog(true)} title="Every bundle's kernel per card brand, for every platform"><${Icon} name="grid" /> Kernel catalog</button>
         ${key ? html`<button class="btn" onClick=${print}><${Icon} name="print" /> Report like the website</button>
