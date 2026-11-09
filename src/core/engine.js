@@ -6,7 +6,7 @@
 
 const { todayIso, daysBetween, addDays, formatDate } = require('./dates');
 const { bundleKernel, kernelMismatch, fitsNote, kernelPages, newerKernel } = require('./bundles');
-const { daysRemaining, effectiveStage, windowFor, health, isEol, WINDOWS } = require('./lifecycle');
+const { daysRemaining, effectiveStage, windowFor, health, isEol, restrictionOf, WINDOWS } = require('./lifecycle');
 const { certHome } = require('./devices');
 
 const IN_PROGRESS = new Set(['Renewal Requested', 'Pending New LOA', 'Replacement Received']);
@@ -60,7 +60,42 @@ function analyze(records, { settings = {}, asOf = todayIso(), tasks = {}, inboxP
   }
 
   const undecidedExpired = (x) => x.days != null && x.days < 0 && !RESOLVED_EXPIRY.has(x.stage)
-    && !['Market Approved Expiration', 'No Action Required'].includes(x.r.disposition);
+    && !['Market Approved Expiration', 'No Action Required'].includes(x.r.disposition) && !restrictionOf(x.r);
+
+  // Renewal restrictions: expired with a restricted renewal (customers request their own waiver),
+  // or a scheme mandate that blocks renewing the kernel at all. These replace the usual renewal advice.
+  // Waivers are grouped per bundle: an old bundle can hold a hundred struck dates.
+  const waivers = new Map();
+  for (const x of rows) {
+    const kind = restrictionOf(x.r);
+    if (!kind) continue;
+    const { r, days } = x;
+    if (kind === 'waiver') {
+      const k = `${r.platform || ''}|${r.bundle || ''}`;
+      if (!waivers.has(k)) waivers.set(k, []);
+      waivers.get(k).push(x);
+      continue;
+    }
+    const kv = r.kernel_version ? ` kernel ${r.kernel_version}` : '';
+    add({
+      key: `mandate:${r.id}:${r.expiry_date}`, kind: 'mandate', priority: days != null && days <= 365 ? 1 : 2,
+      title: `Renewal blocked by ${r.scheme || 'scheme'} mandate: ${label(r)}${kv}`,
+      why: `The scheme will not renew this kernel. A new kernel and a new certification are needed${r.expiry_date ? ` before ${formatDate(r.expiry_date)}` : ''}. Ask the certification team for the roadmap and plan the upgrade with customers.`,
+      due: asOf, days, recordIds: [r.id],
+    });
+  }
+  for (const [k, list] of waivers) {
+    const [platform, bundle] = k.split('|');
+    const where = [platform, bundle].filter(Boolean).join(' ') || 'No bundle';
+    const brands = [...new Set(list.map((x) => (/L2/.test(x.r.category) ? x.r.scheme : x.r.category.replace(/^EMV /, ''))))];
+    add({
+      key: `waiver:${k}:${list.length}`, kind: 'waiver', priority: 3,
+      title: `${where}: ${pl(list.length, 'approval')} need a customer waiver`,
+      why: `The website strikes these dates or shows XX: expired with a restricted renewal (${brands.slice(0, 6).join(', ')}${brands.length > 6 ? '…' : ''}). Customers still deploying them must request their own extension waiver from the card brand to stay certified. Make sure Client Solutions and the account teams know.`,
+      due: asOf, recordIds: list.map((x) => x.r.id),
+    });
+  }
+
   // Long-expired approvals are usually legacy entries: one grouped clean-up action.
   const legacy = rows.filter((x) => undecidedExpired(x) && x.days < -365);
   if (legacy.length) {
@@ -109,6 +144,7 @@ function analyze(records, { settings = {}, asOf = todayIso(), tasks = {}, inboxP
       continue;
     }
     if (days == null) continue;
+    if (restrictionOf(r)) continue;
 
     // Renewal should be underway.
     if (days >= 0 && days <= leadDays && !IN_PROGRESS.has(stage) && !RESOLVED_EXPIRY.has(stage)

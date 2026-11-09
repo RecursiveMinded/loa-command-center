@@ -331,7 +331,7 @@ function SheetImport({ file, app, onClose }) {
 function Review({ it, app, threshold, readOnly, selected, onSelect, onDone }) {
   const L = it.parsed;
   const defaults = L.recordDefaults || {};
-  const [checked, setChecked] = useState(() => it.proposals.map((p) => !p.optional && (p.action !== 'unmatched' || (p.suggest || []).length > 0) && !(p.warnings || []).some((w) => /Confirm it covers/.test(w))));
+  const [checked, setChecked] = useState(() => it.proposals.map((p) => !p.optional && !p.needsKernel && (p.action !== 'unmatched' || (p.suggest || []).length > 0) && !(p.warnings || []).some((w) => /Confirm it covers/.test(w))));
   const [edits, setEdits] = useState(() => it.proposals.map(() => ({})));
   // Records picked for the same family name last time are ticked again.
   const [picks, setPicks] = useState(() => it.proposals.map((p) => p.suggest || []));
@@ -378,6 +378,7 @@ function Review({ it, app, threshold, readOnly, selected, onSelect, onDone }) {
       <div class="row wrap"><h3>${letterTitle(L)}</h3>
         <span class="pill brand">${L.scheme || 'Unknown brand'}</span><span class="tag">${L.category}</span>
         <span class=${`pill ${confCls}`} title="How sure the reader is about the extracted values">${L.confidence}% confident</span>
+        ${L.template ? html`<span class="pill info" title=${`Read from the boxes you marked: ${L.template.fields.join(', ')}`}><${Icon} name="grid" size="12" /> ${L.template.label} template</span>` : null}
         ${safe && !readOnly ? html`<span class="pill good"><${Icon} name="shield" size="12" /> Safe to auto-approve</span>` : null}
         ${defaults.platform || defaults.bundle ? html`<span class="pill info" title="Platform/bundle for the records this letter creates">${[defaults.platform, defaults.bundle].filter(Boolean).join(' · ')}</span>` : null}
         ${it.status !== 'pending' ? html`<span class="tag">${it.status}${it.decided_at ? ` · ${fmtWhen(it.decided_at)}` : ''}</span>` : null}</div>
@@ -390,11 +391,12 @@ function Review({ it, app, threshold, readOnly, selected, onSelect, onDone }) {
         <${Fact} k="Approval number" v=${val(L.approvalNumber)} ev=${L.approvalNumber && L.approvalNumber.evidence} optional />
         <${Fact} k="Issued" v=${fmtDate(val(L.issueDate))} ev=${L.issueDate && L.issueDate.evidence} optional />
         <${Fact} k="Expires" v=${fmtDate(val(L.expiryDate))} ev=${L.expiryBasis || (L.expiryDate && L.expiryDate.evidence)} />
-        ${val(L.kernelVersion) ? html`<${Fact} k="Kernel / version" v=${val(L.kernelVersion)} />` : null}
+        ${val(L.kernelVersion) || (/^EMV L2/.test(L.category || '') && !L.informational) ? html`<${Fact} k="Kernel / version" v=${val(L.kernelVersion)} ev=${L.kernelVersion && L.kernelVersion.evidence} />` : null}
         ${L.restricted ? html`<${Fact} k="Restriction" v="Restricted / final extension" />` : null}
       </div>
+      ${it.kernelFit !== undefined ? html`<${KernelFit} it=${it} readOnly=${readOnly} onDone=${onDone} />` : null}
       ${(L.warnings || []).map((w) => html`<div class="warnline"><${Icon} name="warn" />${w}</div>`)}
-      ${L.informational ? html`<div class="callout mt">Supporting document (${L.type || 'bulletin'}). It is kept in the archive and searchable, but does not change any dates.</div>` : null}
+      ${L.informational ? html`<div class="callout mt">${L.type === 'otherBrand' ? html`<b>Other card brand: archived.</b> ${L.scheme} is not one of the brands you track, so this LOA is kept in the archive and searchable but creates and changes no records.` : `Supporting document (${L.type || 'bulletin'}). It is kept in the archive and searchable, but does not change any dates.`}</div>` : null}
       ${!it.proposals.length && !L.informational ? html`<div class="callout warn mt">No matching records for this letter's brand and approval type. Create the record below, import your tracker first, or add a device alias in Settings and press Re-match.</div>` : null}
       ${!it.proposals.length && !L.informational && !readOnly ? html`<${NewRecords} title="Create records from this letter" L=${L} names=${fresh.devices} edits=${fresh.edits} withFields
         onNames=${(devices) => setFresh({ ...fresh, devices })} onEdits=${(e) => setFresh({ ...fresh, edits: { ...fresh.edits, ...e } })} />` : null}
@@ -414,8 +416,9 @@ function Review({ it, app, threshold, readOnly, selected, onSelect, onDone }) {
   </div>`;
 }
 
-const DOC_TYPES = { bulletin: 'Product configuration bulletin', loe: 'Letter of equivalency', tqm: 'TQM statement', pci: 'PCI PTS approval' };
+const DOC_TYPES = { otherBrand: 'Other card brand LOA (archived)', bulletin: 'Product configuration bulletin', loe: 'Letter of equivalency', tqm: 'TQM statement', pci: 'PCI PTS approval' };
 function letterTitle(L) {
+  if (L.type === 'otherBrand') return `${L.scheme || L.issuer || 'Other brand'} LOA (other card brand, archived)`;
   const kind = DOC_TYPES[L.type] || (L.informational ? 'Supporting document' : 'Letter of approval');
   return L.issuer && L.issuer !== 'Manufacturer' ? `${L.issuer} ${kind.toLowerCase()}` : kind;
 }
@@ -590,4 +593,40 @@ function Documents({ docs, app }) {
       <td class="nowrap"><button class="btn sm ghost" onClick=${async () => { try { setText({ name: d.filename, text: await call('documentText', d.id) }); } catch (e) { toastError(e); } }}>Text</button>
       <${DocButtons} d=${d} compact /></td></tr>`)}</tbody></table></div>
     ${text ? html`<${Modal} title=${text.name} wide onClose=${() => setText(null)}><div class="excerpt" style="max-height:66vh">${text.text}</div><//>` : null}`;
+}
+
+/**
+ * Where an L2 LOA belongs, by its kernel. A renewal is never placed by device alone: the
+ * cert team often renews an older kernel in an older bundle, one to three bundles back.
+ * When the kernel was not read, it is asked for here before anything is applied.
+ */
+function KernelFit({ it, readOnly, onDone }) {
+  const kf = it.kernelFit;
+  const L = it.parsed;
+  const [edit, setEdit] = useState(!val(L.kernelVersion));
+  const [v, setV] = useState(val(L.kernelVersion));
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true);
+    try { await call('setInboxKernel', it.id, v); toast(v ? `Kernel ${v}: matched again` : 'Kernel cleared'); onDone(); } catch (e) { toastError(e); } finally { setBusy(false); }
+  };
+  const short = (b) => String(b).replace(/^(kernel\s+)?bundle\s*/i, 'Bundle ');
+  const plats = kf ? kf.platforms : [];
+  const lines = plats.map((p) => {
+    if (!kf.kernel) return html`<div>${p.platform}: ${p.others.map((o) => `${short(o.bundle)} runs ${o.kernel}`).join(' · ')}${p.unknown.length ? html` <span class="faint">· not in the catalog: ${p.unknown.map(short).join(', ')}</span>` : null}</div>`;
+    if (!p.fits.length) return html`<div>${p.platform}: <b>no bundle runs ${kf.kernel}</b> <span class="faint">(${p.others.map((o) => `${short(o.bundle)} ${o.kernel}`).join(', ')})</span></div>`;
+    return html`<div>${p.platform}: <b>${p.fits.map(short).join(', ')}</b>${p.behind > 0 ? html` <span class="pill info">${p.behind} bundle${p.behind > 1 ? 's' : ''} behind the newest</span> <span class="faint">${short(p.newest.bundle)} runs ${p.newest.kernel}: an older-kernel renewal, which is normal</span>` : p.behind === 0 ? html` <span class="pill good">newest bundle</span>` : null}${p.unknown.length ? html` <span class="faint">· not in the catalog yet: ${p.unknown.map(short).join(', ')}</span>` : null}</div>`;
+  });
+  const none = kf && kf.kernel && plats.length && !plats.some((p) => p.fits.length);
+  return html`<div class=${`callout mt ${!kf || !kf.kernel || none ? 'warn' : ''}`}>
+    <div class="row wrap"><${Icon} name="grid" /><b>${kf && kf.kernel ? `Kernel ${kf.kernel} decides the bundles this LOA renews` : 'Which kernel does this LOA approve?'}</b>
+      <span class="grow"></span>${!readOnly && !edit ? html`<button class="btn sm ghost" onClick=${() => setEdit(true)}><${Icon} name="edit" /> Change kernel</button>` : null}</div>
+    ${kf && kf.kernel ? null : html`<div class="small mt" style="margin-top:4px">The kernel was not read. A new LOA for a device is not proof it renewed in the newest bundle: the cert team often renews an older kernel. Enter the kernel so the LOA lands on the bundles that run it.</div>`}
+    ${plats.length ? html`<div class="small mt" style="margin-top:4px">${lines}</div>` : html`<div class="small faint mt" style="margin-top:4px">No bundle kernels known for ${L.scheme || 'this brand'} yet. Fill them in under Bundles > Kernel catalog.</div>`}
+    ${none ? html`<div class="small mt" style="margin-top:4px">No bundle you track runs this kernel. Check the kernel on the LOA, or add the bundle to the kernel catalog.</div>` : null}
+    ${edit && !readOnly ? html`<div class="row mt"><input type="text" list=${`kopts-${it.id}`} value=${v} placeholder="Kernel, e.g. 0301" aria-label="Kernel version" style="width:180px" onInput=${(e) => setV(e.target.value)} onKeyDown=${(e) => { if (e.key === 'Enter') save(); }} />
+      <datalist id=${`kopts-${it.id}`}>${(it.kernelOptions || []).map((k) => html`<option value=${k} />`)}</datalist>
+      <button class="btn sm primary" disabled=${busy || !String(v).trim()} onClick=${save}>Use this kernel</button>
+      ${val(L.kernelVersion) ? html`<button class="btn sm" onClick=${() => { setEdit(false); setV(val(L.kernelVersion)); }}>Cancel</button>` : null}</div>` : null}
+  </div>`;
 }

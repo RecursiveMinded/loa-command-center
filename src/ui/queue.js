@@ -65,7 +65,7 @@ async function run() {
         });
         it.note = 'Matching to your records';
         emit();
-        const res = await call('ingestDocument', { filename: it.name, bytes, pages: ex.pages, ocrPages: ex.ocrPages });
+        const res = await call('ingestDocument', { filename: it.name, bytes, pages: ex.pages, ocrPages: ex.ocrPages, words: ex.words || [] });
         it.result = res;
         it.status = res.status === 'ok' ? 'done' : res.status;
         it.progress = 1;

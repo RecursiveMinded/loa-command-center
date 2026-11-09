@@ -42,7 +42,7 @@ function summarizeCheck(c) {
   return {
     pageDates: c.pageDates, recordDates: c.recordDates, ok: c.ok,
     same: c.same.length, pageNewer: c.pageNewer.length, recordNewer: c.recordNewer.length, missing: c.missing.length,
-    extra: c.extra.length, undated: c.undated.length, duplicates: c.duplicates.reduce((n, d) => n + d.others.length, 0),
+    extra: c.extra.length, undated: c.undated.length, waiver: (c.waiver || []).length, duplicates: c.duplicates.reduce((n, d) => n + d.others.length, 0),
   };
 }
 
@@ -56,6 +56,7 @@ function checkDetails(c) {
     recordNewer: c.recordNewer.map((x) => ({ record: rec(x.record), page: x.page.expiry_date })),
     duplicates: c.duplicates.map((d) => ({ keep: rec(d.keep), others: d.others.map(rec) })),
     undated: c.undated.map(rec), extra: c.extra.map(rec),
+    waiver: (c.waiver || []).map((x) => ({ record: rec(x.record), page: x.page.expiry_date || null })),
   };
 }
 
@@ -354,6 +355,96 @@ class AppApi {
     return groups;
   }
 
+  /**
+   * Every bundle of every platform, numbered 1 to the newest: from your records, the website
+   * pages you read, the kernel catalog, and the bundle count you set per platform
+   * (Settings: bundleCounts, e.g. ARC 5, UPP 6). Bundles nobody has filled in yet are listed
+   * as gaps, so all of them are tracked. Returns [{ key, platform, bundle, no, gap }].
+   */
+  allBundles() {
+    const { bundleKey, bundleNo } = require('./bundles');
+    const s = this.store.getSettings();
+    const seen = new Map();
+    const put = (platform, bundle) => {
+      if (!platform || !bundle) return;
+      const key = bundleKey(platform, bundle);
+      if (!seen.has(key)) seen.set(key, { key, platform, bundle, no: bundleNo(bundle), gap: false });
+    };
+    for (const g of this.bundleGroups().values()) put(g.platform, g.bundle);
+    for (const [, p] of Object.entries(this.kernelPages())) put(p.platform, p.bundle);
+    const counts = { ...(s.bundleCounts || {}) };
+    const byPlat = new Map();
+    for (const b of seen.values()) { if (!byPlat.has(b.platform)) byPlat.set(b.platform, []); byPlat.get(b.platform).push(b); }
+    for (const pf of Object.keys(counts)) if (!byPlat.has(pf) && counts[pf] > 0) byPlat.set(pf, []);
+    for (const [pf, list] of byPlat) {
+      const max = Math.max(Number(counts[pf]) || 0, ...list.map((b) => Math.floor(b.no) || 0));
+      // Name a missing bundle the way this platform's bundles are named ("Bundle 3", "Kernel Bundle 3").
+      const sample = (list.find((b) => /\d/.test(b.bundle)) || {}).bundle || 'Bundle 1';
+      // Numbering starts at 0 on platforms that have a Bundle 0.
+      for (let n = list.some((b) => b.no === 0) ? 0 : 1; n <= max; n++) {
+        if (list.some((b) => Math.floor(b.no) === n)) continue;
+        const bundle = sample.replace(/\d+(?:\.\d+)?/, String(n));
+        const key = bundleKey(pf, bundle);
+        if (!seen.has(key)) seen.set(key, { key, platform: pf, bundle, no: n, gap: true });
+      }
+    }
+    return [...seen.values()].sort((a, b) => a.platform.localeCompare(b.platform) || a.no - b.no || a.bundle.localeCompare(b.bundle));
+  }
+
+  /** How many bundles a platform has (ARC 5, UPP 6): the ones not filled in yet are listed as gaps. */
+  setBundleCount(platform, count) {
+    platform = String(platform || '').trim();
+    if (!platform) throw new Error('Give the platform, e.g. ARC');
+    const n = Math.max(0, Math.min(50, Math.floor(Number(count) || 0)));
+    const s = this.store.getSettings();
+    const bundleCounts = { ...(s.bundleCounts || {}) };
+    if (n) bundleCounts[platform] = n; else delete bundleCounts[platform];
+    this.store.setSettings({ bundleCounts });
+    return bundleCounts;
+  }
+
+  /**
+   * One platform's bundles side by side, as a reference like the website's overview: the
+   * kernel each bundle runs per card brand (marking where a new kernel arrived), and every
+   * device's L2 dates across the bundles, so you can see which bundle a renewal landed in.
+   */
+  platformReference(platform) {
+    const { bundleKernel, kernelMismatch } = require('./bundles');
+    const pages = this.kernelPages();
+    const groups = this.bundleGroups();
+    const bundles = this.allBundles().filter((b) => b.platform.toLowerCase() === String(platform || '').toLowerCase());
+    const brands = this.coverageSlots().brands;
+    const norm = this.store.norm();
+    const kernelRows = [{ key: 'EMV Contact', label: 'EMV Contact (L2)', category: 'EMV L2 Contact', scheme: 'EMVCo' },
+      ...brands.map((b) => ({ key: b, label: b, category: 'EMV L2 Contactless', scheme: b }))].map((row) => {
+      let prev = '';
+      const cells = bundles.map((b) => {
+        const k = bundleKernel(pages, { category: row.category, scheme: row.scheme, platform: b.platform, bundle: b.bundle });
+        const kernel = k ? k.kernel : '';
+        const changed = !!(kernel && prev && kernel !== prev);
+        if (kernel) prev = kernel;
+        return { kernel, changed };
+      });
+      return { ...row, cells };
+    });
+    const l2 = {};
+    for (const b of bundles) {
+      const g = groups.get(b.key);
+      for (const r of g ? g.records : []) {
+        if (r.archived || !/^EMV L2 Contactless/.test(r.category)) continue;
+        const brand = brands.find((x) => x.toLowerCase() === String(r.scheme || '').toLowerCase()) || r.scheme;
+        const dev = r.device;
+        const row = ((l2[brand] = l2[brand] || {})[norm(dev)] = l2[brand][norm(dev)] || { device: dev, cells: {} });
+        const cur = row.cells[b.key];
+        if (cur && (cur.expiry_date || '') >= (r.expiry_date || '')) continue;
+        row.cells[b.key] = { id: r.id, expiry_date: r.expiry_date, health: r.health, kernel_version: r.kernel_version || '', approval_number: r.approval_number || '',
+          restriction: r.restriction || '', eol: r.eol || '', wrongKernel: kernelMismatch(pages, r) };
+      }
+    }
+    const l2rows = Object.fromEntries(Object.entries(l2).map(([b, m]) => [b, Object.values(m).sort((x, y) => x.device.localeCompare(y.device, undefined, { numeric: true }))]));
+    return { platform, bundles: bundles.map((b) => ({ ...b, records: (groups.get(b.key) || { records: [] }).records.length, page: !!(this.store.getSettings().bundlePages || {})[b.key] })), kernelRows, brands, l2: l2rows };
+  }
+
   /** Every bundle: how many dates it holds, and how it compares with its published page. */
   listBundles() {
     const { bundleCheck } = require('./bundles');
@@ -362,6 +453,8 @@ class AppApi {
     const out = [];
     const groups = this.bundleGroups();
     for (const k of Object.keys(pages)) if (!groups.has(k)) groups.set(k, { key: k, bundle: pages[k].bundle, platform: pages[k].platform, records: [] });
+    const all = this.allBundles();
+    for (const b of all) if (!groups.has(b.key)) groups.set(b.key, { key: b.key, bundle: b.bundle, platform: b.platform, records: [], gap: b.gap });
     for (const g of groups.values()) {
       const page = pages[g.key];
       const check = page ? bundleCheck(page.rows, g.records, { norm }) : null;
@@ -369,7 +462,7 @@ class AppApi {
         key: g.key, platform: g.platform, bundle: g.bundle, records: g.records.length,
         dates: g.records.filter((r) => r.expiry_date && require('./bundles').cellOf(r, norm)).length,
         page: page ? { filename: page.filename, at: page.at, dates: check.pageDates } : null,
-        issues: check ? summarizeCheck(check) : null,
+        issues: check ? summarizeCheck(check) : null, gap: !!g.gap && !g.records.length && !page,
       });
     }
     return out.sort((a, b) => a.platform.localeCompare(b.platform) || a.bundle.localeCompare(b.bundle, undefined, { numeric: true }));
@@ -393,7 +486,7 @@ class AppApi {
     }
     const { kernelMismatch } = require('./bundles');
     const pages = this.kernelPages();
-    const cell = (r) => (r ? { id: r.id, wrongKernel: kernelMismatch(pages, r), expiry_date: r.expiry_date, health: r.health, days: r.days, approval_number: r.approval_number, eol: r.eol || '', kernel_version: r.kernel_version || '', doc_count: r.doc_count, diff: diff[r.id] || null } : null);
+    const cell = (r) => (r ? { id: r.id, wrongKernel: kernelMismatch(pages, r), expiry_date: r.expiry_date, health: r.health, days: r.days, approval_number: r.approval_number, eol: r.eol || '', restriction: r.restriction || '', kernel_version: r.kernel_version || '', doc_count: r.doc_count, diff: diff[r.id] || null } : null);
     const rows = (list) => list.map((row) => ({ row: row.row, device: row.device, version: row.version, cells: Object.fromEntries(Object.entries(row.cells).map(([k, r]) => [k, cell(r)])) }));
     const sections = Object.fromEntries(Object.entries(view.sections).map(([k, v]) => [k, rows(v)]));
     // Dates on the page that the register does not have yet sit in their cells, marked missing.
@@ -465,6 +558,11 @@ class AppApi {
       if (!g.records.some((r) => /^EMV L2/.test(r.category))) continue;
       bundles.push({ key: g.key, platform: g.platform, bundle: g.bundle, l2Contact: null, kernels: {}, page: false, inCatalog: false });
     }
+    // Every bundle number up to the newest (or the count you set), so none is left untracked.
+    for (const b of this.allBundles()) {
+      if (bundles.some((x) => x.key === b.key)) continue;
+      bundles.push({ key: b.key, platform: b.platform, bundle: b.bundle, l2Contact: null, kernels: {}, page: false, inCatalog: false, gap: true });
+    }
     bundles.sort((a, b) => a.platform.localeCompare(b.platform) || bundleNo(a.bundle) - bundleNo(b.bundle) || a.bundle.localeCompare(b.bundle));
     const kernelIds = (v) => (String(v || '').match(/\d+(?:\.\d+)*/g) || []).map((t) => t.replace(/\./g, '').replace(/^0+/, '')).join('.');
     const spans = [];
@@ -478,7 +576,7 @@ class AppApi {
       if (b.l2Contact) add(b.platform, 'EMV Contact', b.l2Contact.value, b.bundle);
       for (const [k, v] of Object.entries(b.kernels)) add(b.platform, brandSet.get(k) || k, v.value, b.bundle);
     }
-    return { bundles, brands: [...brandSet.values()], spans };
+    return { bundles, brands: [...brandSet.values()], spans, counts: this.store.getSettings().bundleCounts || {} };
   }
 
   /**
@@ -586,7 +684,7 @@ class AppApi {
     if (!ctx.platform && !ctx.bundle) throw new Error('The page does not say which platform and bundle it is for. Check that it is a kernel bundle page.');
     const key = bundleKey(ctx.platform, ctx.bundle);
     const g = this.bundleGroups().get(key);
-    const rows = parsed.records.map((r) => ({ device: r.device, category: r.category, scheme: r.scheme, kernel_version: r.kernel_version || '', expiry_date: r.expiry_date || null }));
+    const rows = parsed.records.map((r) => ({ device: r.device, category: r.category, scheme: r.scheme, kernel_version: r.kernel_version || '', expiry_date: r.expiry_date || null, ...(r.restriction ? { restriction: r.restriction } : {}) }));
     const pages = { ...(this.store.getSettings().bundlePages || {}) };
     pages[key] = { filename, at: new Date().toISOString(), platform: g ? g.platform : ctx.platform, bundle: g ? g.bundle : ctx.bundle, ctx: { l2Contact: ctx.l2Contact || null, kernels: { ...(ctx.kernels || {}) }, kernelIds: ctx.kernelIds || {} }, rows };
     this.store.setSettings({ bundlePages: pages });
@@ -648,6 +746,12 @@ class AppApi {
         for (const x of check.recordNewer) {
           this.store.updateRecord(x.record.id, { portal_date: x.page.expiry_date, portal_status: 'Change Needed' }, { source: src });
           done.flagged++;
+        }
+      }
+      if (fix.waiver) {
+        for (const x of check.waiver || []) {
+          this.store.updateRecord(x.record.id, { restriction: 'waiver' }, { source: src, note: 'The website strikes this date or shows XX: expired, restricted renewal (customer waiver)' });
+          done.waiver = (done.waiver || 0) + 1;
         }
       }
       if (fix.undated) done.archived += this.store.archiveRecords(check.undated.map((r) => r.id), { reason: 'No expiry date; not a date on the bundle page (bundle clean-up)' });
@@ -1081,7 +1185,66 @@ class AppApi {
     return res;
   }
 
-  listInbox(status = 'pending') { return this.store.listInbox({ status: status === 'all' ? undefined : status }); }
+  listInbox(status = 'pending') {
+    const list = this.store.listInbox({ status: status === 'all' ? undefined : status });
+    // Each L2 letter says which bundles its kernel belongs to, so a renewal is never read by device alone.
+    const { kernelFit } = require('./bundles');
+    const pages = this.kernelPages();
+    const all = list.some((it) => /^EMV L2/.test((it.parsed || {}).category || '')) ? this.allBundles() : [];
+    for (const it of list) {
+      const L = it.parsed || {};
+      if (!/^EMV L2/.test(L.category || '') || L.informational) continue;
+      it.kernelFit = kernelFit(pages, { category: L.category, scheme: L.scheme, kernel: L.kernelVersion ? L.kernelVersion.value : '' }, all);
+      it.kernelOptions = [...new Set((it.kernelFit ? it.kernelFit.platforms : []).flatMap((p) => p.others.map((o) => o.kernel)).concat(
+        (it.kernelFit ? it.kernelFit.platforms : []).flatMap((p) => (p.fits.length && it.kernelFit.kernel ? [it.kernelFit.kernel] : []))))];
+    }
+    return list;
+  }
+
+  setInboxKernel(id, kernel) { return this.intake.setKernel(id, kernel); }
+
+  // ------------------------------------------------------------ letter templates
+  /**
+   * Letter templates: regions marked on a sample letter of each type (PCI, L1 Contact,
+   * L1 Contact TQM, L1 Contactless, L1 Contactless TQM, L2 Contactless per brand) that
+   * say where the device, approval number, dates and kernel are printed.
+   */
+  listLetterTemplates() {
+    const { LETTER_TYPES, FIELDS } = require('./templates');
+    const saved = this.store.getSettings().letterTemplates || {};
+    return { types: LETTER_TYPES.map((t) => ({ ...t, template: saved[t.key] || null })), fields: FIELDS };
+  }
+
+  saveLetterTemplate(key, { regions = [], sample = null } = {}) {
+    const { LETTER_TYPES, FIELDS } = require('./templates');
+    const type = LETTER_TYPES.find((t) => t.key === key);
+    if (!type) throw new Error('Unknown letter type');
+    const ok = new Set(FIELDS.map((f) => f.key));
+    const clamp = (v) => Math.max(0, Math.min(1, Number(v) || 0));
+    const clean = regions.filter((r) => ok.has(r.field) && Number(r.w) > 0.002 && Number(r.h) > 0.002)
+      .map((r) => ({ field: r.field, page: Math.max(0, Math.floor(Number(r.page) || 0)), x: clamp(r.x), y: clamp(r.y), w: clamp(r.w), h: clamp(r.h) }));
+    const all = { ...(this.store.getSettings().letterTemplates || {}) };
+    if (!clean.length) delete all[key];
+    else all[key] = { label: type.label, regions: clean, sample: sample || (all[key] && all[key].sample) || null, savedAt: new Date().toISOString() };
+    this.store.setSettings({ letterTemplates: all });
+    return all[key] || null;
+  }
+
+  removeLetterTemplate(key) { return this.saveLetterTemplate(key, { regions: [] }); }
+
+  /** What each region reads on a sample: [{ field, text, value }]. */
+  previewLetterTemplate(regions = [], words = []) {
+    const { regionText, valueFor } = require('./templates');
+    return regions.map((r) => { const text = regionText(words, r); return { field: r.field, text, value: valueFor(r.field, text) }; });
+  }
+
+  /** Guess the letter type of a sample from its text, to open the right template. */
+  sampleLetterType(pages = []) {
+    const { parseDocument } = require('./loa-parser');
+    const { letterTypeOf } = require('./templates');
+    const L = parseDocument(pages).find((x) => !x.informational);
+    return L ? letterTypeOf(L) : '';
+  }
 
   applyInbox(id, decisions) { return this.intake.apply(id, decisions); }
 
@@ -1556,7 +1719,7 @@ const PUBLIC_METHODS = [
   'info', 'getSettings', 'setSettings', 'listRecords', 'getRecord', 'saveRecord', 'deleteRecord', 'deleteRecords', 'bulkUpdate',
   'listArchive', 'archiveCount', 'expiredRecords', 'archiveExpired', 'restoreArchived', 'purgeArchived',
   'activateReplacement', 'deviceCoverage', 'deviceProfile', 'listBundles', 'bundleView', 'kernelCatalog', 'setKernelCatalog', 'removeKernelBundle', 'importKernelCatalog', 'readBundlePage', 'bundleDifferences', 'cleanBundle', 'bundleReport', 'checkRecord', 'listReaderGroups', 'setReaderGroup', 'listFamilyNotes', 'setCoverageNA', 'createMissing', 'createSlot', 'addCertWithLoa', 'listTags', 'knownDevices', 'listAliases', 'listLearned', 'forgetLearned', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'listPlatformDevices', 'setPlatformDevices', 'platformForDevice', 'devicesOnPlatform', 'applyPlatformDevices', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
-  'ingestDocument', 'documentFile', 'listInbox', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
+  'ingestDocument', 'documentFile', 'listInbox', 'setInboxKernel', 'listLetterTemplates', 'saveLetterTemplate', 'removeLetterTemplate', 'previewLetterTemplate', 'sampleLetterType', 'platformReference', 'setBundleCount', 'allBundles', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
   'documentText', 'deviceView', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'setEol', 'dataChecks', 'aiDataReview', 'briefingReport', 'exportL3Sheet', 'duplicateInfo', 'mapDuplicate', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'heldChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
   'aiDraftEmail', 'backup', 'listBackups', 'restore', 'health',

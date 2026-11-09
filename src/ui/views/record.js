@@ -7,7 +7,7 @@ import { DocButtons, openDoc } from '../docs.js';
 const BLANK = {
   device: '', platform: '', bundle: '', family: '', category: 'EMV L1 Contact', scheme: '', kernel_version: '', approval_number: '',
   issue_date: '', expiry_date: '', expiry_basis: '', restricted: false, stage: '', disposition: '', owner: '', customer: '', market: '',
-  next_action: '', next_action_date: '', extension_used: false, notes: '', portal_date: '', portal_status: 'Not Tracked', change_ticket: '', tags: '', covers: '', eol: '', renewal_path: '', test_lab: '', archived: false,
+  next_action: '', next_action_date: '', extension_used: false, notes: '', portal_date: '', portal_status: 'Not Tracked', change_ticket: '', tags: '', covers: '', eol: '', restriction: '', renewal_path: '', test_lab: '', archived: false,
 };
 
 export function RecordDrawer({ id, app, onClose, tab: startTab }) {
@@ -141,6 +141,11 @@ export function RecordDrawer({ id, app, onClose, tab: startTab }) {
       </div>
       <div class="row gap-l mt"><label class="check"><input type="checkbox" checked=${form.restricted} onChange=${set('restricted')} /> Restricted / final extension</label>
         <label class="check"><input type="checkbox" checked=${form.extension_used} onChange=${set('extension_used')} /> Extension already used</label></div>
+      <label class="field mt" style="max-width:520px">Renewal restriction<select value=${form.restriction || ''} onChange=${set('restriction')} aria-label="Renewal restriction">
+        <option value="">None: can be renewed</option>
+        <option value="waiver">Expired, restricted renewal: customers request their own waiver (struck through or XX on the website)</option>
+        <option value="mandate">Blocked by a scheme mandate: a new kernel and certification are needed</option>
+      </select></label>
       <${CoversField} value=${form.covers} device=${form.device} onChange=${(v) => setForm({ ...form, covers: v })} />
       <${EolField} value=${form.eol} onChange=${(v) => setForm({ ...form, eol: v })} />
 

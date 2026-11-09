@@ -1107,8 +1107,9 @@ test('kernel catalog: one L2 LOA applies to every bundle that runs its kernel', 
   // The same kernel sits in two bundles; the newest bundle runs a newer one.
   await api.importKernelCatalog({ text: ['Platform\tBundle\tDiscover\tVisa\tEMV Contact', 'NWP\t3\t04.06\t0301\t4.10', 'NWP\tBundle 4\t0406\t0301\t', 'NWP\tKernel Bundle 5\t0407\t0302\t'].join('\n') });
   const cat = api.kernelCatalog();
-  assert.deepEqual(cat.bundles.map((b) => b.key), ['NWP|3', 'NWP|4', 'NWP|5']);
-  assert.equal(cat.bundles[0].l2Contact.value, '4.10');
+  assert.deepEqual(cat.bundles.filter((b) => !b.gap).map((b) => b.key), ['NWP|3', 'NWP|4', 'NWP|5']);
+  assert.deepEqual(cat.bundles.filter((b) => b.gap).map((b) => b.bundle.replace('Kernel ', '')), ['Bundle 1', 'Bundle 2'], 'every bundle up to the newest is tracked');
+  assert.equal(cat.bundles.find((b) => b.key === 'NWP|3').l2Contact.value, '4.10');
   assert.equal(cat.bundles.find((b) => b.key === 'NWP|4').bundle, 'Kernel Bundle 4', 'the catalog keeps the spelling your records use');
   assert.deepEqual(cat.spans.find((s) => s.brand === 'Discover' && s.kernel === '04.06').bundles, ['Bundle 3', 'Kernel Bundle 4'], 'one kernel spans bundles');
   // A long renewal on the older kernel goes to the bundles that run it, not to the newest bundle.
@@ -1139,4 +1140,127 @@ test('kernel catalog: one L2 LOA applies to every bundle that runs its kernel', 
   api.removeKernelBundle('NWP|5');
   assert.ok(!api.kernelCatalog().bundles.some((b) => b.key === 'NWP|5' && b.inCatalog));
   await assert.rejects(api.importKernelCatalog({ text: 'nothing here' }), /No kernels found/);
+});
+
+test('kernel first: an L2 renewal lands on the bundles that run its kernel, never by device alone', async () => {
+  const { api } = await fresh();
+  const mk = (bundle) => api.store.createRecord({ device: 'Flex/3500-CL1', category: 'EMV L2 Contactless', scheme: 'Discover', platform: 'NWP', bundle, expiry_date: '2027-03-01' });
+  const b4 = mk('Bundle 4');
+  const b5 = mk('Bundle 5');
+  api.store.setAlias('Flex/3XXX CL1', 'Flex/3500-CL1');
+  await api.importKernelCatalog({ text: ['Platform\tBundle\tDiscover', 'NWP\tBundle 4\t0406', 'NWP\tBundle 5\t0407'].join('\n') });
+  api.setBundleCount('NWP', 6);
+  assert.deepEqual(api.allBundles().filter((b) => b.platform === 'NWP').map((b) => [b.bundle, b.gap]),
+    [['Bundle 1', true], ['Bundle 2', true], ['Bundle 3', true], ['Bundle 4', false], ['Bundle 5', false], ['Bundle 6', true]]);
+  // The kernel was not read: nothing is safe, every proposal asks for the kernel.
+  const noKernel = L.discover.replace('Kernel Version: 123 v0406 ', '');
+  api.ingestDocument({ filename: 'nok.pdf', bytes: Buffer.from('nok'), pages: [noKernel] });
+  let it = api.listInbox('pending').find((i) => i.filename === 'nok.pdf');
+  assert.equal(it.parsed.kernelVersion, null);
+  assert.equal(it.proposals.filter((p) => p.record_id).length, 2, 'without a kernel both bundles are candidates');
+  assert.ok(it.proposals.filter((p) => p.record_id).every((p) => p.needsKernel && /Kernel not read/.test(p.warnings.join(' '))));
+  assert.equal(api.approveAllSafe().applied || 0, 0, 'nothing is applied unattended without a kernel');
+  // Entering the kernel places it: older kernel -> Bundle 4 only, one bundle behind the newest.
+  api.setInboxKernel(it.id, '0406');
+  it = api.listInbox('pending').find((i) => i.filename === 'nok.pdf');
+  assert.equal(it.parsed.kernelVersion.value, '0406');
+  const ups = it.proposals.filter((p) => p.action === 'update');
+  assert.deepEqual(ups.map((p) => p.record_id), [b4.id]);
+  assert.ok(!it.proposals.some((p) => p.record_id === b5.id && p.action !== 'history'));
+  const fit = it.kernelFit.platforms.find((p) => p.platform === 'NWP');
+  assert.deepEqual(fit.fits, ['Bundle 4']);
+  assert.equal(fit.behind, 1);
+  assert.deepEqual(fit.unknown, ['Bundle 1', 'Bundle 2', 'Bundle 3', 'Bundle 6']);
+  // The platform reference lays the bundles side by side.
+  const ref = api.platformReference('NWP');
+  assert.equal(ref.bundles.length, 6);
+  const disc = ref.kernelRows.find((r) => r.key === 'Discover');
+  assert.deepEqual(disc.cells.map((c) => c.kernel), ['', '', '', '0406', '0407', '']);
+  assert.ok(disc.cells[4].changed, 'Bundle 5 is where the new kernel arrived');
+  assert.deepEqual(Object.keys(ref.l2.Discover[0].cells).sort(), ['NWP|4', 'NWP|5']);
+});
+
+test('other card brands are archived; struck or XX dates mean a customer waiver', async () => {
+  const { api } = await fresh();
+  // An LOA for a brand you do not track is kept as a supporting document.
+  api.ingestDocument({ filename: 'eftpos.pdf', bytes: Buffer.from('ef'), pages: [L.discover.replace(/Discover|D-PAS|DPAS/g, 'eftpos')] });
+  const ef = api.listInbox('all').find((i) => i.filename === 'eftpos.pdf');
+  assert.equal(ef.status, 'info');
+  assert.equal(ef.parsed.type, 'otherBrand');
+  assert.equal(ef.proposals.length, 0);
+  const { archiveOtherBrands } = require('../src/core/intake');
+  const ls = archiveOtherBrands([{ category: 'EMV L2 Contactless', scheme: 'CPACE', warnings: [] }, { category: 'EMV L2 Contactless', scheme: 'JCB', warnings: [] }]);
+  assert.deepEqual(ls.map((x) => !!x.informational), [true, false]);
+
+  // A website page that strikes a date (or shows XX) marks the record "waiver required".
+  const visa = api.store.createRecord({ device: 'EX4000', category: 'EMV L2 Contactless', scheme: 'Visa', platform: 'ARC', bundle: 'Kernel Bundle 5', expiry_date: '2025-04-01' });
+  const mc = api.store.createRecord({ device: 'EX4000', category: 'EMV L2 Contactless', scheme: 'Mastercard', platform: 'ARC', bundle: 'Kernel Bundle 5', expiry_date: '2025-02-01' });
+  const page = '<p>Kernel Bundle 5</p><p>The kernel bundle for ARC devices</p><table><tr><th>Terminal</th><th>Visa</th><th>Mastercard</th></tr><tr><td>EX4000</td><td><s>04/01/25</s></td><td>XX/XX/XX</td></tr></table>';
+  const r = api.readBundlePage({ filename: 'arc5.html', bytes: Buffer.from(page) });
+  assert.equal(r.waiver, 2);
+  assert.equal(r.extra, 0, 'an XX cell is not "missing from the page"');
+  api.cleanBundle(r.key, { waiver: true });
+  assert.equal(api.getRecord(visa.id).record.restriction, 'waiver');
+  assert.equal(api.getRecord(mc.id).record.restriction, 'waiver');
+  // The plan says what to do: customers request their own waiver, not a plain "expired, renew".
+  const acts = api.analysis().actions;
+  assert.ok(acts.some((a) => a.kind === 'waiver' && a.recordIds.includes(visa.id) && a.recordIds.includes(mc.id) && /request their own extension waiver/.test(a.why)), 'one grouped action per bundle');
+  assert.ok(!acts.some((a) => a.kind === 'expired' && a.recordIds.includes(visa.id)));
+  // A scheme mandate blocks renewal: a new kernel is needed.
+  api.saveRecord(mc.id, { restriction: 'mandate', kernel_version: 'v1.6' });
+  assert.ok(api.analysis().actions.some((a) => a.kind === 'mandate' && /kernel v1.6/.test(a.title)));
+});
+
+test('letter templates: boxes marked on a sample are read on every later letter of that type', async () => {
+  const { api } = await fresh();
+  const T = require('../src/core/templates');
+  assert.equal(T.LETTER_TYPES.length, 12);
+  assert.equal(T.letterTypeOf({ category: 'TQM', products: [{ interface: 'Contactless (PCD)' }] }), 'l1cl-tqm');
+  assert.equal(T.letterTypeOf({ category: 'EMV L2 Contactless', scheme: 'UnionPay' }), 'l2cl-unionpay');
+  assert.equal(T.letterTypeOf({ category: 'EMV L2 Contactless', scheme: 'eftpos' }), '');
+  // Words as the reader places them: the expiry printed in the footer, the kernel in a table cell.
+  const words = [
+    { p: 0, x: 0.10, y: 0.80, w: 0.08, h: 0.02, t: 'Valid' }, { p: 0, x: 0.19, y: 0.80, w: 0.06, h: 0.02, t: 'until' },
+    { p: 0, x: 0.26, y: 0.80, w: 0.12, h: 0.02, t: '03/31/2031' },
+    { p: 0, x: 0.60, y: 0.40, w: 0.10, h: 0.02, t: '0407' },
+    { p: 0, x: 0.10, y: 0.40, w: 0.10, h: 0.02, t: 'Other' },
+  ];
+  const regions = [{ field: 'expires', page: 0, x: 0.08, y: 0.78, w: 0.4, h: 0.05 }, { field: 'kernel', page: 0, x: 0.55, y: 0.38, w: 0.2, h: 0.05 }];
+  assert.deepEqual(api.previewLetterTemplate(regions, words).map((x) => x.value), ['2031-03-31', '0407']);
+  api.saveLetterTemplate('l2cl-discover', { regions, sample: { name: 'sample.pdf', pages: [], words } });
+  assert.equal(api.listLetterTemplates().types.find((t) => t.key === 'l2cl-discover').template.regions.length, 2);
+  api.ingestDocument({ filename: 'tpl.pdf', bytes: Buffer.from('tpl1'), pages: [L.discover], words });
+  const it = api.listInbox('pending').find((i) => i.filename === 'tpl.pdf');
+  assert.equal(it.parsed.expiryDate.value, '2031-03-31');
+  assert.equal(it.parsed.kernelVersion.value, '0407');
+  assert.deepEqual(it.parsed.template.fields, ['expires', 'kernel']);
+  // Re-reading a stored document uses its saved word positions.
+  api.saveLetterTemplate('l2cl-discover', { regions: [regions[0]] });
+  api.rereadInbox();
+  const again = api.listInbox('pending').find((i) => i.filename === 'tpl.pdf');
+  assert.equal(again.parsed.expiryDate.value, '2031-03-31');
+  assert.equal(again.parsed.kernelVersion.value, '123 v0406', 'the text reader fills what no box covers');
+  api.removeLetterTemplate('l2cl-discover');
+  assert.equal(api.listLetterTemplates().types.find((t) => t.key === 'l2cl-discover').template, null);
+});
+
+test('website pages: the specification table gives each brand kernel, and Bundle 0 counts', async () => {
+  const { api } = await fresh();
+  const pg = (n, visa, mc) => `<p>Kernel Bundle ${n}</p><p>This kernel bundle for NWP devices</p>
+    <table><thead><tr><th><strong>Specification</strong></th><th>Card Version</th><th>Kernel Version</th></tr></thead><tbody>
+    <tr><td>EMV Contact</td><td>x</td><td><code>9.06</code></td></tr><tr><td>Visa Paywave</td><td>2.2</td><td><code>${visa}</code></td></tr>
+    <tr><td>Mastercard Paypass</td><td>4.0</td><td><code>${mc}</code></td></tr><tr><td>Discover DPAS</td><td>1</td><td>0311</td></tr><tr><td>Discover ZIP</td><td>1</td><td>0200</td></tr></tbody></table>
+    <table><tr><th>Terminal</th><th>Visa</th><th>Mastercard</th></tr><tr><td>NX100-CL1</td><td><del class=critic>04/30/24</del></td><td>01/01/30</td></tr></table>`;
+  api.readBundlePage({ filename: 'b0.html', bytes: Buffer.from(pg(0, '070000', '087300 0306')) });
+  api.readBundlePage({ filename: 'b2.html', bytes: Buffer.from(pg(2, '070803', '088100 0307')) });
+  const cat = api.kernelCatalog().bundles.filter((b) => b.platform === 'NWP');
+  assert.deepEqual(cat.map((b) => [b.key, !!b.gap]), [['NWP|0', false], ['NWP|1', true], ['NWP|2', false]]);
+  const b2 = cat.find((b) => b.key === 'NWP|2');
+  assert.equal(b2.kernels.visa.value, '070803');
+  assert.equal(b2.kernels.discover.value, '0311', 'Discover DPAS, not ZIP');
+  assert.equal(b2.l2Contact.value, '9.06');
+  const d = api.bundleDifferences('NWP|2');
+  assert.equal(d.missing, 2);
+  api.cleanBundle('NWP|2', { missing: true });
+  assert.equal(api.listRecords().find((r) => r.scheme === 'Visa').restriction, 'waiver', 'a struck date on the page is a waiver');
 });

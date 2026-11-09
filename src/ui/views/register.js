@@ -189,7 +189,7 @@ export function Register({ app, params }) {
           ${r.tags ? html`<div class="tagrow">${tagList(r).map((t) => html`<span class="utag" onClick=${(e) => { e.stopPropagation(); setF({ ...f, tag: t }); }} title="Show records with this tag">${t}</span>`)}</div>` : null}</td>
         <td>${r.scheme}</td><td class="nowrap">${r.category}</td>
         <td class="small ellipsis" style="max-width:170px" title=${r.approval_number}>${r.approval_number}</td>
-        <td class="nowrap">${fmtDate(r.expiry_date) || html`<span class="faint">—</span>`}${r.restricted ? html` <span class="tag" title="Restricted / final extension">R</span>` : null}</td>
+        <td class="nowrap">${fmtDate(r.expiry_date) || html`<span class="faint">—</span>`}${r.restricted ? html` <span class="tag" title="Restricted / final extension">R</span>` : null}${r.restriction === 'waiver' ? html` <span class="tag waiver" title="Expired, restricted renewal: customers must request their own extension waiver">Waiver</span>` : r.restriction === 'mandate' ? html` <span class="tag mandate" title="Renewal blocked by a scheme mandate: new kernel and certification needed">Mandate</span>` : null}</td>
         <td><${HealthPill} r=${r} /></td>
         <td class="small nowrap">${r.stageNow}</td>
         <td class="small">${r.owner || html`<span class="faint">—</span>`}</td>
@@ -209,7 +209,7 @@ const BULK_FIELDS = [
   ['hw', 'Hardware version (CL)'], ['tags+', 'Add tag'], ['tags-', 'Remove tag'],
   ['owner', 'Owner'], ['stage', 'Stage'], ['disposition', 'Disposition'], ['next_action', 'Next action'], ['next_action_date', 'Next action date'],
   ['portal_status', 'Portal status'], ['customer', 'Customer'], ['market', 'Market'], ['change_ticket', 'Change ticket'],
-  ['eol', 'Not renewing (end of life)'], ['renewal_path', 'Renewal path'], ['test_lab', 'Test lab'],
+  ['eol', 'Not renewing (end of life)'], ['restriction', 'Renewal restriction'], ['renewal_path', 'Renewal path'], ['test_lab', 'Test lab'],
 ];
 
 function BulkBar({ ids, tax, values, onDone, onClear, onEmail }) {
@@ -246,6 +246,7 @@ function BulkBar({ ids, tax, values, onDone, onClear, onEmail }) {
     : field === 'stage' ? html`<${Select} value=${value} onChange=${setValue} placeholder="(automatic)" options=${tax.stages} />`
     : field === 'disposition' ? html`<${Select} value=${value} onChange=${setValue} placeholder="(none)" options=${tax.dispositions} />`
     : field === 'renewal_path' ? html`<${Select} value=${value} onChange=${setValue} placeholder="(not decided)" options=${tax.renewalPaths || []} />`
+    : field === 'restriction' ? html`<select value=${value} onChange=${(e) => setValue(e.target.value)} aria-label="Value"><option value="">None: can be renewed</option><option value="waiver">Waiver required (struck / XX on website)</option><option value="mandate">Blocked by scheme mandate</option></select>`
     : field === 'eol' ? html`<input type="text" value=${value} aria-label="Value" placeholder="Reason, e.g. Replaced by CL2 (blank tracks them again)" onInput=${(e) => setValue(e.target.value)} />`
       : field === 'portal_status' ? html`<${Select} value=${value} onChange=${setValue} options=${tax.portalStatuses} placeholder="Choose" />`
           : field === 'next_action_date' ? html`<input type="date" value=${value} onInput=${(e) => setValue(e.target.value)} />`

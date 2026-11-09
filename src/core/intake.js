@@ -7,10 +7,13 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { parseDocument } = require('./loa-parser');
+const { applyTemplates } = require('./templates');
 const { deviceScore, wildcardRegex, splitVariant, deviceFromFilename, categoryFromFilename, schemeFromFilename } = require('./devices');
 const { todayIso, daysBetween } = require('./dates');
 const { coverage } = require('./lifecycle');
-const { kernelMismatch, fitsNote, kernelPages, kernelBundles, newerKernel, bundleNames, bundleKey } = require('./bundles');
+const { kernelMismatch, fitsNote, kernelPages, kernelBundles, newerKernel, bundleNames, bundleKey, bundleKernel } = require('./bundles');
+
+const DEFAULT_BRANDS = ['Visa', 'Mastercard', 'Amex', 'Discover', 'UnionPay', 'JCB', 'Interac'];
 
 const RENEWAL_STAGES = new Set(['Renewal Requested', 'Pending New LOA', 'Replacement Received']);
 
@@ -122,7 +125,8 @@ function buildProposals(letter, records, { norm, aliases = {}, noiseWords = [], 
         record: { ...letterRecord(letter, device, prod), ...place.fields },
         note: [learnedName && learnedName !== prod.value ? `The letter says "${prod.value}"; you named it ${learnedName} before` : '', place.note].filter(Boolean).join('. '),
         changes: {},
-        warnings: pExpiry ? [] : ['No expiry date: the record will show as "Missing date"'],
+        warnings: [...(pExpiry ? [] : ['No expiry date: the record will show as "Missing date"']),
+          ...(/^EMV L2/.test(letter.category || '') && !kv ? ['Kernel not read: the bundle above comes from your other records, not from the LOA\'s kernel. Enter the kernel so the right bundle is picked.'] : [])],
       });
       continue;
     }
@@ -195,9 +199,26 @@ function spreadOverBundles(props, chosen, letter, prod, { norm, pages, kv }) {
   if (skipped.length) {
     const first = kept.find((p) => !p.optional) || kept[0];
     const other = skipped.map((p) => `${p.kernelMismatch.platform} ${p.kernelMismatch.bundle} (runs ${p.kernelMismatch.expected})`).join(', ');
-    first.note = [first.note, `Not applied to ${other}: that bundle runs another kernel.`].filter(Boolean).join(' ');
+    first.note = [first.note && first.note.replace(/([^.])$/, '$1.'), `Not applied to ${other}: ${skipped.length > 1 ? 'those bundles run' : 'that bundle runs'} another kernel.`].filter(Boolean).join(' ');
   }
   return kept;
+}
+
+/**
+ * LOAs for card brands you do not track (settings.requiredBrands, default the seven US brands) are kept as
+ * supporting documents: archived and searchable, but they never create or change records.
+ */
+function archiveOtherBrands(letters, tracked = DEFAULT_BRANDS) {
+  const want = new Set((tracked && tracked.length ? tracked : DEFAULT_BRANDS).map((b) => String(b).toLowerCase()));
+  for (const L of letters) {
+    if (L.informational || L.category !== 'EMV L2 Contactless') continue;
+    const sch = String(L.scheme || '').trim();
+    if (!sch || sch === 'Other' || want.has(sch.toLowerCase())) continue;
+    L.informational = true;
+    L.type = 'otherBrand';
+    L.warnings = [...(L.warnings || []), `${sch} is not a card brand you track. The LOA is archived with the supporting documents and changes no records.`];
+  }
+  return letters;
 }
 
 /**
@@ -355,15 +376,30 @@ function proposalFor(r, score, L, { asOf, auditFor, pages }) {
     return { ...base, action: 'history', kernelMismatch: km, note: 'Wrong kernel: not applied',
       warnings: [`Not applicable: this LOA is for kernel ${km.kernel}, ${km.platform} ${km.bundle} runs ${r.scheme ? `${r.scheme} ` : ''}kernel ${km.expected}. It is linked as history only and the date is not changed. Find the LOA for kernel ${km.expected}.${fitsNote(km)}`] };
   }
+  // Kernel first: an L2 LOA renews the bundles that run its kernel, whatever device it names.
+  // Without the kernel (not read, or the bundle's kernel not in the catalog) the app cannot tell
+  // which bundle it renews, so a person has to confirm it.
+  const kernelWarn = [];
+  if (/^EMV L2/.test(r.category || '') && r.bundle) {
+    const lk = val(L.kernelVersion);
+    const bk = bundleKernel(pages, r);
+    const what = r.category === 'EMV L2 Contact' ? 'EMV contact' : `${r.scheme || 'brand'}`;
+    if (!lk) {
+      base.needsKernel = true;
+      kernelWarn.push(`Kernel not read from this LOA. A renewal belongs to the bundles that run its kernel, not to every bundle with this device${bk ? `: ${r.platform} ${r.bundle} runs ${what} kernel ${bk.kernel}` : ''}. Enter the kernel above before approving.`);
+    } else if (!bk) {
+      kernelWarn.push(`${r.platform} ${r.bundle} has no ${what} kernel in the kernel catalog, so the app cannot confirm this LOA (kernel ${lk}) is for that bundle. Add it under Bundles > Kernel catalog.`);
+    }
+  }
   const cur = r.expiry_date;
   if (!L.expiry) {
-    return { ...base, action: 'attach', warnings: ['No expiry date in letter; evidence will be linked without changing dates'] };
+    return { ...base, action: 'attach', warnings: ['No expiry date in letter; evidence will be linked without changing dates', ...kernelWarn] };
   }
   if (cur && L.expiry === cur && (!L.approval || !r.approval_number || L.approval === r.approval_number)) {
     const changes = {};
     if (L.approval && !r.approval_number) changes.approval_number = { from: '', to: L.approval };
     if (L.issue && !r.issue_date) changes.issue_date = { from: '', to: L.issue };
-    return { ...base, action: 'attach', changes, note: 'Matches the date already recorded' };
+    return { ...base, action: 'attach', changes, warnings: kernelWarn, note: 'Matches the date already recorded' };
   }
   if (cur && L.expiry < cur) {
     return { ...base, action: 'history', warnings: [`Older than the recorded expiry (${cur}); it will not replace it`], note: 'Linked as history only' };
@@ -381,7 +417,7 @@ function proposalFor(r, score, L, { asOf, auditFor, pages }) {
   if (kv && (!r.kernel_version || newKernel)) changes.kernel_version = { from: r.kernel_version || '', to: kv };
   if (L.restricted && !r.restricted) changes.restricted = { from: false, to: true };
 
-  const warnings = [];
+  const warnings = [...kernelWarn];
   // The catalog says this bundle runs the letter's kernel: the record's old kernel value was out of date.
   const runs = kv && kernelBundles(pages, r, kv).some((b) => b.key === bundleKey(r.platform, r.bundle));
   if (newKernel && !runs) warnings.push(`Different kernel: this letter approves ${kv}, the record has ${r.kernel_version}. Check that the new kernel replaces the old one and is not a second approval to track separately`);
@@ -450,6 +486,8 @@ class Intake {
       learned: s.learned || [],
       pages: kernelPages(s),
       platformDevices: s.platformDevices || {},
+      brands: s.requiredBrands && s.requiredBrands.length ? s.requiredBrands : DEFAULT_BRANDS,
+      templates: s.letterTemplates || {},
       asOf: todayIso(),
       auditFor: (id, f) => db.get("SELECT ts, source FROM audit WHERE record_id=? AND field=? AND action='update' ORDER BY id DESC LIMIT 1", [id, f]),
     };
@@ -459,7 +497,8 @@ class Intake {
    * Ingest one document. `pages` is an array of page strings already
    * extracted by the UI (text layer or OCR). Returns a summary.
    */
-  ingest({ filename, bytes, pages, ocrPages = 0 }) {
+  ingest({ filename, bytes, pages, ocrPages = 0, words = [] }) {
+    const boxes = words;
     const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes || []);
     let hash = sha256(buf.length ? buf : Buffer.from((pages || []).join('\n')));
     let existing = this.store.findDocumentByHash(hash);
@@ -486,6 +525,7 @@ class Intake {
         // A newer extraction replaces the stored text unless it reads much less.
         const words = (x) => x.replace(/[^A-Za-z0-9]/g, '').length;
         if (words(fresh) >= 40 && words(fresh) >= 0.9 * words(this.store.documentText(existing.id))) this.store.db.run('UPDATE documents SET text=?, page_count=?, ocr_pages=? WHERE id=?', [fresh, pages.length, ocrPages, existing.id]);
+        if (boxes && boxes.length) this.store.setDocumentWords(existing.id, boxes);
         const r = this.reread(waiting.map((x) => x.id));
         const items = r.items.map((id) => this.store.getInbox(id));
         return { filename, status: 'ok', documentId: existing.id, letters: items.length, pending: items.filter((x) => x.status === 'pending').length,
@@ -503,6 +543,8 @@ class Intake {
     const ctx = this.context();
     const records = this.store.listRecords();
     fromFilename(letters, filename, records, ctx.norm);
+    applyTemplates(letters, ctx.templates, words);
+    archiveOtherBrands(letters, ctx.brands);
     const stored = existing ? existing.stored_path : buf.length && this.archiveDir ? archiveFile(this.archiveDir, filename, buf) : null;
 
     return this.store.db.tx(() => {
@@ -511,9 +553,10 @@ class Intake {
         documentId = existing.id;
         this.store.db.run("DELETE FROM inbox WHERE document_id=? AND status IN ('pending','rejected','info')", [documentId]);
         this.store.db.run('UPDATE documents SET text=?, page_count=?, ocr_pages=? WHERE id=?', [text, pages.length, ocrPages, documentId]);
+        if (words && words.length) this.store.setDocumentWords(documentId, words);
       } else {
         documentId = this.store.addDocument({
-          sha256: hash, filename, stored_path: stored, size: buf.length, page_count: pages.length, ocr_pages: ocrPages, text,
+          sha256: hash, filename, stored_path: stored, size: buf.length, page_count: pages.length, ocr_pages: ocrPages, text, words,
         });
       }
       let pending = 0, info = 0;
@@ -559,6 +602,8 @@ class Intake {
         const defaults = mine.map((x) => x.parsed.recordDefaults).find((d) => d && (d.platform || d.bundle));
         const fresh = parseDocument(text.split('\n\f\n'));
         fromFilename(fresh, doc.filename, records, ctx.norm);
+        applyTemplates(fresh, ctx.templates, this.store.documentWords(docId));
+        archiveOtherBrands(fresh, ctx.brands);
         const stale = mine.filter((x) => x.status === 'pending' || x.status === 'info');
         this.store.db.run("DELETE FROM inbox WHERE document_id=? AND status IN ('pending','info')", [docId]);
         removed += stale.length;
@@ -572,6 +617,21 @@ class Intake {
       }
     });
     return { documents: docIds.length, letters, removed, items };
+  }
+
+  /**
+   * Set the kernel version of a letter by hand (the reader missed it, or read it wrong) and
+   * match it again: the kernel decides which bundles an L2 LOA renews.
+   */
+  setKernel(inboxId, kernel) {
+    const it = this.store.getInbox(inboxId);
+    if (!it) throw new Error('Review item not found');
+    const v = String(kernel || '').trim();
+    it.parsed.kernelVersion = v ? { value: v, evidence: 'Entered by you', confidence: 1 } : null;
+    it.parsed.warnings = (it.parsed.warnings || []).filter((w) => !/kernel/i.test(w));
+    const proposals = buildProposals(it.parsed, this.store.listRecords(), this.context());
+    this.store.setInbox(inboxId, { parsed: it.parsed, proposals });
+    return { proposals: proposals.length };
   }
 
   /** Re-run matching for pending items (after records change or aliases are added). */
@@ -590,6 +650,8 @@ class Intake {
           fromFilename([it.parsed], it.filename, records, ctx.norm);
           if (JSON.stringify(it.parsed.products) !== before) patch.parsed = it.parsed;
         }
+        archiveOtherBrands([it.parsed], ctx.brands);
+        if (it.parsed.type === 'otherBrand') { patch.parsed = it.parsed; patch.status = 'info'; }
         patch.proposals = buildProposals(it.parsed, records, ctx);
         this.store.setInbox(it.id, patch);
         n++;
@@ -821,4 +883,4 @@ function pick(o, keys) {
   return out;
 }
 
-module.exports = { Intake, buildProposals, proposalFor, isSafe, itemSafe, sha256, archiveFile, displayDevice, presetPlatform };
+module.exports = { Intake, archiveOtherBrands, buildProposals, proposalFor, isSafe, itemSafe, sha256, archiveFile, displayDevice, presetPlatform };
