@@ -97,6 +97,10 @@ export function LetterTemplates() {
       ${types.map((t) => html`<button class=${`tpl-type ${t.key === cur.key ? 'on' : ''}`} onClick=${() => { if (!dirty || confirm('Discard the boxes you have not saved?')) setType(t.key); }}>
         <span class="grow">${t.label}</span>${t.template ? html`<span class="pill good" title=${`Saved ${fmtWhen(t.template.savedAt)}`}>${plural(t.template.regions.length, 'box', 'boxes')}</span>` : html`<span class="faint small">not mapped</span>`}</button>`)}
       <p class="faint small" style="padding:8px 16px;margin:0">LOAs for other card brands are archived, so they need no template.</p>
+      <div class="hd"><h3>Kernel labels learned</h3></div>
+      ${data.kernelLabels.length ? data.kernelLabels.map((x) => html`<div class="row" style="padding:4px 16px"><span class="grow small"><b>${x.label}</b>${x.scheme ? html` <span class="faint">· ${x.scheme}</span>` : null}</span>
+        <button class="btn ghost sm icon" aria-label=${`Forget ${x.label}`} onClick=${async () => { try { await call('removeKernelLabel', x.label); reload(); } catch (e) { toastError(e); } }}><${Icon} name="x" /></button></div>`)
+        : html`<p class="faint small" style="padding:4px 16px;margin:0">None yet. When you type a kernel on a review card, I learn the words printed before it and read the next letters like it myself.</p>`}
     </div>
     <div class="card pad tpl-main">
       <div class="row wrap"><h3 style="margin:0">${cur.label}</h3><span class="grow"></span>

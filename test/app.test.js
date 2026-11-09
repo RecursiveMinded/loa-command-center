@@ -1343,3 +1343,33 @@ test('a letter naming a device without CL is about CL1, not the CL2 that came la
   assert.ok(ids.includes(cl1.id), 'the bare name lands on CL1');
   assert.ok(!ids.includes(cl2.id), 'and never on CL2');
 });
+
+test('L2 kernel: read from the file name, asked for when missing, and learned from what you type', async () => {
+  const { api } = await fresh();
+  const { findKernel, learnLabel } = require('../src/core/kernelfind');
+  const pages = { 'ARC|3': { ctx: { kernels: { Mastercard: '0403' } } }, 'ARC|5': { ctx: { kernels: { Mastercard: '0404' } } } };
+  const L1 = { category: 'EMV L2 Contactless', scheme: 'Mastercard', warnings: [] };
+  assert.ok(findKernel(L1, { filename: 'DX8000CL1_MC_0403_0203.pdf', pages }));
+  assert.equal(L1.kernelVersion.value, '0403', 'the number a bundle runs wins over the other one');
+  assert.equal(L1.kernelVersion.source, 'filename');
+  const L2 = { category: 'EMV L2 Contactless', scheme: 'Mastercard', warnings: [] };
+  findKernel(L2, { filename: 'DX8000CL1_MC_0203.pdf', pages });
+  assert.match(L2.kernelVersion.evidence, /no bundle you track runs it/);
+  assert.ok(!findKernel({ category: 'EMV L1 Contactless', warnings: [] }, { filename: 'X_0403.pdf', pages }), 'L1 letters carry no kernel');
+  assert.equal(learnLabel('Terminal: NX200\nPayment Application Release 4.2.1 approved', '4.2.1'), 'Payment Application Release');
+  assert.equal(learnLabel('Terminal: NX200', '4.2.1'), '', 'nothing learned when the letter does not print it');
+
+  // A letter with no kernel in its text: typing it teaches the label, and the next letter is read.
+  const page = (n) => `${L.amex.replace(/(?:using )?Firmware Version:? 01\.00/g, "")}\nContactless Module Release: 04.0${n}\n`;
+  api.ingestDocument({ filename: 'a.pdf', bytes: Buffer.from('k1'), pages: [page(1)] });
+  api.ingestDocument({ filename: 'b.pdf', bytes: Buffer.from('k2'), pages: [page(2)] });
+  const items = api.listInbox();
+  const a = items.find((i) => i.filename === 'a.pdf');
+  assert.ok(!a.parsed.kernelVersion, "the text reader does not know this label"); {
+    const r = api.setInboxKernel(a.id, '04.01');
+    assert.equal(r.learned, 'Contactless Module Release');
+    const b = api.listInbox().find((i) => i.filename === 'b.pdf');
+    assert.equal(b.parsed.kernelVersion.value, '04.02');
+    assert.equal(api.listLetterTemplates().kernelLabels[0].label, 'Contactless Module Release');
+  }
+});

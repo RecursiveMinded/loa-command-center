@@ -61,6 +61,7 @@ export function Inbox({ app, params }) {
   const [dup, setDup] = useState(null);
   const [pasted, setPasted] = useState(null);
   const [ask, setAsk] = useState(false);
+  const [onlyK, setOnlyK] = useState(false);
   useEffect(() => onRecent(setRecent), []);
   // Paste anywhere on the page: copied files and screenshots are read at once,
   // copied text opens the paste box to check it first.
@@ -79,7 +80,11 @@ export function Inbox({ app, params }) {
   const threshold = app.settings.autoApproveConfidence || 90;
   const pendingList = tab === 'pending' ? items || [] : [];
   const [view, setView] = usePersist('inboxSort', { order: 'confident', onlyHigh: false });
-  const shown = sortCards((items || []).filter((it) => !find || cardText(it).includes(find.toLowerCase())), tab === 'pending' ? { order: view.order, min: view.onlyHigh ? threshold : 0 } : {});
+  // Questions for the person: L2 letters whose kernel was not read, or was only guessed from the file name.
+  const kernelAsk = (it) => /^EMV L2/.test((it.parsed || {}).category || '') && !(it.parsed || {}).informational
+    && (!val(it.parsed.kernelVersion) || it.parsed.kernelVersion.source === 'filename');
+  const askList = tab === 'pending' ? (items || []).filter(kernelAsk) : [];
+  const shown = sortCards((items || []).filter((it) => (!find || cardText(it).includes(find.toLowerCase())) && (!onlyK || kernelAsk(it))), tab === 'pending' ? { order: view.order, min: view.onlyHigh ? threshold : 0 } : {});
   const toggleSel = (id) => setSel((s0) => { const s1 = new Set(s0); if (s1.has(id)) s1.delete(id); else s1.add(id); return s1; });
   const safeCount = pendingList.filter((it) => itemSafe(it.proposals, it.parsed, threshold)).length;
 
@@ -130,6 +135,11 @@ export function Inbox({ app, params }) {
     ${recent.length ? html`<div class="callout good row recent-bar"><${Icon} name="check" /><span class="grow"><b>${plural(recent.length, 'record')}</b> created or updated from LOAs. Set their platform, bundle, tags or owner in one go.</span>
       <button class="btn sm primary" onClick=${() => app.go('register', { filter: { ids: recent, idsLabel: 'from LOA review' }, select: true })}><${Icon} name="edit" /> Bulk edit these</button>
       <button class="btn sm ghost" onClick=${clearRecent} title="Start a new batch">Clear</button></div>` : null}
+
+    ${askList.length ? html`<div class="callout warn row wrap"><${Icon} name="info" /><span class="grow"><b>I need your help with ${plural(askList.length, 'kernel')}.</b>
+      ${(() => { const none = askList.filter((it) => !val(it.parsed.kernelVersion)).length; const fn = askList.length - none; return [none && `${none} not printed where I look`, fn && `${fn} only from the file name`].filter(Boolean).join(' · '); })()}.
+      Type the kernel on each card: I learn where it is printed and read the next letters like it myself. If it is in an image or a table I cannot read, draw a Kernel box under Settings > Letter templates.</span>
+      <button class=${`btn sm ${onlyK ? 'primary' : ''}`} onClick=${() => setOnlyK(!onlyK)}>${onlyK ? 'Show all letters' : 'Show only these'}</button></div>` : null}
 
     ${q.items.length ? html`<div class="card queue"><div class="hd"><h3>${working.length ? html`<span class="row"><${Spinner} /> Reading ${plural(working.length, 'file')}…</span>` : `Finished ${plural(done.length, 'file')}`}</h3>
         ${done.length && !working.length ? html`<button class="btn sm ghost" onClick=${clearFinished}>Clear</button>` : null}</div>
@@ -395,7 +405,8 @@ function Review({ it, app, threshold, readOnly, selected, onSelect, onDone }) {
         <${Fact} k="Approval number" v=${val(L.approvalNumber)} ev=${L.approvalNumber && L.approvalNumber.evidence} optional />
         <${Fact} k="Issued" v=${fmtDate(val(L.issueDate))} ev=${L.issueDate && L.issueDate.evidence} optional />
         <${Fact} k="Expires" v=${fmtDate(val(L.expiryDate))} ev=${L.expiryBasis || (L.expiryDate && L.expiryDate.evidence)} />
-        ${val(L.kernelVersion) || (/^EMV L2/.test(L.category || '') && !L.informational) ? html`<${Fact} k="Kernel / version" v=${val(L.kernelVersion)} ev=${L.kernelVersion && L.kernelVersion.evidence} />` : null}
+        ${val(L.kernelVersion) ? html`<${Fact} k="Kernel / version" v=${val(L.kernelVersion)} ev=${L.kernelVersion.evidence} />`
+          : /^EMV L2/.test(L.category || '') && !L.informational ? html`<${Fact} k="Kernel / version" v="" ev="Not read from the letter: tell me below" />` : null}
         ${L.restricted ? html`<${Fact} k="Restriction" v="Restricted / final extension" />` : null}
       </div>
       ${it.kernelFit !== undefined ? html`<${KernelFit} it=${it} readOnly=${readOnly} onDone=${onDone} />` : null}
@@ -612,7 +623,12 @@ function KernelFit({ it, readOnly, onDone }) {
   const [busy, setBusy] = useState(false);
   const save = async () => {
     setBusy(true);
-    try { await call('setInboxKernel', it.id, v); toast(v ? `Kernel ${v}: matched again` : 'Kernel cleared'); onDone(); } catch (e) { toastError(e); } finally { setBusy(false); }
+    try {
+      const r = await call('setInboxKernel', it.id, v);
+      toast(!v ? 'Kernel cleared' : r.learned ? `Kernel ${v}. Learned: it follows "${r.learned}"${r.alsoRead ? `, which read ${plural(r.alsoRead, 'more letter')} waiting` : ''}.`
+        : `Kernel ${v}. It is not in the letter's text, so I cannot learn where it is printed: draw a Kernel box under Settings > Letter templates.`, r.learned || !v ? 'ok' : '');
+      onDone();
+    } catch (e) { toastError(e); } finally { setBusy(false); }
   };
   const short = (b) => String(b).replace(/^(kernel\s+)?bundle\s*/i, 'Bundle ');
   const plats = kf ? kf.platforms : [];

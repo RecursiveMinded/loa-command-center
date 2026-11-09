@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { parseDocument } = require('./loa-parser');
 const { applyTemplates } = require('./templates');
+const { findKernel, learnLabel, letterText } = require('./kernelfind');
 const { VERSION_CATEGORIES, deviceScore, wildcardRegex, splitVariant, deviceFromFilename, categoryFromFilename, schemeFromFilename } = require('./devices');
 const { todayIso, daysBetween } = require('./dates');
 const { coverage } = require('./lifecycle');
@@ -495,6 +496,7 @@ class Intake {
       platformDevices: s.platformDevices || {},
       brands: s.requiredBrands && s.requiredBrands.length ? s.requiredBrands : DEFAULT_BRANDS,
       templates: s.letterTemplates || {},
+      kernelLabels: s.kernelLabels || [],
       asOf: todayIso(),
       auditFor: (id, f) => db.get("SELECT ts, source FROM audit WHERE record_id=? AND field=? AND action='update' ORDER BY id DESC LIMIT 1", [id, f]),
     };
@@ -551,6 +553,7 @@ class Intake {
     const records = this.store.listRecords();
     fromFilename(letters, filename, records, ctx.norm);
     applyTemplates(letters, ctx.templates, words);
+    for (const L of letters) findKernel(L, { filename, text: letterText(text, L), pages: ctx.pages, labels: ctx.kernelLabels });
     archiveOtherBrands(letters, ctx.brands);
     const stored = existing ? existing.stored_path : buf.length && this.archiveDir ? archiveFile(this.archiveDir, filename, buf) : null;
 
@@ -610,6 +613,7 @@ class Intake {
         const fresh = parseDocument(text.split('\n\f\n'));
         fromFilename(fresh, doc.filename, records, ctx.norm);
         applyTemplates(fresh, ctx.templates, this.store.documentWords(docId));
+        for (const L of fresh) findKernel(L, { filename: doc.filename, text: letterText(text, L), pages: ctx.pages, labels: ctx.kernelLabels });
         archiveOtherBrands(fresh, ctx.brands);
         const stale = mine.filter((x) => x.status === 'pending' || x.status === 'info');
         this.store.db.run("DELETE FROM inbox WHERE document_id=? AND status IN ('pending','info')", [docId]);
@@ -634,11 +638,23 @@ class Intake {
     const it = this.store.getInbox(inboxId);
     if (!it) throw new Error('Review item not found');
     const v = String(kernel || '').trim();
-    it.parsed.kernelVersion = v ? { value: v, evidence: 'Entered by you', confidence: 1 } : null;
+    it.parsed.kernelVersion = v ? { value: v, evidence: 'Entered by you', confidence: 1, source: 'person' } : null;
+    // Learn where it is printed, so the next letter like this one is read without asking.
+    let learned = '';
+    if (v) {
+      learned = learnLabel(letterText(this.store.documentText(it.document_id), it.parsed), v);
+      const labels = this.store.getSettings().kernelLabels || [];
+      if (learned && !labels.some((x) => x.label.toLowerCase() === learned.toLowerCase())) {
+        this.store.setSettings({ kernelLabels: [{ label: learned, scheme: it.parsed.scheme || '', at: new Date().toISOString() }, ...labels].slice(0, 40) });
+      }
+    }
     it.parsed.warnings = (it.parsed.warnings || []).filter((w) => !/kernel/i.test(w));
     const proposals = buildProposals(it.parsed, this.store.listRecords(), this.context());
     this.store.setInbox(inboxId, { parsed: it.parsed, proposals });
-    return { proposals: proposals.length };
+    // Other letters waiting for a kernel may print it under the same label.
+    this.lastKernelFills = 0;
+    if (learned) this.rematch();
+    return { proposals: proposals.length, learned, printed: !!learned, alsoRead: this.lastKernelFills };
   }
 
   /** Re-run matching for pending items (after records change or aliases are added). */
@@ -656,6 +672,12 @@ class Intake {
           const before = JSON.stringify(it.parsed.products);
           fromFilename([it.parsed], it.filename, records, ctx.norm);
           if (JSON.stringify(it.parsed.products) !== before) patch.parsed = it.parsed;
+        }
+        // L2 letters without a kernel: try labels taught since, and the file name.
+        if (!(it.parsed.kernelVersion && it.parsed.kernelVersion.value) && /^EMV L2/.test(it.parsed.category || '')
+          && findKernel(it.parsed, { filename: it.filename, text: letterText(this.store.documentText(it.document_id), it.parsed), pages: ctx.pages, labels: ctx.kernelLabels })) {
+          patch.parsed = it.parsed;
+          this.lastKernelFills = (this.lastKernelFills || 0) + 1;
         }
         archiveOtherBrands([it.parsed], ctx.brands);
         if (it.parsed.type === 'otherBrand') { patch.parsed = it.parsed; patch.status = 'info'; }
