@@ -1107,8 +1107,9 @@ test('kernel catalog: one L2 LOA applies to every bundle that runs its kernel', 
   // The same kernel sits in two bundles; the newest bundle runs a newer one.
   await api.importKernelCatalog({ text: ['Platform\tBundle\tDiscover\tVisa\tEMV Contact', 'NWP\t3\t04.06\t0301\t4.10', 'NWP\tBundle 4\t0406\t0301\t', 'NWP\tKernel Bundle 5\t0407\t0302\t'].join('\n') });
   const cat = api.kernelCatalog();
-  assert.deepEqual(cat.bundles.map((b) => b.key), ['NWP|3', 'NWP|4', 'NWP|5']);
-  assert.equal(cat.bundles[0].l2Contact.value, '4.10');
+  assert.deepEqual(cat.bundles.filter((b) => !b.gap).map((b) => b.key), ['NWP|3', 'NWP|4', 'NWP|5']);
+  assert.deepEqual(cat.bundles.filter((b) => b.gap).map((b) => b.bundle.replace('Kernel ', '')), ['Bundle 1', 'Bundle 2'], 'every bundle up to the newest is tracked');
+  assert.equal(cat.bundles.find((b) => b.key === 'NWP|3').l2Contact.value, '4.10');
   assert.equal(cat.bundles.find((b) => b.key === 'NWP|4').bundle, 'Kernel Bundle 4', 'the catalog keeps the spelling your records use');
   assert.deepEqual(cat.spans.find((s) => s.brand === 'Discover' && s.kernel === '04.06').bundles, ['Bundle 3', 'Kernel Bundle 4'], 'one kernel spans bundles');
   // A long renewal on the older kernel goes to the bundles that run it, not to the newest bundle.
@@ -1139,4 +1140,73 @@ test('kernel catalog: one L2 LOA applies to every bundle that runs its kernel', 
   api.removeKernelBundle('NWP|5');
   assert.ok(!api.kernelCatalog().bundles.some((b) => b.key === 'NWP|5' && b.inCatalog));
   await assert.rejects(api.importKernelCatalog({ text: 'nothing here' }), /No kernels found/);
+});
+
+test('kernel first: an L2 renewal lands on the bundles that run its kernel, never by device alone', async () => {
+  const { api } = await fresh();
+  const mk = (bundle) => api.store.createRecord({ device: 'Flex/3500-CL1', category: 'EMV L2 Contactless', scheme: 'Discover', platform: 'NWP', bundle, expiry_date: '2027-03-01' });
+  const b4 = mk('Bundle 4');
+  const b5 = mk('Bundle 5');
+  api.store.setAlias('Flex/3XXX CL1', 'Flex/3500-CL1');
+  await api.importKernelCatalog({ text: ['Platform\tBundle\tDiscover', 'NWP\tBundle 4\t0406', 'NWP\tBundle 5\t0407'].join('\n') });
+  api.setBundleCount('NWP', 6);
+  assert.deepEqual(api.allBundles().filter((b) => b.platform === 'NWP').map((b) => [b.bundle, b.gap]),
+    [['Bundle 1', true], ['Bundle 2', true], ['Bundle 3', true], ['Bundle 4', false], ['Bundle 5', false], ['Bundle 6', true]]);
+  // The kernel was not read: nothing is safe, every proposal asks for the kernel.
+  const noKernel = L.discover.replace('Kernel Version: 123 v0406 ', '');
+  api.ingestDocument({ filename: 'nok.pdf', bytes: Buffer.from('nok'), pages: [noKernel] });
+  let it = api.listInbox('pending').find((i) => i.filename === 'nok.pdf');
+  assert.equal(it.parsed.kernelVersion, null);
+  assert.equal(it.proposals.filter((p) => p.record_id).length, 2, 'without a kernel both bundles are candidates');
+  assert.ok(it.proposals.filter((p) => p.record_id).every((p) => p.needsKernel && /Kernel not read/.test(p.warnings.join(' '))));
+  assert.equal(api.approveAllSafe().applied || 0, 0, 'nothing is applied unattended without a kernel');
+  // Entering the kernel places it: older kernel -> Bundle 4 only, one bundle behind the newest.
+  api.setInboxKernel(it.id, '0406');
+  it = api.listInbox('pending').find((i) => i.filename === 'nok.pdf');
+  assert.equal(it.parsed.kernelVersion.value, '0406');
+  const ups = it.proposals.filter((p) => p.action === 'update');
+  assert.deepEqual(ups.map((p) => p.record_id), [b4.id]);
+  assert.ok(!it.proposals.some((p) => p.record_id === b5.id && p.action !== 'history'));
+  const fit = it.kernelFit.platforms.find((p) => p.platform === 'NWP');
+  assert.deepEqual(fit.fits, ['Bundle 4']);
+  assert.equal(fit.behind, 1);
+  assert.deepEqual(fit.unknown, ['Bundle 1', 'Bundle 2', 'Bundle 3', 'Bundle 6']);
+  // The platform reference lays the bundles side by side.
+  const ref = api.platformReference('NWP');
+  assert.equal(ref.bundles.length, 6);
+  const disc = ref.kernelRows.find((r) => r.key === 'Discover');
+  assert.deepEqual(disc.cells.map((c) => c.kernel), ['', '', '', '0406', '0407', '']);
+  assert.ok(disc.cells[4].changed, 'Bundle 5 is where the new kernel arrived');
+  assert.deepEqual(Object.keys(ref.l2.Discover[0].cells).sort(), ['NWP|4', 'NWP|5']);
+});
+
+test('other card brands are archived; struck or XX dates mean a customer waiver', async () => {
+  const { api } = await fresh();
+  // An LOA for a brand you do not track is kept as a supporting document.
+  api.ingestDocument({ filename: 'eftpos.pdf', bytes: Buffer.from('ef'), pages: [L.discover.replace(/Discover|D-PAS|DPAS/g, 'eftpos')] });
+  const ef = api.listInbox('all').find((i) => i.filename === 'eftpos.pdf');
+  assert.equal(ef.status, 'info');
+  assert.equal(ef.parsed.type, 'otherBrand');
+  assert.equal(ef.proposals.length, 0);
+  const { archiveOtherBrands } = require('../src/core/intake');
+  const ls = archiveOtherBrands([{ category: 'EMV L2 Contactless', scheme: 'CPACE', warnings: [] }, { category: 'EMV L2 Contactless', scheme: 'JCB', warnings: [] }]);
+  assert.deepEqual(ls.map((x) => !!x.informational), [true, false]);
+
+  // A website page that strikes a date (or shows XX) marks the record "waiver required".
+  const visa = api.store.createRecord({ device: 'EX4000', category: 'EMV L2 Contactless', scheme: 'Visa', platform: 'ARC', bundle: 'Kernel Bundle 5', expiry_date: '2025-04-01' });
+  const mc = api.store.createRecord({ device: 'EX4000', category: 'EMV L2 Contactless', scheme: 'Mastercard', platform: 'ARC', bundle: 'Kernel Bundle 5', expiry_date: '2025-02-01' });
+  const page = '<p>Kernel Bundle 5</p><p>The kernel bundle for ARC devices</p><table><tr><th>Terminal</th><th>Visa</th><th>Mastercard</th></tr><tr><td>EX4000</td><td><s>04/01/25</s></td><td>XX/XX/XX</td></tr></table>';
+  const r = api.readBundlePage({ filename: 'arc5.html', bytes: Buffer.from(page) });
+  assert.equal(r.waiver, 2);
+  assert.equal(r.extra, 0, 'an XX cell is not "missing from the page"');
+  api.cleanBundle(r.key, { waiver: true });
+  assert.equal(api.getRecord(visa.id).record.restriction, 'waiver');
+  assert.equal(api.getRecord(mc.id).record.restriction, 'waiver');
+  // The plan says what to do: customers request their own waiver, not a plain "expired, renew".
+  const acts = api.analysis().actions;
+  assert.ok(acts.some((a) => a.kind === 'waiver' && a.recordIds.includes(visa.id) && /request their own extension waiver/.test(a.why)));
+  assert.ok(!acts.some((a) => a.kind === 'expired' && a.recordIds.includes(visa.id)));
+  // A scheme mandate blocks renewal: a new kernel is needed.
+  api.saveRecord(mc.id, { restriction: 'mandate', kernel_version: 'v1.6' });
+  assert.ok(api.analysis().actions.some((a) => a.kind === 'mandate' && /kernel v1.6/.test(a.title)));
 });

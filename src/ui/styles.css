@@ -428,3 +428,20 @@ table.certs td:first-child, table.certs td:last-child { white-space: nowrap; }
 .kcat td { vertical-align: top; }
 .kcat input.kin { width: 76px; font-variant-numeric: tabular-nums; }
 .kcat input.kin.shared { border-color: var(--brand); background: var(--brand-soft); }
+
+/* Renewal restrictions: struck through like the website (waiver), or blocked by a scheme mandate. */
+.cell.restr-waiver .d { text-decoration: line-through; text-decoration-thickness: 2px; }
+.cell.restr-waiver small, .cell.restr-mandate small { font-weight: 700; }
+.cell.restr-mandate { outline: 2px solid var(--bad); outline-offset: -2px; }
+.tag.waiver { background: var(--bad-soft); color: var(--bad); }
+.tag.mandate { background: var(--bad); color: #fff; }
+
+/* Bundle reference: bundles side by side */
+table.kref th.bcol a { cursor: pointer; color: inherit; }
+table.kref th.sel, table.kref td.sel { background: var(--brand-soft, rgba(37, 99, 235, .08)); }
+table.kref th.gapcol { opacity: .6; }
+table.kref tr.hl td.name { font-weight: 700; }
+.kv { display: inline-block; padding: 3px 8px; border-radius: 6px; font-variant-numeric: tabular-nums; font-weight: 600; background: var(--none-soft); }
+.kv.knew, .knew-key { background: var(--good-soft); color: var(--good); }
+.knew-key { padding: 0 6px; border-radius: 4px; font-weight: 600; }
+.kv small { display: block; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }

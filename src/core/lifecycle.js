@@ -52,6 +52,21 @@ function recommendedStage(days) {
  */
 function isEol(record) { return !!String(record.eol || '').trim(); }
 
+/**
+ * A renewal restriction on a certification:
+ *   waiver   expired with a restricted renewal: customers must request their own extension
+ *            waiver to stay certified (the published page strikes the date or shows XX)
+ *   mandate  a card-brand mandate blocks renewing this kernel; a new kernel and certification are needed
+ */
+const RESTRICTIONS = {
+  waiver: 'Expired: customer waiver required',
+  mandate: 'Renewal blocked by scheme mandate',
+};
+function restrictionOf(record) {
+  const v = String(record.restriction || '').toLowerCase();
+  return RESTRICTIONS[v] ? v : '';
+}
+
 /** Stage shown to the user: a manual stage sticks, otherwise it is calculated. */
 function effectiveStage(record, asOf) {
   if (isEol(record)) return 'Retired';
@@ -86,5 +101,5 @@ function health(record, asOf) {
 
 module.exports = {
   WINDOWS, windowFor, daysRemaining, effectiveExpiry, recommendedStage,
-  effectiveStage, coverage, health, isEol,
+  effectiveStage, coverage, health, isEol, restrictionOf, RESTRICTIONS,
 };

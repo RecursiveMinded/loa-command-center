@@ -10,6 +10,12 @@ const { normalizeScheme } = require('./taxonomy');
 
 const BRAND_WORDS = /^(visa|master\s*card|amex|american express|discover|upi|union\s*pay|jcb|interac|eftpos|cpace|diners)$/i;
 
+// A date the website strikes through, or masks as "XX", is expired with a restricted
+// renewal: customers must request their own extension waiver. Struck HTML cells carry this mark.
+const STRUCK = '[struck]';
+const isWaiverCell = (s) => String(s || '').includes(STRUCK) || /(^|[^A-Za-z])XX([^A-Za-z]|$)/.test(String(s || ''));
+const cellDate = (s) => parseDate(String(s || '').replace(STRUCK, ''));
+
 function cleanCell(s) {
   return String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
 }
@@ -78,25 +84,29 @@ function tablesToRecords(tables, ctx = {}) {
       const device = cells[0];
       // A device name is short and has a model number; a sentence that lands in the first column is not a row.
       if (device.length > 32 || device.split(/\s+/).length > 4 || !/\d/.test(device)) continue;
-      if (/n\/?a/i.test(cells.slice(1).join(' ')) && !findDates(cells.slice(1).join(' ')).length) continue;
+      if (/n\/?a/i.test(cells.slice(1).join(' ')) && !findDates(cells.slice(1).join(' ')).length && !cells.slice(1).some(isWaiverCell)) continue;
       if (spec.kind === 'brands') {
         const headerCells = table.find((r) => classifyHeader(r.map(cleanCell)))?.map(cleanCell) || [];
         for (const ci of spec.brandCols) {
-          const d = parseDate(cells[ci]);
-          if (!d) continue;
+          const d = cellDate(cells[ci]);
+          const w = isWaiverCell(cells[ci]);
+          if (!d && !w) continue;
           const scheme = normalizeScheme(headerCells[ci] || '');
-          out.push({ ...base, device, category: 'EMV L2 Contactless', scheme, kernel_version: (ctx.kernels || {})[scheme] || '', portal_date: d, expiry_date: d });
+          out.push({ ...base, device, category: 'EMV L2 Contactless', scheme, kernel_version: (ctx.kernels || {})[scheme] || '', portal_date: d, expiry_date: d, ...(w ? { restriction: 'waiver' } : {}) });
         }
       } else if (spec.kind === 'l1') {
-        const l1 = parseDate(cells[spec.l1]);
-        if (l1) out.push({ ...base, device, category: `EMV L1 ${spec.iface}`, scheme: 'EMVCo', portal_date: l1, expiry_date: l1 });
-        const tqm = spec.tqm >= 0 ? parseDate(cells[spec.tqm]) : null;
-        if (tqm) out.push({ ...base, device, category: 'TQM', scheme: 'Mastercard TQM', kernel_version: spec.iface === 'Contactless' ? 'Contactless (PCD)' : 'Contact (IFM)', portal_date: tqm, expiry_date: tqm });
+        const l1 = cellDate(cells[spec.l1]);
+        const l1w = isWaiverCell(cells[spec.l1]);
+        if (l1 || l1w) out.push({ ...base, device, category: `EMV L1 ${spec.iface}`, scheme: 'EMVCo', portal_date: l1, expiry_date: l1, ...(l1w ? { restriction: 'waiver' } : {}) });
+        const tqm = spec.tqm >= 0 ? cellDate(cells[spec.tqm]) : null;
+        const tqmw = spec.tqm >= 0 && isWaiverCell(cells[spec.tqm]);
+        if (tqm || tqmw) out.push({ ...base, device, category: 'TQM', scheme: 'Mastercard TQM', kernel_version: spec.iface === 'Contactless' ? 'Contactless (PCD)' : 'Contact (IFM)', portal_date: tqm, expiry_date: tqm, ...(tqmw ? { restriction: 'waiver' } : {}) });
       } else if (pciMode) {
-        const d = parseDate(cells[spec.exp]);
-        const v = cells[spec.version] || '';
+        const d = cellDate(cells[spec.exp]);
+        const w = isWaiverCell(cells[spec.exp]);
+        const v = (cells[spec.version] || '').replace(STRUCK, '').trim();
         if (!d && !v) continue;
-        out.push({ ...base, device, category: 'PCI PTS', scheme: 'PCI SSC', kernel_version: v, portal_date: d, expiry_date: d });
+        out.push({ ...base, device, category: 'PCI PTS', scheme: 'PCI SSC', kernel_version: v, portal_date: d, expiry_date: d, ...(w ? { restriction: 'waiver' } : {}) });
       }
     }
   }
@@ -140,8 +150,9 @@ function htmlTables(html) {
       let c;
       while ((c = cre.exec(r[0]))) {
         const span = Number((c[1].match(/colspan\s*=\s*"?(\d+)/i) || [])[1] || 1);
+        const struck = /<(s|del|strike)\b|line-through/i.test(c[1] + c[2]);
         const txt = decodeEntities(c[2].replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, ''));
-        cells.push(txt);
+        cells.push(struck && cleanCell(txt) ? `${txt} ${STRUCK}` : txt);
         for (let k = 1; k < span; k++) cells.push('');
       }
       if (cells.length) rows.push(cells);
@@ -235,11 +246,11 @@ function parsePlainText(text) {
     } else if (cur[0][1] === 'Version') {
       cur.push([dev, rest[0] && /^v\d/i.test(rest[0]) ? rest[0] : '', rest.find((w) => parseDate(w)) || '']);
     } else {
-      const dates = rest.filter((w) => parseDate(w));
+      const dates = rest.filter((w) => parseDate(w) || isWaiverCell(w));
       if (dates.length === width - 1) cur.push([dev, ...dates]);
     }
   }
   return { ctx, records: tablesToRecords(tables, ctx) };
 }
 
-module.exports = { parseHtml, parsePdfLines, parsePlainText, tablesToRecords, htmlTables, mhtmlToHtml, linesToTables, classifyHeader, contextFromText };
+module.exports = { isWaiverCell, parseHtml, parsePdfLines, parsePlainText, tablesToRecords, htmlTables, mhtmlToHtml, linesToTables, classifyHeader, contextFromText };

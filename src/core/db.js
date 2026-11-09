@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS records (
@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS records (
   tags TEXT DEFAULT '',
   covers TEXT DEFAULT '',
   eol TEXT DEFAULT '',
+  restriction TEXT DEFAULT '',
   renewal_path TEXT DEFAULT '',
   test_lab TEXT DEFAULT '',
   archived INTEGER DEFAULT 0,
@@ -194,6 +195,9 @@ class Database {
     for (const col of ['eol', 'renewal_path', 'test_lab']) {
       if (!this.all('PRAGMA table_info(records)').some((c) => c.name === col)) this.db.exec(`ALTER TABLE records ADD COLUMN ${col} TEXT DEFAULT ''`);
     }
+    // v6: renewal restriction: 'waiver' (expired, restricted renewal: customers request their own
+    // extension waiver; the website strikes the date or shows XX) or 'mandate' (a scheme mandate blocks renewal).
+    if (!this.all('PRAGMA table_info(records)').some((c) => c.name === 'restriction')) this.db.exec("ALTER TABLE records ADD COLUMN restriction TEXT DEFAULT ''");
     const ver = JSON.stringify(SCHEMA_VERSION);
     if (!v) this.run("INSERT INTO settings(key,value) VALUES('schema_version', ?)", [ver]);
     else if (v.value !== ver) this.run("UPDATE settings SET value=? WHERE key='schema_version'", [ver]);

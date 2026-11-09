@@ -14,9 +14,15 @@ const mdy = (iso) => (iso ? `${iso.slice(5, 7)}/${iso.slice(8, 10)}/${iso.slice(
  */
 export function Bundles({ app }) {
   const [list, reload] = useLoad(() => call('listBundles'), [app.version]);
+  const [plat, setPlat] = usePersist('bundle-platform', '');
   const [pick, setPick] = usePersist('bundle', '');
-  const key = list && list.length ? (list.find((b) => b.key === pick) ? pick : list[0].key) : '';
+  const platforms = list ? [...new Set(list.map((b) => b.platform).filter(Boolean))] : [];
+  const pf = platforms.includes(plat) ? plat : (list && list.find((b) => b.key === pick) || {}).platform || platforms[0] || '';
+  const inPf = list ? list.filter((b) => b.platform === pf) : [];
+  const newest = [...inPf].reverse().find((b) => !b.gap) || inPf[inPf.length - 1];
+  const key = inPf.find((b) => b.key === pick) ? pick : newest ? newest.key : '';
   const [view, reloadView] = useLoad(() => (key ? call('bundleView', key) : Promise.resolve(null)), [app.version, key]);
+  const [ref, reloadRef] = useLoad(() => (pf ? call('platformReference', pf) : Promise.resolve(null)), [app.version, pf]);
   const [diff, setDiff] = useState(null);
   const [busy, setBusy] = useState(false);
   const [catalog, setCatalog] = useState(false);
@@ -34,7 +40,7 @@ export function Bundles({ app }) {
       else if (lower.endsWith('.pdf')) { const ex = await extractPdf(b, { ocr: false, keepLines: true }); p = { filename: f.name, text: ex.pages.join('\n'), lines: ex.lines }; }
       else p = { filename: f.name, text: new TextDecoder().decode(b) };
       const r = await call('readBundlePage', p);
-      setPick(r.key);
+      setPick(r.key); setPlat(r.platform);
       app.refresh();
       // Differences pop up straight away, so they are dealt with now.
       if (!r.ok) setDiff(r);
@@ -48,35 +54,75 @@ export function Bundles({ app }) {
   if (!list) return html`<div class="row"><${Spinner} /> Loading…</div>`;
   const cur = list.find((b) => b.key === key);
   return html`
-    <div class="page-head"><div><h1>Bundles</h1><p>Each platform's kernel bundle, laid out like your website. Every date on the website is one record here, no more and no less.</p></div>
+    <div class="page-head"><div><h1>Kernel bundles</h1><p>A bundle is a set of kernel versions packaged, loaded and certified together. An L2 LOA belongs to the bundles that run its kernel, not to every bundle with that device: renewals often land one to three bundles back.</p></div>
       <div class="row"><input ref=${input} type="file" accept=".pdf,.html,.htm,.mhtml,.mht,.txt" class="hidden" onChange=${readPage} />
         <button class="btn primary" disabled=${busy} onClick=${() => input.current.click()} title="Read the published bundle page (PDF printout or saved web page) and compare it with your records">
           ${busy ? html`<${Spinner} />` : html`<${Icon} name="globe" />`} Check against website page</button>
-        <button class="btn" onClick=${() => setCatalog(true)} title="Every bundle's kernel per card brand, for ARC, UPP and any other platform"><${Icon} name="grid" /> Kernel catalog</button>
+        <button class="btn" onClick=${() => setCatalog(true)} title="Every bundle's kernel per card brand, for every platform"><${Icon} name="grid" /> Kernel catalog</button>
         ${key ? html`<button class="btn" onClick=${print}><${Icon} name="print" /> Report like the website</button>
           <button class="btn" onClick=${excel}><${Icon} name="download" /> Excel</button>` : null}</div></div>
 
-    ${!list.length ? html`<div class="card"><div class="empty"><${Icon} name="grid" /><h3>No bundles yet</h3><div>Read a kernel bundle page (PDF or saved web page) to load its matrix, or give your records a platform and bundle.</div></div></div>` : html`
-    <div class="tabs">${list.map((b) => html`<button class=${b.key === key ? 'on' : ''} onClick=${() => setPick(b.key)}>${b.platform} · ${b.bundle}
-      ${b.issues ? (b.issues.ok ? html`<span class="count good" title="Matches the website page">✓</span>` : html`<span class="count bad" title="Differences from the website page">${countIssues(b.issues)}</span>`) : null}</button>`)}</div>
+    ${!list.length ? html`<div class="card"><div class="empty"><${Icon} name="grid" /><h3>No bundles yet</h3><div>Read a kernel bundle page (PDF or saved web page) to load its matrix, fill in the kernel catalog, or give your records a platform and bundle.</div></div></div>` : html`
+    <div class="tabs">${platforms.map((p) => html`<button class=${p === pf ? 'on' : ''} onClick=${() => setPlat(p)}>${p} <span class="faint">· ${plural(list.filter((b) => b.platform === p).length, 'bundle')}</span></button>`)}</div>
 
-    ${cur ? html`<div class="card pad bundle-head">
-      <div class="kpis compact">
+    ${ref ? html`<${Reference} r=${ref} selected=${key} onPick=${(k) => setPick(k)} app=${app} onChanged=${() => { reload(); reloadRef(); }} />` : html`<div class="row"><${Spinner} /> Loading…</div>`}
+
+    ${cur ? html`<div class="card pad bundle-head mt">
+      <div class="row wrap"><h3 style="margin:0">${cur.platform} ${cur.bundle}</h3><span class="muted small">laid out like the website page</span></div>
+      ${cur.gap ? html`<div class="callout mt">Nothing recorded for this bundle yet. Read its website page, or fill in its kernels in the kernel catalog so LOAs for its kernels land here.</div>` : html`
+      <div class="kpis compact mt">
         <div><div class="v">${cur.dates}</div><div class="l">expiry dates in the app</div></div>
         <div><div class="v">${cur.page ? cur.page.dates : '—'}</div><div class="l">${cur.page ? `on the website page` : 'website page not read yet'}</div></div>
         <div class="grow muted small">${cur.page ? html`Page: <b>${cur.page.filename}</b>, read ${fmtWhen(cur.page.at)}` : 'Read the bundle page to check every date against it.'}</div>
-      </div>
+      </div>`}
       ${cur.issues && !cur.issues.ok ? html`<div class="callout warn mt row"><${Icon} name="warn" /><span class="grow">${describe(cur.issues)}</span>
         <button class="btn sm primary" onClick=${openDiff}>Review and fix</button></div>`
         : cur.issues ? html`<div class="callout good mt row"><${Icon} name="check" /><span class="grow">Matches the website page: ${plural(cur.issues.pageDates, 'date')}, each on one record.</span></div>` : null}
     </div>` : null}
 
-    ${!view ? html`<div class="row"><${Spinner} /> Loading…</div>` : html`<${Layout} v=${view} app=${app} />`}`}
-    ${catalog ? html`<${KernelCatalog} onClose=${() => { setCatalog(false); reloadView(); app.refresh(); }} />` : null}
-    ${diff ? html`<${Differences} d=${diff} app=${app} onClose=${() => setDiff(null)} onDone=${() => { setDiff(null); reload(); reloadView(); app.refresh(); }} />` : null}`;
+    ${!view ? html`<div class="row"><${Spinner} /> Loading…</div>` : cur && cur.gap ? null : html`<${Layout} v=${view} app=${app} />`}`}
+    ${catalog ? html`<${KernelCatalog} onClose=${() => { setCatalog(false); reload(); reloadView(); reloadRef(); app.refresh(); }} />` : null}
+    ${diff ? html`<${Differences} d=${diff} app=${app} onClose=${() => setDiff(null)} onDone=${() => { setDiff(null); reload(); reloadView(); reloadRef(); app.refresh(); }} />` : null}`;
 }
 
-const countIssues = (i) => i.missing + i.pageNewer + i.recordNewer + i.extra + i.undated + i.duplicates;
+const shortB = (b) => String(b).replace(/^(kernel\s+)?bundle\s*/i, 'B');
+
+/**
+ * One platform's bundles side by side, as a reference: what each bundle holds (the kernel per
+ * card brand, with the bundle where each new kernel arrived) and every device's L2 dates across
+ * the bundles, so it is plain which bundles a renewal reached.
+ */
+function Reference({ r, selected, onPick, app, onChanged }) {
+  const [brand, setBrand] = usePersist('bundle-ref-brand', '');
+  const [count, setCount] = useState(null);
+  const b = r.brands.includes(brand) ? brand : r.brands.find((x) => (r.l2[x] || []).length) || r.brands[0];
+  const rows = r.l2[b] || [];
+  const kRow = r.kernelRows.find((x) => x.key === b);
+  const saveCount = async () => {
+    try { await call('setBundleCount', r.platform, count); setCount(null); onChanged(); toast(`${r.platform}: ${plural(Number(count) || 0, 'bundle')} tracked`, 'ok'); } catch (e) { toastError(e); }
+  };
+  const head = html`<th class="name"></th>${r.bundles.map((x) => html`<th class=${`bcol ${x.key === selected ? 'sel' : ''} ${x.gap ? 'gapcol' : ''}`}>
+    <a onClick=${() => onPick(x.key)} title=${x.gap ? 'Not filled in yet' : `Show ${x.platform} ${x.bundle} below`}>${x.bundle}</a>${x.gap ? html`<small class="faint" style="display:block;font-weight:400">not filled in</small>` : x.page ? html`<small class="faint" style="display:block;font-weight:400">website read</small>` : null}</th>`)}`;
+  return html`
+    <div class="card mt"><div class="hd"><h3>What is in each ${r.platform} bundle</h3>
+      <span class="muted small grow">The kernel each bundle runs per card brand. <span class="knew-key">New</span> marks the bundle where a new kernel arrived; the same kernel often runs in several bundles.</span>
+      ${count == null ? html`<button class="btn sm ghost" onClick=${() => setCount(String(r.bundles.length))} title="How many bundles this platform has, so all of them are tracked">${r.platform} has ${plural(r.bundles.length, 'bundle')}</button>`
+        : html`<span class="row"><input type="number" min="1" max="50" value=${count} aria-label=${`Number of ${r.platform} bundles`} style="width:70px" onInput=${(e) => setCount(e.target.value)} /><button class="btn sm primary" onClick=${saveCount}>Save</button><button class="btn sm" onClick=${() => setCount(null)}>Cancel</button></span>`}</div>
+      <div class="table-wrap"><table class="mx bundle kref"><thead><tr>${head}</tr></thead>
+        <tbody>${r.kernelRows.map((k) => html`<tr class=${k.key === b ? 'hl' : ''}><td class="name">${k.label}</td>${k.cells.map((c, i) => html`<td class=${r.bundles[i].key === selected ? 'sel' : ''}>
+          ${c.kernel ? html`<span class=${`kv ${c.changed ? 'knew' : ''}`} title=${c.changed ? 'A new kernel arrived in this bundle' : ''}>${c.kernel}${c.changed ? html`<small>new</small>` : null}</span>` : html`<span class="faint">—</span>`}</td>`)}</tr>`)}</tbody></table></div></div>
+
+    <div class="card mt"><div class="hd"><h3>L2 contactless across the bundles</h3>
+      <span class="muted small grow">Read across a row: a renewal for an older kernel lands in the older bundles that run it, and the newest bundle can still show the old date.</span></div>
+      <div class="row wrap pad" style="padding-top:0">${r.brands.map((x) => html`<button class=${`chip ${x === b ? 'on' : ''}`} onClick=${() => setBrand(x)}>${x}${(r.l2[x] || []).length ? html` <span class="faint">${(r.l2[x] || []).length}</span>` : null}</button>`)}</div>
+      <div class="table-wrap"><table class="mx bundle kref"><thead><tr><th class="name">Terminal</th>${r.bundles.map((x, i) => html`<th class=${`bcol ${x.key === selected ? 'sel' : ''}`}><a onClick=${() => onPick(x.key)}>${shortB(x.bundle)}</a>
+          <small class="faint" style="display:block;font-weight:400">${kRow && kRow.cells[i].kernel ? `kernel ${kRow.cells[i].kernel}` : 'kernel ?'}</small></th>`)}</tr></thead>
+        <tbody>${rows.length ? rows.map((row) => html`<tr><td class="name">${row.device}</td>${r.bundles.map((x) => { const c = row.cells[x.key];
+          return c ? html`<${Cell} c=${c} app=${app} />` : html`<td class=${x.key === selected ? 'sel' : ''}><span class="faint">—</span></td>`; })}</tr>`)
+          : html`<tr><td colspan=${r.bundles.length + 1} class="muted">No ${b} L2 approvals on ${r.platform} yet.</td></tr>`}</tbody></table></div></div>`;
+}
+
+const countIssues = (i) => i.missing + i.pageNewer + i.recordNewer + i.extra + i.undated + i.duplicates + (i.waiver || 0);
 
 function describe(i) {
   const parts = [
@@ -84,6 +130,7 @@ function describe(i) {
     i.pageNewer && `${plural(i.pageNewer, 'record')} ${i.pageNewer === 1 ? 'is' : 'are'} older than the page`,
     i.recordNewer && `${plural(i.recordNewer, 'record')} ${i.recordNewer === 1 ? 'is' : 'are'} newer than the website`,
     i.duplicates && `${plural(i.duplicates, 'duplicate')}`,
+    i.waiver && `${plural(i.waiver, 'date')} struck through or XX on the website (waiver required)`,
     i.undated && `${plural(i.undated, 'record')} without a date`,
     i.extra && `${plural(i.extra, 'record')} not on the page`,
   ].filter(Boolean);
@@ -95,10 +142,10 @@ function Cell({ c, app }) {
   if (c.missing) return html`<td><span class="cell miss" title="On the website page, but there is no record for it">${mdy(c.page)}<small>missing here</small></span></td>`;
   const d = c.diff;
   const wk = c.wrongKernel;
-  const note = wk ? `kernel ${wk.kernel}, not ${wk.expected}${wk.fits ? ` (fits ${wk.fits.replace(/^kernel\s+/i, '')})` : ''}` : d ? (d.kind === 'pageNewer' ? `web ${mdy(d.page)}` : d.kind === 'recordNewer' ? `web shows ${mdy(d.page)}` : 'not on page') : c.eol ? 'end of life' : '';
-  const tip = `${c.approval_number ? `Approval ${c.approval_number}\n` : ''}${c.kernel_version ? `Kernel ${c.kernel_version}\n` : ''}${c.doc_count ? `${plural(c.doc_count, 'LOA')} on file` : 'No LOA on file'}${wk ? `\nWrong kernel: the LOA is for ${wk.kernel}, the bundle runs ${wk.expected}. This date does not count for the bundle.${wk.fits ? ` It matches ${wk.fits}.` : ''}` : ''}${d ? `\n${d.kind === 'pageNewer' ? 'The website has a later date' : d.kind === 'recordNewer' ? 'The website needs updating' : 'Not on the website page'}` : ''}`;
-  return html`<td><span class=${`cell ${c.eol ? 'retired' : c.health}${d ? ' differs' : ''}${wk ? ' wrongk' : ''}`} title=${tip} onClick=${() => app.openRecord(c.id)}>
-    ${c.expiry_date ? mdy(c.expiry_date) : 'No date'}${note ? html`<small>${note}</small>` : null}</span></td>`;
+  const note = wk ? `kernel ${wk.kernel}, not ${wk.expected}${wk.fits ? ` (fits ${wk.fits.replace(/^kernel\s+/i, '')})` : ''}` : d ? (d.kind === 'pageNewer' ? `web ${mdy(d.page)}` : d.kind === 'recordNewer' ? `web shows ${mdy(d.page)}` : 'not on page') : c.eol ? 'end of life' : c.restriction === 'waiver' ? 'waiver required' : c.restriction === 'mandate' ? 'scheme mandate' : '';
+  const tip = `${c.approval_number ? `Approval ${c.approval_number}\n` : ''}${c.kernel_version ? `Kernel ${c.kernel_version}\n` : ''}${c.doc_count ? `${plural(c.doc_count, 'LOA')} on file` : 'No LOA on file'}${c.restriction === 'waiver' ? '\nExpired, restricted renewal: customers must request their own extension waiver' : c.restriction === 'mandate' ? '\nRenewal blocked by a scheme mandate: a new kernel and certification are needed' : ''}${wk ? `\nWrong kernel: the LOA is for ${wk.kernel}, the bundle runs ${wk.expected}. This date does not count for the bundle.${wk.fits ? ` It matches ${wk.fits}.` : ''}` : ''}${d ? `\n${d.kind === 'pageNewer' ? 'The website has a later date' : d.kind === 'recordNewer' ? 'The website needs updating' : 'Not on the website page'}` : ''}`;
+  return html`<td><span class=${`cell ${c.eol ? 'retired' : c.health}${d ? ' differs' : ''}${wk ? ' wrongk' : ''}${c.restriction ? ` restr-${c.restriction}` : ''}`} title=${tip} onClick=${() => app.openRecord(c.id)}>
+    <span class="d">${c.expiry_date ? mdy(c.expiry_date) : 'No date'}</span>${note ? html`<small>${note}</small>` : null}</span></td>`;
 }
 
 function Table({ title, head, rows, cols, app, note }) {
@@ -132,6 +179,7 @@ const GROUPS = [
   ['pageNewer', 'Older than the website', 'The page shows a later date, usually a renewal not yet recorded. The page date will be taken.', true],
   ['duplicates', 'Duplicates', 'More than one record for one cell. The one with LOAs (else the latest) is kept; its LOAs are moved over and the others go to the Archive.', true],
   ['undated', 'No expiry date', 'Placeholder rows such as "waiver required" that are not a date on the page. They go to the Archive (restorable).', true],
+  ['waiver', 'Struck through or XX on the website', 'The website shows these as expired with a restricted renewal: customers must request their own extension waiver. The records are marked "waiver required".', true],
   ['recordNewer', 'Newer than the website', 'Your record has a later date than the page. It is kept, and the website is flagged for an update in the Website change request.', true],
   ['extra', 'Not on the website page', 'Dated records whose cell the page does not have (a device or brand dropped from the bundle, or one not published yet). Archive them only if they do not belong in this bundle.', false],
 ];
@@ -145,6 +193,7 @@ function Differences({ d, app, onClose, onDone }) {
   const items = (k) => {
     const x = d.details[k] || [];
     if (k === 'missing') return x.map((p) => `${rec(p)}: ${mdy(p.expiry_date)}`);
+    if (k === 'waiver') return x.map((y) => `${rec(y.record)}: ${y.page ? `${mdy(y.page)} struck through` : 'XX'} on the page`);
     if (k === 'pageNewer' || k === 'recordNewer') return x.map((y) => `${rec(y.record)}: ${mdy(y.record.expiry_date) || 'no date'} here, ${mdy(y.page)} on the page`);
     if (k === 'duplicates') return x.map((y) => `${rec(y.keep)}: keeps ${mdy(y.keep.expiry_date)}, archives ${y.others.length}`);
     return x.map((r) => `${rec(r)}${r.expiry_date ? `: ${mdy(r.expiry_date)}` : ''}${r.notes ? ` · ${r.notes}` : ''}`);
@@ -155,7 +204,7 @@ function Differences({ d, app, onClose, onDone }) {
     try {
       const r = await call('cleanBundle', d.key, fix);
       const a = r.after;
-      toast(`${d.platform} ${d.bundle}: ${[r.added && `${r.added} added`, r.updated && `${r.updated} updated`, r.merged && `${r.merged} duplicates merged`, r.archived && `${r.archived} archived`, r.flagged && `${r.flagged} flagged for the website`].filter(Boolean).join(', ') || 'nothing to change'}. Now ${a.recordDates} dates here, ${a.pageDates} on the page.`, 'ok');
+      toast(`${d.platform} ${d.bundle}: ${[r.added && `${r.added} added`, r.updated && `${r.updated} updated`, r.merged && `${r.merged} duplicates merged`, r.archived && `${r.archived} archived`, r.waiver && `${r.waiver} marked waiver required`, r.flagged && `${r.flagged} flagged for the website`].filter(Boolean).join(', ') || 'nothing to change'}. Now ${a.recordDates} dates here, ${a.pageDates} on the page.`, 'ok');
       onDone();
     } catch (e) { toastError(e); } finally { setBusy(false); }
   };

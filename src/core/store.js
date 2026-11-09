@@ -10,7 +10,7 @@ const RECORD_FIELDS = [
   'vendor', 'platform', 'bundle', 'device', 'family', 'category', 'scheme', 'kernel_version',
   'approval_number', 'issue_date', 'expiry_date', 'expiry_basis', 'restricted', 'stage',
   'disposition', 'owner', 'customer', 'market', 'next_action', 'next_action_date',
-  'extension_used', 'notes', 'portal_date', 'portal_status', 'change_ticket', 'tags', 'covers', 'eol', 'renewal_path', 'test_lab', 'archived',
+  'extension_used', 'notes', 'portal_date', 'portal_status', 'change_ticket', 'tags', 'covers', 'eol', 'restriction', 'renewal_path', 'test_lab', 'archived',
   'source', 'verified_at', 'verified_by',
 ];
 const BOOL_FIELDS = new Set(['restricted', 'extension_used', 'archived']);

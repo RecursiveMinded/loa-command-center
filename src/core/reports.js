@@ -4,7 +4,7 @@
 // show file paths or raw source names, only verified business data.
 
 const { formatDate, todayIso } = require('./dates');
-const { daysRemaining, effectiveStage, isEol } = require('./lifecycle');
+const { daysRemaining, effectiveStage, isEol, RESTRICTIONS } = require('./lifecycle');
 const { timeline } = require('./engine');
 
 function esc(s) {
@@ -149,7 +149,7 @@ function portalChanges(records, asOf = todayIso()) {
     if (expired && (published || r.portal_status === 'Change Needed')) {
       if (published && published === r.expiry_date && published >= asOf) continue;
       action = /PCI/i.test(r.category) ? 'Remove row' : 'Replace expired date';
-      requested = action === 'Remove row' ? 'Remove from website' : 'No current LoA / waiver required';
+      requested = action === 'Remove row' ? 'Remove from website' : r.restriction === 'waiver' ? 'Strike through / XX: restricted renewal, customer waiver required' : 'No current LoA / waiver required';
     } else if (published && r.expiry_date && published !== r.expiry_date) {
       action = 'Update date';
     } else if (!published && r.expiry_date && r.portal_status === 'Change Needed') {
@@ -168,7 +168,7 @@ function portalChanges(records, asOf = todayIso()) {
     out.push({
       id: r.id, platform: r.platform || '', bundle: r.bundle || '', device: r.device, category: r.category, scheme: r.scheme,
       section, level, brand, action, published: published || 'Blank', requested, verified: r.expiry_date || '',
-      restricted: r.restricted ? 'Yes' : expired ? 'expired' : 'No', approval: r.approval_number || '',
+      restricted: r.restriction === 'waiver' ? 'Yes (customer waiver)' : r.restriction === 'mandate' ? 'Blocked (scheme mandate)' : r.restricted ? 'Yes' : expired ? 'expired' : 'No', approval: r.approval_number || '',
       status: r.portal_status === 'Change Requested' ? 'Requested' : 'Not Started', portalStatus: r.portal_status || '',
       ticket: r.change_ticket || '', comment,
     });
@@ -211,7 +211,7 @@ const EXPORT_COLS = [
   ['Issued', 'issue_date', 12], ['Expires', 'expiry_date', 12], ['Days left', 'days', 10], ['Stage', 'stageNow', 20],
   ['Disposition', 'disposition', 22], ['Owner', 'owner', 16], ['Customer', 'customer', 16], ['Market', 'market', 14],
   ['Next action', 'next_action', 28], ['Next action date', 'next_action_date', 14], ['Restricted', 'restricted', 10],
-  ['LOAs on file', 'doc_count', 10], ['Published date', 'portal_date', 14], ['Portal status', 'portal_status', 16],
+  ['Renewal restriction', 'restrictionLabel', 30], ['LOAs on file', 'doc_count', 10], ['Published date', 'portal_date', 14], ['Portal status', 'portal_status', 16],
   ['Change ticket', 'change_ticket', 14], ['Tags', 'tags', 24], ['Notes', 'notes', 40],
 ];
 
@@ -226,7 +226,7 @@ async function exportExcel({ records, analysis, asOf = todayIso() }) {
   ws.columns = EXPORT_COLS.map(([header, key, width]) => ({ header, key, width }));
   for (const r of recRows(records, asOf)) {
     const row = {};
-    for (const [, k] of EXPORT_COLS) row[k] = k === 'restricted' ? (r.restricted ? 'Yes' : '') : r[k] ?? '';
+    for (const [, k] of EXPORT_COLS) row[k] = k === 'restricted' ? (r.restricted ? 'Yes' : '') : k === 'restrictionLabel' ? (RESTRICTIONS[r.restriction] || '') : r[k] ?? '';
     const added = ws.addRow(row);
     const fill = r.days == null ? null : r.days < 0 ? 'FFF8D7D3' : r.days <= 90 ? 'FFFCE8C8' : r.days <= 365 ? 'FFFFF6DB' : null;
     if (fill) added.getCell('days').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
@@ -295,9 +295,10 @@ function briefingReport({ records, analysis, briefing = '', settings = {}, asOf 
     ['Platform / bundle', (r) => esc([r.platform, r.bundle].filter(Boolean).join(' · '))],
     ['Certification', (r) => esc(r.category.replace(/^EMV /, ''))],
     ['Brand', (r) => esc(r.scheme)],
+    ['Kernel', (r) => esc(/^EMV L2/.test(r.category) ? r.kernel_version || 'not recorded' : '')],
     ['Approval no.', (r) => esc(r.approval_number)],
     ['Expires', (r) => esc(formatDate(r.expiry_date))],
-    ['Status', (r) => `<span style="color:${color(r.days)};font-weight:600">${esc(status(r.days))}</span>`],
+    ['Status', (r) => `<span style="color:${color(r.days)};font-weight:600">${esc(status(r.days))}</span>${RESTRICTIONS[r.restriction] ? `<br><span style="color:#b42318">${esc(RESTRICTIONS[r.restriction])}</span>` : ''}`],
     ['Stage', (r) => esc(r.stageNow)],
     ['Renewal path', (r) => esc(r.renewal_path)],
     ['Renewing? (Yes / No, end of life)', () => ''],
@@ -317,8 +318,8 @@ ${settings.userName ? `<p style="font-size:12px;margin-top:12px">${esc(settings.
   const text = [
     `Certification briefing, ${formatDate(asOf)}`, '',
     cols.map((c) => c[0]).join('\t'),
-    ...rows.map((r) => [r.device, [r.platform, r.bundle].filter(Boolean).join(' · '), r.category.replace(/^EMV /, ''), r.scheme, r.approval_number || '',
-      formatDate(r.expiry_date), status(r.days), r.stageNow, r.renewal_path || '', ''].join('\t')),
+    ...rows.map((r) => [r.device, [r.platform, r.bundle].filter(Boolean).join(' · '), r.category.replace(/^EMV /, ''), r.scheme, /^EMV L2/.test(r.category) ? r.kernel_version || 'not recorded' : '', r.approval_number || '',
+      formatDate(r.expiry_date), `${status(r.days)}${RESTRICTIONS[r.restriction] ? ` (${RESTRICTIONS[r.restriction]})` : ''}`, r.stageNow, r.renewal_path || '', ''].join('\t')),
   ].join('\n');
   return { html, text, ids: rows.map((r) => r.id), count: rows.length };
 }

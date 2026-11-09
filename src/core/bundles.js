@@ -115,9 +115,11 @@ function layout(records, { norm = defaultNorm, brands: brandOrder = [] } = {}) {
 function bundleCheck(pageRows, records, { norm = defaultNorm } = {}) {
   const page = new Map();
   const blanks = [];
+  const struck = new Map(); // cells the page strikes through or shows as XX
   for (const p of pageRows) {
     const c = cellOf(p, norm);
     if (!c) continue;
+    if (p.restriction === 'waiver') struck.set(c.key, p);
     if (!p.expiry_date) { blanks.push(p); continue; }
     page.set(c.key, { ...p, cell: c.key });
   }
@@ -129,7 +131,14 @@ function bundleCheck(pageRows, records, { norm = defaultNorm } = {}) {
     if (!byKey.has(c.key)) byKey.set(c.key, []);
     byKey.get(c.key).push(r);
   }
-  const out = { pageDates: page.size, pageBlanks: blanks.length, same: [], pageNewer: [], recordNewer: [], missing: [], extra: [], undated: [], duplicates: [] };
+  const out = { pageDates: page.size, pageBlanks: blanks.length, same: [], pageNewer: [], recordNewer: [], missing: [], extra: [], undated: [], duplicates: [], waiver: [] };
+  // Struck / XX on the page: expired with a restricted renewal (customer waiver). Flag the record.
+  for (const [key, p] of struck) {
+    const list = byKey.get(key) || [];
+    if (!list.length) continue;
+    const best = list.reduce(better);
+    if (best.restriction !== 'waiver') out.waiver.push({ record: best, page: p });
+  }
   for (const [key, p] of page) {
     const list = byKey.get(key) || [];
     if (!list.length) { out.missing.push(p); continue; }
@@ -142,7 +151,7 @@ function bundleCheck(pageRows, records, { norm = defaultNorm } = {}) {
     else out.recordNewer.push({ record: best, page: p });
   }
   for (const [key, list] of byKey) {
-    if (page.has(key)) continue;
+    if (page.has(key) || struck.has(key)) continue;
     const dated = list.filter((r) => r.expiry_date);
     out.undated.push(...list.filter((r) => !r.expiry_date));
     if (!dated.length) continue;
@@ -151,7 +160,7 @@ function bundleCheck(pageRows, records, { norm = defaultNorm } = {}) {
     if (dated.length > 1) out.duplicates.push({ key, keep: best, others: dated.filter((x) => x !== best) });
   }
   out.recordDates = live.filter((r) => r.expiry_date && cellOf(r, norm)).length;
-  out.ok = !out.missing.length && !out.pageNewer.length && !out.recordNewer.length && !out.extra.length && !out.duplicates.length && !out.undated.length;
+  out.ok = !out.missing.length && !out.pageNewer.length && !out.recordNewer.length && !out.extra.length && !out.duplicates.length && !out.undated.length && !out.waiver.length;
   return out;
 }
 
@@ -265,10 +274,49 @@ function newerKernel(pages, r, kernel = r.kernel_version) {
   return { kernel: last.k.kernel, platform: last.p.platform, bundle: last.p.bundle };
 }
 
+/**
+ * Where an L2 LOA belongs, by its kernel: for every platform with known bundles, the bundles
+ * that run this kernel for the brand (fits), those that run another one (others, with their
+ * kernel) and those whose kernel is not known yet (unknown). A renewal of an older kernel
+ * often lands in an older bundle, one to three bundles back from the newest.
+ * Returns { kernel, platforms: [{ platform, fits, others, unknown, newest, behind }] } or null.
+ */
+function kernelFit(pages, { category, scheme, kernel }, allBundles = []) {
+  if (!/^EMV L2/.test(category || '')) return null;
+  const byPlat = new Map();
+  // Bundles tracked but not in the catalog yet count as unknown.
+  for (const b of allBundles) {
+    if ((pages || {})[b.key]) continue;
+    if (!byPlat.has(b.platform)) byPlat.set(b.platform, []);
+    byPlat.get(b.platform).push({ bundle: b.bundle, kernel: '', ids: '' });
+  }
+  for (const [key, p] of Object.entries(pages || {})) {
+    const plat = p.platform || key.split('|')[0];
+    if (!byPlat.has(plat)) byPlat.set(plat, []);
+    const k = bundleKernel({ [key]: p }, { category, scheme, platform: p.platform, bundle: p.bundle });
+    byPlat.get(plat).push({ bundle: p.bundle || key.split('|')[1], kernel: k ? k.kernel : '', ids: k ? k.ids : '' });
+  }
+  const platforms = [];
+  for (const [platform, list] of byPlat) {
+    list.sort((a, b) => bundleNo(a.bundle) - bundleNo(b.bundle));
+    const fits = kernel ? list.filter((b) => b.kernel && positive(kernel, b.ids)) : [];
+    const others = list.filter((b) => b.kernel && !fits.includes(b));
+    const unknown = list.filter((b) => !b.kernel).map((b) => b.bundle);
+    if (!fits.length && !others.length) continue;
+    const newest = [...list].reverse().find((b) => b.kernel) || null;
+    // How many bundles behind the newest the LOA's newest fitting bundle is.
+    const known = list.filter((b) => b.kernel);
+    const behind = fits.length && newest ? known.indexOf(newest) - known.indexOf(fits[fits.length - 1]) : null;
+    platforms.push({ platform, fits: fits.map((b) => b.bundle), others: others.map((b) => ({ bundle: b.bundle, kernel: b.kernel })), unknown, newest: newest ? { bundle: newest.bundle, kernel: newest.kernel } : null, behind });
+  }
+  platforms.sort((a, b) => b.fits.length - a.fits.length || a.platform.localeCompare(b.platform));
+  return { kernel: kernel || '', platforms };
+}
+
 /** "Bundle 3, Bundle 4" from kernelBundles. */
 const bundleNames = (list) => list.map((b) => b.bundle).join(', ');
 
 /** "It fits Kernel Bundle 3", for messages about a wrong-kernel LOA. */
 const fitsNote = (km) => (km && km.fits ? ` Its kernel matches ${km.platform} ${km.fits}: the date belongs on ${km.fits.includes(',') ? 'those bundles\' pages' : 'that bundle\'s page'}.` : '');
 
-module.exports = { bundleKey, cellOf, layout, bundleCheck, pciVersion, kernelMatches, bundleKernel, kernelMismatch, fitsNote, kernelPages, kernelBundles, newerKernel, bundleNames, bundleNo };
+module.exports = { bundleKey, cellOf, layout, bundleCheck, pciVersion, kernelMatches, bundleKernel, kernelMismatch, fitsNote, kernelPages, kernelBundles, newerKernel, bundleNames, bundleNo, kernelFit };
