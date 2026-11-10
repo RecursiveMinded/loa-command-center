@@ -264,9 +264,19 @@ function pdfFromPages(pages) {
     await p.click('button:has-text("Paste text")');
     await p.fill('textarea[aria-label="Pasted text"]', L.mastercardKernel);
     await p.fill('input[aria-label="Name for the pasted text"]', 'Mastercard email');
-    await p.click('.modal button:has-text("Read text")');
+    await p.click('.modal button:has-text("Read as letters")');
     await p.waitForSelector('.card.review:has-text("Mastercard email.txt")', { timeout: 30000 });
     check(true, 'pasted text is read into a review card');
+    // A team member's email: questions for the person and a follow-up reply.
+    await p.click('button:has-text("Paste text")');
+    await p.fill('textarea[aria-label="Pasted text"]', 'From: Pat Doe <pat@example.com>\nSubject: Status\n\nHi,\nThe Zeta/9000 Visa is end of life now.\nCan you check the renewal plan?\n\nThanks,\nPat');
+    await p.click('.modal button:has-text("Read as a team email")');
+    await p.waitForSelector('.teammail:has-text("Questions for you")', { timeout: 10000 });
+    check(await p.isVisible('.teammail .ask:has-text("Zeta/9000")'), 'team email asks about a device it does not know');
+    check(/^Hi Pat,/.test(await p.inputValue('.teammail textarea[aria-label="Reply to send"]')), 'team email drafts a reply to the sender');
+    await p.click('.teammail button:has-text("Done")');
+    await p.waitForSelector('.teammail', { state: 'detached', timeout: 5000 });
+    await p.click('.tabs button:has-text("To review")');
     // Platform alias renames existing records after confirming.
     await p.click('nav >> text=Settings');
     await p.click('text=Matching');

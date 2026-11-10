@@ -55,7 +55,7 @@ function App() {
   const refreshCounts = useCallback(async () => {
     try {
       const d = await call('getDashboard');
-      setCounts({ inbox: d.summary.inboxPending, critical: d.actions.filter((a) => a.priority === 1).length });
+      setCounts({ inbox: d.summary.inboxPending + (d.summary.teamMailOpen || 0), letters: d.summary.inboxPending, team: d.summary.teamMailOpen || 0, critical: d.actions.filter((a) => a.priority === 1).length });
     } catch (_) { /* shown elsewhere */ }
   }, []);
   const refresh = useCallback(() => { setVersion((v) => v + 1); refreshCounts(); }, [refreshCounts]);

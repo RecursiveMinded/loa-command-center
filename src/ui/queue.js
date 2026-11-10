@@ -2,7 +2,7 @@
 // between screens; screens subscribe to progress.
 import { call } from './api.js';
 import { extractFile, LOA_EXTENSIONS } from './extract.js';
-import { readEmail, emailFiles } from './email.js';
+import { readEmail, emailFiles, looksLikeApproval } from './email.js';
 
 const state = { items: [], running: false };
 const subs = new Set();
@@ -51,11 +51,19 @@ async function run() {
           emit();
           const mail = await readEmail(it.name, bytes);
           const { files, skipped } = emailFiles(mail, isLoa);
+          // A message from a person (not an approval notice) is read as a team email: updates, questions, a reply.
+          let team = '';
+          if (String(mail.text || '').trim() && !looksLikeApproval(mail.text)) {
+            try {
+              const r = await call('addTeamEmail', { from: mail.from, fromAddress: mail.fromAddress, subject: mail.subject, date: mail.date ? String(mail.date) : '', text: mail.text, attachments: files.map((f) => f.name), filename: it.name });
+              if (!r.skipped) team = ` · team email: ${r.counts.items} update${r.counts.items === 1 ? '' : 's'}, ${r.counts.open + r.counts.asked} question${r.counts.open + r.counts.asked === 1 ? '' : 's'} for you (see Team emails)`;
+            } catch (e) { team = ` · message not read: ${e.message}`; }
+          }
           const at = state.items.indexOf(it) + 1;
           state.items.splice(at, 0, ...files.map((f) => ({ id: ++seq, name: f.name, size: f.size, file: f, status: 'queued', progress: 0, note: `From email: ${mail.subject || it.name}`, onDone: it.onDone })));
           it.status = 'done';
           it.progress = 1;
-          it.note = `Email${mail.subject ? ` "${mail.subject}"` : ''}: ${files.length ? `${files.length} file${files.length === 1 ? '' : 's'} added to read` : 'nothing to read'}${skipped.length ? ` · not read: ${skipped.join(', ')}` : ''}`;
+          it.note = `Email${mail.subject ? ` "${mail.subject}"` : ''}: ${files.length ? `${files.length} file${files.length === 1 ? '' : 's'} added to read` : 'nothing to read'}${skipped.length ? ` · not read: ${skipped.join(', ')}` : ''}${team}`;
           it.file = null;
           emit();
           continue;

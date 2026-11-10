@@ -1465,3 +1465,73 @@ test('website bundle pages fill every L2 kernel and place records that have no b
   const acts = api.analysis().actions.filter((a) => a.kernels);
   assert.ok(acts.every((a) => a.kernels.length));
 });
+
+test('team email: updates become decisions, open points become questions, and a follow-up reply is drafted', async () => {
+  const { api } = await fresh();
+  const mk = (device, bundle, scheme, kernel, days) => api.store.createRecord({ device, platform: 'Alpha', bundle, category: 'EMV L2 Contactless', scheme, kernel_version: kernel, expiry_date: addDays(todayIso(), days), approval_number: `${device}-${scheme}` });
+  const a = mk('NX200', 'Bundle 5', 'Visa', '0302', 120);
+  const b = mk('NX300', 'Bundle 5', 'Visa', '0302', 300);
+  const c = mk('Flex/3200', 'Bundle 5', 'Discover', '0203', 60);
+  const d4 = mk('NX300', 'Bundle 4', 'Amex', '0202', 200);
+  const d5 = mk('NX300', 'Bundle 5', 'Amex', '0202', 200);
+  const text = [
+    'Hi Tester,', '',
+    'Quick update. The NX200 Visa renewal was submitted to the lab last week.',
+    'We are letting the Flex/3200 Discover expire. The Move/7000 Discover is end of life too.',
+    'NX300 Amex renewal is planned for March 2027.',
+    'Can you tell me when the NX300 Visa expires?',
+    "I've attached the new LOA.", '',
+    'Thanks,', 'Sam', 'Certification Engineer', '',
+    'From: Tester', 'Sent: Monday', 'Subject: Status', 'Is a renewal coming for NX200?',
+  ].join('\n');
+  const added = api.addTeamEmail({ from: 'Sam Lee <sam.lee@example.com>', subject: 'Status', date: '2026-11-09', text, attachments: [] });
+  assert.equal(api.addTeamEmail({ from: 'Sam Lee <sam.lee@example.com>', subject: 'Status', date: '2026-11-09', text }).duplicate, true, 'the same email is kept once');
+  let m = api.listTeamEmails()[0];
+  assert.equal(m.id, added.id);
+  const r = m.read;
+  const by = (id) => r.items.find((x) => x.ids.includes(id));
+  assert.equal(by(a.id).decision, 'renew');
+  assert.deepEqual(by(a.id).ids, [a.id], 'only the device and brand named');
+  assert.equal(by(c.id).decision, 'letexpire', '"letting the Flex/3200 Discover expire" with the device in between');
+  assert.ok(!r.items.some((x) => /Move\/7000/.test(x.line)), 'a sentence about an unknown device never borrows the previous device');
+  assert.equal(by(d4.id).dateLabel, 'March 2027');
+  assert.equal(r.items.filter((x) => /history|renewal coming for NX200\?/i.test(x.line)).length, 0, 'the quoted earlier message is not read');
+  // Questions for the person.
+  assert.ok(r.forYou.some((f) => f.kind === 'device' && /Move\/7000/.test(f.text)));
+  assert.ok(r.forYou.some((f) => f.kind === 'which' && /Move\/7000 Discover is end of life/.test(f.text)));
+  const scope = r.forYou.find((f) => f.kind === 'scope');
+  assert.ok(scope && scope.options.length === 3, 'NX300 Amex is in two bundles: all, Bundle 4 or Bundle 5');
+  // Their question gets an answer from the register.
+  assert.match(r.theyAsked[0].suggested, /NX300.*Visa L2 Contactless, kernel 0302: expires/);
+  // The follow-up asks for what they left out.
+  const f = r.followUp;
+  assert.equal(f.to, 'sam.lee@example.com');
+  assert.equal(f.subject, 'RE: Status');
+  assert.match(f.text, /^Hi Sam,/);
+  assert.match(f.text, /NX200\): when do you expect the renewed LOA\?/);
+  assert.match(f.text, /confirm the renewal is on kernel 0302\? Alpha Bundle 5 runs that kernel/);
+  assert.match(f.text, /Flex\/3200\): is there a newer device or hardware version/);
+  assert.match(f.text, /nothing came through/);
+  assert.match(f.text, /To your questions:\n- Can you tell me when the NX300 Visa expires\?/);
+
+  // Answers: Move/7000 is another name for Flex/3200; NX300 Amex only in Bundle 5.
+  api.answerTeamEmail(m.id, scope.key, 'Alpha Bundle 5 · kernel 0202');
+  m = api.answerTeamEmail(m.id, r.forYou.find((x) => x.kind === 'device').key, 'Flex/3200');
+  assert.deepEqual(m.read.items.find((x) => /NX300 Amex/.test(x.line)).ids, [d5.id]);
+  assert.ok(m.read.items.some((x) => x.decision === 'eol' && x.ids.includes(c.id)), 'the alias answer reads Move/7000 as Flex/3200');
+  assert.ok(!m.read.forYou.some((x) => x.kind === 'which'));
+
+  const pick = m.read.items.filter((x) => x.ids.includes(a.id) || x.ids.includes(d5.id));
+  const out = api.applyTeamEmail(m.id, pick);
+  assert.equal(out.changed, 2);
+  assert.equal(api.store.getRecord(a.id).stage, 'Renewal Requested');
+  assert.match(api.store.getRecord(a.id).notes, /Sam Lee \(email\): Renewal coming/);
+  assert.equal(api.store.getRecord(d4.id).stage || '', '', 'Bundle 4 was left out by the answer');
+  m = api.listTeamEmails()[0];
+  assert.equal(m.read.items.filter((x) => x.applied).length, 2);
+  assert.equal(api.getDashboard().summary.teamMailOpen, 1);
+  api.closeTeamEmail(m.id, true);
+  assert.equal(api.listTeamEmails().length, 0);
+  assert.equal(api.listTeamEmails({ status: 'done' }).length, 1);
+  assert.ok(b);
+});

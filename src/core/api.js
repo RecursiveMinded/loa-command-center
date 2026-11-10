@@ -1151,6 +1151,7 @@ class AppApi {
     const a = engine.analyze(records, {
       settings: this.store.getSettings(), asOf, tasks: this.store.taskStates(), inboxPending, replacements, norm: this.store.norm(),
     });
+    a.summary.teamMailOpen = (this.store.getSettings().teamMail || []).filter((m) => m.status === 'open').length;
     // Every action names the kernel(s) its records run: decisions are made per kernel.
     const byId = new Map(records.map((r) => [r.id, r]));
     for (const x of a.actions) {
@@ -1332,6 +1333,97 @@ class AppApi {
       }
     });
     return { changed, skipped };
+  }
+
+  // ------------------------------------------------------------ team emails
+  /**
+   * Emails from team members, dropped or pasted in the LOA inbox. Each is read against
+   * the register: decisions to confirm, questions only the person can settle, the
+   * sender's own questions with answers from the register, and a follow-up reply.
+   */
+  teamMailContext() {
+    const s = this.store.getSettings();
+    return { records: this.listRecords(), pages: this.kernelPages(), aliases: this.store.aliases(), userName: s.userName || '' };
+  }
+
+  addTeamEmail(mail = {}) {
+    const { teamMailEntry, readTeamEmail } = require('./teammail');
+    const e = teamMailEntry(mail);
+    if (!String(e.text).trim()) throw new Error('The email has no text to read');
+    const all = this.store.getSettings().teamMail || [];
+    const had = all.find((x) => x.id === e.id);
+    const read = readTeamEmail(had || e, this.teamMailContext());
+    // A dropped "please find attached" with nothing to act on is not kept; a pasted one always is.
+    const empty = !read.items.length && !read.theyAsked.length && !read.forYou.length;
+    if (empty && !mail.force && !had) return { skipped: true, from: e.from, subject: e.subject, counts: read.counts };
+    if (!had) this.store.setSettings({ teamMail: [...all, e].slice(-200) });
+    return { id: e.id, duplicate: !!had, from: e.from, subject: e.subject, counts: read.counts };
+  }
+
+  listTeamEmails({ status = 'open' } = {}) {
+    const { readTeamEmail } = require('./teammail');
+    const ctx = this.teamMailContext();
+    return (this.store.getSettings().teamMail || []).filter((m) => status === 'all' || m.status === status)
+      .map((m) => ({ ...m, read: readTeamEmail(m, ctx) })).reverse();
+  }
+
+  teamMailUpdate(id, fn) {
+    const all = this.store.getSettings().teamMail || [];
+    const i = all.findIndex((x) => x.id === id);
+    if (i < 0) throw new Error('That email is no longer in the inbox');
+    all[i] = fn({ ...all[i] }) || all[i];
+    this.store.setSettings({ teamMail: all });
+    return all[i];
+  }
+
+  /** Answer one of the email's questions (a device name, which approvals, a scope, or a reply to the sender). */
+  answerTeamEmail(id, key, value) {
+    this.teamMailUpdate(id, (m) => { m.answers = { ...(m.answers || {}), [key]: value == null ? '' : String(value) }; return m; });
+    return this.listTeamEmails({ status: 'all' }).find((m) => m.id === id);
+  }
+
+  /** Apply the decisions picked on a team email: items [{ key, decision, ids, line, replacement, date }]. */
+  applyTeamEmail(id, items = []) {
+    const { decisionPatch } = require('./questions');
+    const m = (this.store.getSettings().teamMail || []).find((x) => x.id === id);
+    if (!m) throw new Error('That email is no longer in the inbox');
+    const who = `${m.from || 'team'} (email)`;
+    let changed = 0;
+    const skipped = [];
+    this.store.db.tx(() => {
+      for (const it of items || []) {
+        for (const rid of it.ids || []) {
+          const r = this.store.getRecord(rid);
+          if (!r) continue;
+          const p = decisionPatch(it, r, todayIso(), who);
+          if (!p) continue;
+          try { if (this.store.updateRecord(rid, p, { source: `team email: ${m.from}` }).length) changed++; } catch (e) { skipped.push({ id: rid, reason: e.message }); }
+        }
+      }
+    });
+    this.teamMailUpdate(id, (x) => { x.applied = [...new Set([...(x.applied || []), ...items.map((it) => it.key).filter(Boolean)])]; return x; });
+    return { changed, skipped };
+  }
+
+  /** Mark a team email done (or open again). */
+  closeTeamEmail(id, done = true) {
+    this.teamMailUpdate(id, (m) => { m.status = done ? 'done' : 'open'; m.closedAt = done ? new Date().toISOString() : ''; return m; });
+    return true;
+  }
+
+  /** Ask the local AI to read the email too: a summary, more questions for the person, more follow-ups. */
+  async aiReadTeamEmail(id) {
+    const { splitEmail, readTeamEmail } = require('./teammail');
+    const m = (this.store.getSettings().teamMail || []).find((x) => x.id === id);
+    if (!m) throw new Error('That email is no longer in the inbox');
+    const ctx = this.teamMailContext();
+    const read = readTeamEmail({ ...m, ai: null }, ctx);
+    const ids = new Set(read.items.flatMap((it) => it.ids));
+    const ai = await this.ai.readTeamEmail(splitEmail(m.text).body, {
+      from: m.from, subject: m.subject, found: read.items.map((it) => `${it.summary} (${it.devices}): ${it.label}`), records: ctx.records.filter((r) => ids.has(r.id)),
+    });
+    this.teamMailUpdate(id, (x) => { x.ai = ai; return x; });
+    return ai;
   }
 
   // ------------------------------------------------------------ letter templates
@@ -1900,7 +1992,7 @@ const PUBLIC_METHODS = [
   'ingestDocument', 'documentFile', 'listInbox', 'setInboxKernel', 'certQuestions', 'syncFromBundlePages', 'clCleanupPlan', 'applyClCleanup', 'removeKernelLabel', 'certStatus', 'readCertReply', 'applyCertReply', 'listLetterTemplates', 'saveLetterTemplate', 'removeLetterTemplate', 'previewLetterTemplate', 'sampleLetterType', 'platformReference', 'setBundleCount', 'allBundles', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
   'documentText', 'deviceView', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'setEol', 'dataChecks', 'aiDataReview', 'briefingReport', 'exportL3Sheet', 'duplicateInfo', 'mapDuplicate', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'heldChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
-  'aiDraftEmail', 'backup', 'listBackups', 'restore', 'health',
+  'aiDraftEmail', 'addTeamEmail', 'listTeamEmails', 'answerTeamEmail', 'applyTeamEmail', 'closeTeamEmail', 'aiReadTeamEmail', 'backup', 'listBackups', 'restore', 'health',
 ];
 
 module.exports = { AppApi, PUBLIC_METHODS };

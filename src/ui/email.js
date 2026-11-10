@@ -38,12 +38,13 @@ export async function readEmail(name, bytes) {
         attachments.push({ name: a.innerMsgContent && !/\.msg$/i.test(fname) ? `${fname}.msg` : fname, bytes: got.content, inline: !!(a.attachmentHidden || a.pidContentId) });
       } catch (_) { /* unreadable attachment: skipped */ }
     }
-    return { subject: data.subject || '', from: data.senderName || data.senderEmail || '', date: data.messageDeliveryTime || data.clientSubmitTime || '', text: /<table/i.test(data.bodyHtml || '') ? htmlToText(data.bodyHtml) : data.body || htmlToText(data.bodyHtml), attachments };
+    return { subject: data.subject || '', from: data.senderName || data.senderEmail || '', fromAddress: data.senderSmtpAddress || data.senderEmail || '', date: data.messageDeliveryTime || data.clientSubmitTime || '', text: /<table/i.test(data.bodyHtml || '') ? htmlToText(data.bodyHtml) : data.body || htmlToText(data.bodyHtml), attachments };
   }
   const mail = await PostalMime.parse(bytes);
   return {
     subject: mail.subject || '',
     from: (mail.from && (mail.from.name || mail.from.address)) || '',
+    fromAddress: (mail.from && mail.from.address) || '',
     date: mail.date || '',
     text: /<table/i.test(mail.html || '') ? htmlToText(mail.html) : mail.text || htmlToText(mail.html),
     attachments: (mail.attachments || []).map((a) => ({
