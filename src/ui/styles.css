@@ -460,3 +460,9 @@ table.tpl-read { width: 100%; border-collapse: collapse; }
 table.tpl-read th, table.tpl-read td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); font-size: 12.5px; vertical-align: top; }
 table.tpl-read .sw, .tpl .chip .sw { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
 @media (max-width: 900px) { .tpl { grid-template-columns: 1fr; } }
+/* Team emails in the LOA inbox */
+.mt-s { margin-top: 6px; }
+.teammail h4 { margin-bottom: 4px; }
+.teammail .ask { border: 1px solid var(--line); border-left: 3px solid var(--warn); border-radius: 8px; padding: 8px 10px; background: var(--panel-2); }
+.teammail .ask.answered { border-left-color: var(--good); }
+.teammail .ask .input.grow { min-width: 220px; }

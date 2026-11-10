@@ -163,6 +163,36 @@ class LocalAI {
   }
 
   /**
+   * Read a team member's email alongside what the rules already found: a two-line summary,
+   * questions only the person can settle, and follow-up questions for the sender.
+   * Returns { summary, questionsForYou: [], followUps: [] }.
+   */
+  async readTeamEmail(body, { from = '', subject = '', found = [], records = [] } = {}) {
+    const known = records.slice(0, 40).map((r) => `- ${r.device}${r.platform ? ` (${r.platform}${r.bundle ? ` ${r.bundle}` : ''})` : ''}: ${r.scheme} ${r.category}${r.kernel_version ? `, kernel ${r.kernel_version}` : ''}, expires ${formatDate(r.expiry_date) || 'unknown'}`).join('\n');
+    const prompt = `An email from ${from || 'a team member'} about payment-terminal certifications${subject ? ` (subject: ${subject})` : ''}.
+
+EMAIL:
+${String(body).slice(0, 5000)}
+
+The app's rules already read these updates from it:
+${found.map((f) => `- ${f}`).join('\n') || '- none'}
+
+Approvals the email may be about:
+${known || '- none matched'}
+
+Return JSON with keys:
+- "summary": two sentences on what the sender is telling or asking.
+- "questions_for_me": up to 4 questions the certification manager must decide that the rules above did not cover (empty array if none).
+- "follow_ups": up to 4 questions to ask the sender back for facts the email leaves out, such as the kernel version, expected LOA date, test lab, or which device or bundle (empty array if none). Do not repeat questions already obvious from the updates above.
+Use only facts in the email and the list. Never invent dates, kernels or devices.`;
+    const raw = await this.chat([{ role: 'user', content: prompt }], { json: true, temperature: 0.1 });
+    let obj;
+    try { obj = JSON.parse(raw.replace(/^```json|```$/g, '').trim()); } catch (_) { throw new Error('The AI answer was not valid JSON'); }
+    const list = (v) => (Array.isArray(v) ? v : []).map((x) => String(x || '').trim()).filter(Boolean).slice(0, 4);
+    return { summary: String(obj.summary || '').trim().slice(0, 600), questionsForYou: list(obj.questions_for_me), followUps: list(obj.follow_ups) };
+  }
+
+  /**
    * Ask the model to fill fields the rule-based reader could not find. Every
    * suggested value must appear verbatim in the letter text, so the model can
    * help locate facts but can never introduce them.

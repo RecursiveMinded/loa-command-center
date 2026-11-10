@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'preact/hooks';
 import { html, Icon, fmtDate, fmtWhen, plural, useLoad, Spinner, toast, toastError, Modal, bytes, recLabel, usePersist } from '../lib.js';
 import { call, native } from '../api.js';
 import { CertQuestions } from '../questions.js';
+import { TeamMail } from '../teammail.js';
 import { subscribe, addFiles, clearFinished, filesFromDrop } from '../queue.js';
 import { DocButtons, openDoc } from '../docs.js';
 import { addRecent, recentIds, clearRecent, onRecent } from '../recent.js';
@@ -50,7 +51,7 @@ export function FilePickers({ onFiles, compact }) {
 
 export function Inbox({ app, params }) {
   const [tab, setTab] = useState((params && params.tab) || 'pending');
-  const [items, reload] = useLoad(() => call('listInbox', tab === 'documents' ? 'pending' : tab), [app.version, tab]);
+  const [items, reload] = useLoad(() => (tab === 'team' ? Promise.resolve([]) : call('listInbox', tab === 'documents' ? 'pending' : tab)), [app.version, tab]);
   const [docs, reloadDocs] = useLoad(() => (tab === 'documents' ? call('listDocuments') : Promise.resolve(null)), [app.version, tab]);
   const [q, setQ] = useState({ items: [], running: false });
   const [over, setOver] = useState(false);
@@ -94,7 +95,7 @@ export function Inbox({ app, params }) {
     const xl = files.filter((f) => /\.(xlsx|xlsm|csv)$/i.test(f.name));
     if (xl.length) setSheets((q0) => [...q0, ...xl]);
     // Once the previous drop is fully reviewed, a new drop starts a new "Bulk edit these" batch.
-    if (!app.counts.inbox && !q.items.some((i) => i.status === 'queued' || i.status === 'working')) clearRecent();
+    if (!app.counts.letters && !q.items.some((i) => i.status === 'queued' || i.status === 'working')) clearRecent();
     const n = addFiles(files.filter((f) => !xl.includes(f)));
     if (!n && !xl.length) toast('No PDF, image or spreadsheet files found');
   };
@@ -113,7 +114,7 @@ export function Inbox({ app, params }) {
   };
   const done = q.items.filter((i) => !['queued', 'working'].includes(i.status));
   const working = q.items.filter((i) => ['queued', 'working'].includes(i.status));
-  const tabs = [['pending', 'To review'], ['info', 'Supporting docs'], ['applied', 'Applied'], ['rejected', 'Rejected'], ['documents', 'All files']];
+  const tabs = [['pending', 'To review'], ['team', 'Team emails'], ['info', 'Supporting docs'], ['applied', 'Applied'], ['rejected', 'Rejected'], ['documents', 'All files']];
 
   return html`
     <div class="page-head"><div><h1>LOA inbox</h1><p>Drop letters here. Each one is read on this computer, split into letters, and matched to your records. You approve the changes.</p></div>
@@ -128,7 +129,7 @@ export function Inbox({ app, params }) {
         <div class=${pendingList.length ? 'row' : ''}><${Icon} name="upload" />
           <div style=${pendingList.length ? 'text-align:left' : ''}><h3>Drop LOAs, emails or a whole folder here</h3><div class="muted small">PDF, scanned PDF, images, Outlook emails (.msg, .eml) with their attachments, or pasted text · merged PDFs are split into letters · duplicates are skipped · Excel/CSV trackers are imported</div></div></div>
         <div class="row" style=${pendingList.length ? '' : 'margin-top:14px;display:flex;justify-content:center'}><${FilePickers} onFiles=${onFiles} compact=${!!pendingList.length} />
-          <button class="btn" onClick=${() => setPasted('')} title="Paste the text of one or many letters, an email or a portal page"><${Icon} name="edit" /> Paste text</button></div>
+          <button class="btn" onClick=${() => setPasted('')} title="Paste the text of letters, a team member's email or a portal page"><${Icon} name="edit" /> Paste text</button></div>
       </div>
     </div>
 
@@ -152,10 +153,11 @@ export function Inbox({ app, params }) {
           title="Link this LOA to another device or reader version, e.g. the CL2 record"><${Icon} name="link" /> Map to another device…</button>` : null}
       </div>`)}</div></div>` : null}
     ${dup ? html`<${MapDuplicate} documentId=${dup} app=${app} onClose=${() => setDup(null)} />` : null}
-    ${pasted != null ? html`<${PasteText} initial=${pasted} onClose=${() => setPasted(null)} onRead=${(file) => { setPasted(null); onFiles([file]); }} />` : null}
+    ${pasted != null ? html`<${PasteText} initial=${pasted} onClose=${() => setPasted(null)} onRead=${(file) => { setPasted(null); onFiles([file]); }}
+      onTeam=${async (mail) => { try { const r = await call('addTeamEmail', mail); setPasted(null); toast(teamNote(r), 'ok'); setTab('team'); app.refresh(); } catch (e) { toastError(e); } }} />` : null}
 
-    <div class="tabs mt-l">${tabs.map(([k, l]) => html`<button class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${l}${k === 'pending' && app.counts.inbox ? html`<span class="count">${app.counts.inbox}</span>` : null}</button>`)}</div>
-    ${tab === 'documents' ? html`<${Documents} docs=${docs} app=${app} reload=${reloadDocs} />`
+    <div class="tabs mt-l">${tabs.map(([k, l]) => html`<button class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${l}${k === 'pending' && app.counts.letters ? html`<span class="count">${app.counts.letters}</span>` : null}${k === 'team' && app.counts.team ? html`<span class="count">${app.counts.team}</span>` : null}</button>`)}</div>
+    ${tab === 'team' ? html`<${TeamMail} app=${app} />` : tab === 'documents' ? html`<${Documents} docs=${docs} app=${app} reload=${reloadDocs} />`
       : !items ? html`<div class="row"><${Spinner} /> Loading…</div>`
         : !items.length ? html`<div class="card"><div class="empty"><${Icon} name="inbox" /><h3>${tab === 'pending' ? 'Nothing to review' : 'Nothing here yet'}</h3><div>${tab === 'pending' ? 'Drop LOAs above to get started.' : ''}</div></div></div>`
           : html`${tab === 'pending' ? html`<${BulkBar} items=${shown} all=${items} sel=${sel} setSel=${setSel} find=${find} setFind=${setFind} view=${view} setView=${setView} threshold=${threshold} app=${app} onDone=${() => { reload(); app.refresh(); }} />` : null}
@@ -164,25 +166,35 @@ export function Inbox({ app, params }) {
     ${sheets.length ? html`<${SheetImport} file=${sheets[0]} app=${app} onClose=${() => setSheets((q0) => q0.slice(1))} />` : null}`;
 }
 
+/** Text that reads like a message from a person: a greeting, mail headers or a sign-off. */
+export const looksLikeMessage = (t) => /^\s*(hi|hello|hey|dear|good (?:morning|afternoon))\b/im.test(t) || /^(from|sent|subject):/im.test(t) || /\b(regards|thanks|thank you|cheers)\b[,.!]?\s*$/im.test(t);
+export const teamNote = (r) => `${r.duplicate ? 'Already read: ' : ''}email from ${r.from || 'a team member'}: ${plural(r.counts.items, 'update')}, ${plural(r.counts.open + r.counts.asked, 'question')} for you, ${plural(r.counts.followUps, 'follow-up')} to send. See Team emails.`;
 const stamp = () => new Date().toISOString().slice(0, 16).replace('T', ' ').replace(':', '-');
 
 /**
  * Text pasted from an email, a portal page or a document. It is read like a
  * dropped file: split into letters, matched, and kept in the archive as a .txt.
  */
-function PasteText({ initial, onClose, onRead }) {
+function PasteText({ initial, onClose, onRead, onTeam }) {
   const [text, setText] = useState(initial || '');
   const [name, setName] = useState('');
+  const message = looksLikeMessage(text);
+  const team = () => {
+    const head = (re) => (text.match(re) || [])[1] || '';
+    onTeam({ force: true, text, from: head(/^From:\s*(.+)$/im), subject: name.trim() || head(/^Subject:\s*(.+)$/im) || 'Pasted email', date: head(/^(?:Sent|Date):\s*(.+)$/im) });
+  };
   const read = () => {
     const base = (name.trim() || `Pasted text ${stamp()}`).replace(/[\\/:*?"<>|]+/g, ' ').replace(/\.txt$/i, '');
     onRead(new File([text], `${base}.txt`, { type: 'text/plain' }));
   };
   return html`<${Modal} title="Paste text" onClose=${onClose}>
-    <p class="muted small">Paste the text of one or many letters, an approval email, or a table copied from a portal. Several letters in one paste are split apart, and each is matched to your records for you to review.</p>
+    <p class="muted small">Paste the text of one or many letters, an approval email, or a table copied from a portal. Several letters in one paste are split apart, and each is matched to your records for you to review. For a message from a team member, choose <b>Read as a team email</b>: I match what they say to your approvals, ask you what I cannot settle and draft a reply.</p>
     <textarea aria-label="Pasted text" rows="14" style="width:100%;font-family:inherit" placeholder="Paste here (Ctrl+V)" value=${text} onInput=${(e) => setText(e.target.value)} autofocus></textarea>
     <div class="row mt"><input type="text" aria-label="Name for the pasted text" placeholder=${`Name (optional), e.g. Visa approvals email`} value=${name} onInput=${(e) => setName(e.target.value)} class="grow" />
       <span class="faint small">${plural(text.trim() ? text.trim().split(/\n/).length : 0, 'line')}</span></div>
-    <div class="row mt"><button class="btn primary" disabled=${!text.trim()} onClick=${read}><${Icon} name="check" /> Read text</button><button class="btn" onClick=${onClose}>Cancel</button></div>
+    <div class="row mt"><button class=${`btn ${message ? '' : 'primary'}`} disabled=${!text.trim()} onClick=${read}><${Icon} name="check" /> Read as letters</button>
+      ${onTeam ? html`<button class=${`btn ${message ? 'primary' : ''}`} disabled=${!text.trim()} onClick=${team} title="A message from a colleague: updates, questions and a reply to send back"><${Icon} name="mail" /> Read as a team email</button>` : null}
+      <button class="btn" onClick=${onClose}>Cancel</button></div>
   <//>`;
 }
 

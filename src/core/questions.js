@@ -212,23 +212,18 @@ const BRAND_WORDS = { Visa: /\bvisa\b/i, Mastercard: /\bmaster ?card|\bMC\b/i, A
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
- * Read the certifications team's reply. Each line (or each quoted item followed by their
- * answer) is matched to records by kernel version, device names, platform, bundle and brand,
- * and turned into a decision to review. Nothing is changed here.
- * Returns { items: [{ line, decision, label, ids, devices, summary, replacement, date }], unread: [line] }.
+ * A function that matches one line of text to the approvals it talks about, by kernel
+ * version, device names, platform, bundle and brand. Returns { list, kernel, devices } or null.
  */
-function readCertReply({ text = '', records = [], pages = {}, asOf = todayIso() } = {}) {
+function matcher(records = [], pages = {}) {
   const live = records.filter((r) => !r.archived);
   const names = [...new Set(live.map((r) => r.device).filter((d) => d && d.length >= 3))].sort((a, b) => b.length - a.length);
-  const lines = String(text).split(/\r?\n/).map((l) => l.replace(/^[\s>*\-•\d.)]+/, '').trim()).filter((l) => l.length > 2);
-  const items = [];
-  const unread = [];
-  let last = null; // a quoted item waiting for its answer on the next line
-  const match = (line) => {
+  const platforms = [...new Set(live.map((r) => r.platform).filter(Boolean))];
+  return (line) => {
     const found = names.filter((n) => new RegExp(`(^|[^A-Za-z0-9])${esc(n)}(?![A-Za-z0-9]|-CL)`, 'i').test(line));
     const nums = kernelIds(line);
     const brands = Object.keys(BRAND_WORDS).filter((b) => BRAND_WORDS[b].test(line));
-    const plats = [...new Set(live.map((r) => r.platform).filter(Boolean))].filter((p) => new RegExp(`\\b${esc(p)}\\b`, 'i').test(line));
+    const plats = platforms.filter((p) => new RegExp(`\\b${esc(p)}\\b`, 'i').test(line));
     const bundles = (line.match(/bundle\s*(\d+)/gi) || []).map((b) => b.replace(/\D/g, ''));
     let list = live.filter((r) => {
       if (plats.length && r.platform && !plats.includes(r.platform)) return false;
@@ -241,8 +236,22 @@ function readCertReply({ text = '', records = [], pages = {}, asOf = todayIso() 
     if (byKernel.length) list = byKernel;
     else if (!found.length && !(plats.length && bundles.length && brands.length)) return null; // too little to go on
     if (/\bL2\b|contactless|kernel/i.test(line) && list.some(L2)) list = list.filter(L2);
-    return list.length ? { list, kernel: byKernel.length ? kernelOf(pages, byKernel[0]) : '' } : null;
+    return list.length ? { list, kernel: byKernel.length ? kernelOf(pages, byKernel[0]) : '', devices: found } : null;
   };
+}
+
+/**
+ * Read the certifications team's reply. Each line (or each quoted item followed by their
+ * answer) is matched to records by kernel version, device names, platform, bundle and brand,
+ * and turned into a decision to review. Nothing is changed here.
+ * Returns { items: [{ line, decision, label, ids, devices, summary, replacement, date }], unread: [line] }.
+ */
+function readCertReply({ text = '', records = [], pages = {}, asOf = todayIso() } = {}) {
+  const match = matcher(records, pages);
+  const lines = String(text).split(/\r?\n/).map((l) => l.replace(/^[\s>*\-•\d.)]+/, '').trim()).filter((l) => l.length > 2);
+  const items = [];
+  const unread = [];
+  let last = null; // a quoted item waiting for its answer on the next line
   for (const line of lines) {
     if (/^(hi|hello|thanks|thank you|regards|best|cheers|from:|sent:|to:|subject:|cc:)\b/i.test(line)) continue;
     const rule = RULES.find(([, re]) => re.test(line));
@@ -266,15 +275,15 @@ function readCertReply({ text = '', records = [], pages = {}, asOf = todayIso() 
 }
 
 /** The record changes for one decision, with a dated note quoting the team. */
-function decisionPatch(item, record, asOf = todayIso()) {
+function decisionPatch(item, record, asOf = todayIso(), who = 'cert team') {
   const d = DECISIONS[item.decision];
   if (!d) return null;
   const extra = [item.replacement && `replacement kernel ${item.replacement}`, item.date && `date ${formatDate(item.date)}`].filter(Boolean).join(', ');
-  const note = `${formatDate(asOf)} cert team: ${d.label}${extra ? ` (${extra})` : ''}. "${String(item.line).slice(0, 200)}"`;
+  const note = `${formatDate(asOf)} ${who}: ${d.label}${extra ? ` (${extra})` : ''}. "${String(item.line).slice(0, 200)}"`;
   const p = { ...d.patch, notes: [note, record.notes].filter(Boolean).join('\n') };
-  if (d.eol && !record.eol) p.eol = `Cert team ${formatDate(asOf)}: no longer certified`;
+  if (d.eol && !record.eol) p.eol = `${who.charAt(0).toUpperCase()}${who.slice(1)} ${formatDate(asOf)}: no longer certified`;
   if (item.decision !== 'renew' && IN_PROGRESS.has(record.stage)) p.stage = '';
   return p;
 }
 
-module.exports = { inCertification, certQuestions, certStatus, readCertReply, decisionPatch, STATUS, DECISIONS };
+module.exports = { inCertification, certQuestions, certStatus, readCertReply, decisionPatch, matcher, statusOf, kindOf, kernelOf, RULES, BRAND_WORDS, STATUS, DECISIONS };
