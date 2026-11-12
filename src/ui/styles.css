@@ -466,3 +466,8 @@ table.tpl-read .sw, .tpl .chip .sw { display: inline-block; width: 9px; height: 
 .teammail .ask { border: 1px solid var(--line); border-left: 3px solid var(--warn); border-radius: 8px; padding: 8px 10px; background: var(--panel-2); }
 .teammail .ask.answered { border-left-color: var(--good); }
 .teammail .ask .input.grow { min-width: 220px; }
+
+/* Certification levels guide and level identity fields. */
+.warn-text { color: var(--warn); }
+.levels-guide { width: 100%; border-collapse: collapse; }
+.levels-guide th, .levels-guide td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--line, rgba(127,127,127,.25)); }

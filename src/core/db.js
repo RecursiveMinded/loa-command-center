@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS records (
@@ -41,6 +41,10 @@ CREATE TABLE IF NOT EXISTS records (
   covers TEXT DEFAULT '',
   eol TEXT DEFAULT '',
   restriction TEXT DEFAULT '',
+  reader_id TEXT DEFAULT '',
+  reader_hw_sw TEXT DEFAULT '',
+  spec_version TEXT DEFAULT '',
+  app_version TEXT DEFAULT '',
   renewal_path TEXT DEFAULT '',
   test_lab TEXT DEFAULT '',
   archived INTEGER DEFAULT 0,
@@ -200,6 +204,11 @@ class Database {
     if (!this.all('PRAGMA table_info(records)').some((c) => c.name === 'restriction')) this.db.exec("ALTER TABLE records ADD COLUMN restriction TEXT DEFAULT ''");
     // v7: word positions per document, so letter templates (regions marked on a sample) can read it again.
     if (!this.all('PRAGMA table_info(documents)').some((c) => c.name === 'words')) this.db.exec("ALTER TABLE documents ADD COLUMN words TEXT DEFAULT ''");
+    // v8: what identifies each level. L1: the reader module (IFM contact / PCD contactless) with its
+    // hardware and software versions; L1 and L2: the test specification; L2: the application version.
+    for (const col of ['reader_id', 'reader_hw_sw', 'spec_version', 'app_version']) {
+      if (!this.all('PRAGMA table_info(records)').some((c) => c.name === col)) this.db.exec(`ALTER TABLE records ADD COLUMN ${col} TEXT DEFAULT ''`);
+    }
     const ver = JSON.stringify(SCHEMA_VERSION);
     if (!v) this.run("INSERT INTO settings(key,value) VALUES('schema_version', ?)", [ver]);
     else if (v.value !== ver) this.run("UPDATE settings SET value=? WHERE key='schema_version'", [ver]);

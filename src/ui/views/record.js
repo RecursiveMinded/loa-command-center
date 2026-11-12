@@ -7,7 +7,7 @@ import { DocButtons, openDoc } from '../docs.js';
 const BLANK = {
   device: '', platform: '', bundle: '', family: '', category: 'EMV L1 Contact', scheme: '', kernel_version: '', approval_number: '',
   issue_date: '', expiry_date: '', expiry_basis: '', restricted: false, stage: '', disposition: '', owner: '', customer: '', market: '',
-  next_action: '', next_action_date: '', extension_used: false, notes: '', portal_date: '', portal_status: 'Not Tracked', change_ticket: '', tags: '', covers: '', eol: '', restriction: '', renewal_path: '', test_lab: '', archived: false,
+  next_action: '', next_action_date: '', extension_used: false, notes: '', portal_date: '', portal_status: 'Not Tracked', change_ticket: '', tags: '', covers: '', eol: '', restriction: '', reader_id: '', reader_hw_sw: '', spec_version: '', app_version: '', renewal_path: '', test_lab: '', archived: false,
 };
 
 export function RecordDrawer({ id, app, onClose, tab: startTab }) {
@@ -112,7 +112,7 @@ export function RecordDrawer({ id, app, onClose, tab: startTab }) {
   if (!form) return html`<${Drawer} title="Loading…" onClose=${onClose}><${Spinner} /><//>`;
   const r = data && data.record;
   const title = id ? `${r.device}` : 'New certification record';
-  const sub = id ? html`<span class="row wrap"><span>${r.scheme} · ${r.category}</span>${r.platform ? html`<span class="tag">${[r.platform, r.bundle].filter(Boolean).join(' · ')}</span>` : null}<${HealthPill} r=${r} />${/^EMV L2/.test(r.category || '') ? (r.kernel_version ? html`<span class="pill info" title="The kernel this approval is for">Kernel ${r.kernel_version}</span>` : html`<span class="pill expired" title="Read this bundle's website page (Bundles > Check against website page) and the kernel is filled in from it">Kernel not known</span>`) : null}<span class="tag">${r.stageNow}</span></span>` : 'Fill in what you know. Dates can be added later from an LOA.';
+  const sub = id ? html`<span class="row wrap"><span>${r.scheme} · ${r.category}</span>${r.platform ? html`<span class="tag">${[r.platform, r.bundle].filter(Boolean).join(' · ')}</span>` : null}<${HealthPill} r=${r} />${/^EMV L1/.test(r.category || '') && r.reader_id ? html`<span class="pill info" title="Level 1 certifies this reader module (hardware), not a kernel">Reader ${r.reader_id}</span>` : null}${r.category === 'PCI PTS' && r.kernel_version ? html`<span class="pill info" title="The PCI PTS POI version this device was approved under">PTS ${r.kernel_version}</span>` : null}${/^EMV L2/.test(r.category || '') ? (r.kernel_version ? html`<span class="pill info" title="The kernel this approval is for">Kernel ${r.kernel_version}</span>` : html`<span class="pill expired" title="Read this bundle's website page (Bundles > Check against website page) and the kernel is filled in from it">Kernel not known</span>`) : null}<span class="tag">${r.stageNow}</span></span>` : 'Fill in what you know. Dates can be added later from an LOA.';
   const F = (k, label, type = 'text', extra = {}) => html`<label class="field">${label}<input type=${type} value=${form[k] || ''} onInput=${set(k)} ...${extra} /></label>`;
   const footer = html`${id ? html`<button class="btn danger" onClick=${del}><${Icon} name="trash" /> Delete</button><span class="grow"></span>` : null}
     <button class="btn" onClick=${onClose}>Close</button><button class="btn primary" disabled=${busy} onClick=${save}>${id ? 'Save changes' : 'Create record'}</button>`;
@@ -130,11 +130,11 @@ export function RecordDrawer({ id, app, onClose, tab: startTab }) {
     ${tab === 'device' && profile ? html`<${DeviceCerts} p=${profile} current=${id} app=${app} reload=${loadProfile} />` : null}
     ${tab === 'details' ? html`
       <div class="section-title">Certification</div>
-      <${TypePicker} form=${form} setForm=${setForm} schemes=${tax.schemes} />
+      <${TypePicker} form=${form} setForm=${setForm} schemes=${tax.schemes} tax=${tax} />
       <div class="grid3 mt">
         ${F('device', 'Device *', 'text', { onBlur: fillPlatform, list: 'rec-platform-devices' })}${F('platform', 'Platform')}${F('bundle', 'Bundle')}
         <datalist id="rec-platform-devices">${(pfDevices[form.platform] || []).map((d) => html`<option value=${d} />`)}</datalist>
-        ${versionLabel(form) ? F('kernel_version', versionLabel(form)) : null}
+        <${LevelFields} form=${form} setForm=${setForm} F=${F} tax=${tax} />
         ${F('approval_number', 'Approval number')}${F('family', 'Family / model group')}${F('expiry_basis', 'Expiry basis')}
         ${F('issue_date', 'Issued', 'date')}${F('expiry_date', 'Expires', 'date')}
         <label class="field">Days left<input type="text" disabled value=${r ? daysLabel(r.days) : ''} /></label>
@@ -146,6 +146,9 @@ export function RecordDrawer({ id, app, onClose, tab: startTab }) {
         <option value="waiver">Expired, restricted renewal: customers request their own waiver (struck through or XX on the website)</option>
         <option value="mandate">Blocked by a scheme mandate: a new kernel and certification are needed</option>
       </select></label>
+      ${data && data.sameReader && data.sameReader.length ? html`<div class="callout" style="margin-top:12px"><b>Same reader module on ${data.sameReader.length} other device${data.sameReader.length === 1 ? '' : 's'}.</b>
+        <span class="small"> Level 1 certifies the reader (${r.reader_id}), so these devices rest on the same hardware approval: </span>
+        ${data.sameReader.map((x, i) => html`${i ? ', ' : ''}<a href="#" onClick=${(e) => { e.preventDefault(); app.openRecord(x.id); }}>${x.device}</a><span class=${`small ${x.expiry_date !== r.expiry_date ? 'warn-text' : 'faint'}`}> (${fmtDate(x.expiry_date) || 'no date'})</span>`)}</div>` : null}
       <${CoversField} value=${form.covers} device=${form.device} onChange=${(v) => setForm({ ...form, covers: v })} />
       <${EolField} value=${form.eol} onChange=${(v) => setForm({ ...form, eol: v })} />
 
@@ -350,9 +353,51 @@ const KINDS = [['pci', 'PCI PTS'], ['l1', 'EMV Level 1'], ['l2', 'EMV Level 2'],
 const BRANDS = ['Visa', 'Mastercard', 'Amex', 'Discover', 'UnionPay', 'JCB', 'Interac'];
 const kindOf = (c) => (c === 'PCI PTS' ? 'pci' : /^EMV L1/.test(c) ? 'l1' : /^EMV L2/.test(c) ? 'l2' : c === 'TQM' ? 'tqm' : 'other');
 const isCless = (f) => (f.category === 'TQM' ? /pcd|contactless/i.test(f.kernel_version || '') : /Contactless/.test(f.category));
-const versionLabel = (f) => ({ pci: 'PTS version (e.g. v6)', l2: 'Kernel version', other: 'Kernel / version' })[kindOf(f.category)] || '';
 
-function TypePicker({ form, setForm, schemes }) {
+// Each level is identified differently: PCI by its single-digit PTS version, L1 by the reader
+// hardware (module, builds, test cases), L2 by its kernel (and the application around it).
+function LevelFields({ form, setForm, F, tax }) {
+  const kind = kindOf(form.category);
+  if (kind === 'pci') {
+    const opts = tax.ptsVersions || ['v4', 'v5', 'v6', 'v7'];
+    return html`<label class="field">PTS version<select value=${form.kernel_version || ''} aria-label="PTS version" onChange=${(e) => setForm({ ...form, kernel_version: e.target.value })}>
+      <option value="">Not known</option>${[...new Set([...opts, form.kernel_version].filter(Boolean))].map((v) => html`<option value=${v}>${v}</option>`)}</select></label>`;
+  }
+  if (kind === 'l1') {
+    const cl = /Contactless/.test(form.category);
+    return html`${F('reader_id', cl ? 'Reader module (PCD ID)' : 'Reader module (IFM ID)', 'text', { placeholder: cl ? 'e.g. T3PCD2 v1.0' : 'e.g. T3IFM1PP1 V1.0' })}
+      ${F('reader_hw_sw', 'Hardware / software builds', 'text', { placeholder: 'e.g. HW V01.01 · SW V01.04' })}
+      ${F('spec_version', 'Test cases passed', 'text', { placeholder: 'e.g. 4.3d' })}`;
+  }
+  if (kind === 'l2') {
+    return html`${F('kernel_version', 'Kernel version', 'text', { placeholder: form.category === 'EMV L2 Contact' ? 'e.g. 0302' : 'e.g. 0202' })}
+      ${F('app_version', 'Application version', 'text', { placeholder: 'e.g. 002.00.008' })}`;
+  }
+  if (kind === 'other') return F('kernel_version', 'Kernel / version');
+  return null;
+}
+
+/** The industry's certification levels, explained in plain words. */
+export function LevelsGuide({ onClose }) {
+  const row = (name, what, id, who, life) => html`<tr><td><b>${name}</b></td><td>${what}</td><td>${id}</td><td>${who}</td><td>${life}</td></tr>`;
+  return html`<${Modal} title="Certification levels, in plain words" onClose=${onClose} wide>
+    <p class="muted small">Every payment terminal needs a stack of approvals. Each layer proves a different thing, is identified differently, and expires on its own date.</p>
+    <div class="table-wrap"><table class="t small levels-guide"><thead><tr><th>Level</th><th>What it proves</th><th>Identified by</th><th>Issued by</th><th>Held per</th></tr></thead><tbody>
+      ${row('PCI PTS', 'The device is physically secure: tamper response, PIN entry, key storage and injection.', 'PTS POI version, one digit (v5, v6, v7). No kernel.', 'PCI SSC', 'Device, shared by all its hardware versions')}
+      ${row('EMV L1 Contact', 'The chip reader (IFM) talks to a card correctly: pins, voltages, timing, T=0/T=1 (ISO 7816).', 'Reader module ID with hardware and software builds, and the test cases passed (e.g. 4.3d). No kernel.', 'EMVCo', 'Device, shared by all its hardware versions')}
+      ${row('EMV L1 Contactless', 'The antenna (PCD) talks to a card correctly: 13.56 MHz field, modulation, anti-collision (ISO 14443).', 'PCD module ID with hardware and software builds. No kernel.', 'EMVCo', 'Hardware version (CL1, CL2…)')}
+      ${row('TQM', 'The reader is built consistently in the factory (quality management).', 'TQM label, contact (IFM) or contactless (PCD).', 'Mastercard (on behalf of the brands)', 'Hardware version')}
+      ${row('EMV L2 Contact', 'The EMV contact kernel software runs a chip transaction correctly: application selection, card authentication (SDA/DDA/CDA), PIN/signature, risk checks.', 'EMV contact kernel version (e.g. 0302). One kernel for every brand.', 'EMVCo', 'Kernel, so every bundle running it')}
+      ${row('EMV L2 Contactless', 'One card brand\'s contactless kernel runs a tap correctly and fast (under ~400 ms).', 'That brand\'s kernel version (e.g. Visa 0202). Kernel 2 Mastercard, 3 Visa, 4 Amex, 5 JCB, 6 Discover, 7 UnionPay; Interac Flash has its own.', 'Each card brand', 'Brand and kernel, so every bundle running it')}
+      ${row('L3 (end to end)', 'The whole payment solution (terminal app, gateway, processor) works with a brand\'s hosts.', 'The acquirer\'s or processor\'s own certificate.', 'Acquirers and processors with brand tools', 'Customer solution (not tracked here; the L3 sheet lists the L1/L2 numbers they need)')}
+    </tbody></table></div>
+    <p class="small mt"><b>The rule of thumb:</b> Level 1 is hardware, so it has reader module versions and never a kernel. Level 2 is software, so it always has a kernel version. PCI is security, identified by its one-digit PTS version.</p>
+    <p class="small"><b>How they depend on each other:</b> L2 rests on the L1 of the same interface. Mastercard L2 needs a valid TQM. Without a current PCI PTS no new units can be built or key-injected, even with live EMV approvals. A changed reader module is a new hardware version (CL2, CT2), which needs its own L1, not a renewal.</p>
+  <//>`;
+}
+
+function TypePicker({ form, setForm, schemes, tax = {} }) {
+  const [guide, setGuide] = useState(false);
   const kind = kindOf(form.category);
   const cless = isCless(form);
   const pick = (k, cl = cless) => {
@@ -375,12 +420,13 @@ function TypePicker({ form, setForm, schemes }) {
     ${kind === 'other' ? html`<label class="field">Type<${Select} value=${form.category} onChange=${(v) => setForm({ ...form, category: v && v.target ? v.target.value : v })} options=${['Letter of Equivalency', 'Other']} /></label>
       <label class="field">Issued by *<input list="brand-list" value=${form.scheme} onInput=${(e) => setForm({ ...form, scheme: e.target.value })} /><datalist id="brand-list">${schemes.map((x) => html`<option value=${x} />`)}</datalist></label>` : null}
     <div class="faint small typehint">${{
-      pci: 'PCI PTS approval of the device, shared by all its hardware versions. Issued by PCI SSC.',
-      l1: cless ? 'EMVCo Level 1 for the contactless reader of this hardware version (CL1, CL2…).' : 'EMVCo Level 1 for the contact interface, shared by all hardware versions.',
-      l2: cless ? 'A card brand\'s Level 2 approval for its contactless kernel on this hardware version. Each brand has its own approval and expiry.' : 'The EMV contact kernel: one EMVCo approval for the whole bundle.',
+      pci: 'PCI PTS approval of the device\'s security, identified by its one-digit PTS version (v5, v6, v7), never a kernel. Shared by all hardware versions. Issued by PCI SSC.',
+      l1: cless ? 'EMVCo Level 1 for the contactless antenna (PCD) of this hardware version (CL1, CL2…). Physical hardware: identified by the reader module, never a kernel.' : 'EMVCo Level 1 for the contact chip reader (IFM), shared by all hardware versions. Physical hardware: identified by the reader module, never a kernel.',
+      l2: cless ? `A card brand's Level 2 approval for its own contactless kernel${(tax.clessKernels || {})[form.scheme] ? `: ${tax.clessKernels[form.scheme].name} (${tax.clessKernels[form.scheme].product})` : ''}. Each brand has its own approval and expiry; it counts for every bundle running that kernel version.` : 'The EMV contact kernel: one EMVCo approval for every card brand, counted for every bundle running that kernel version.',
       tqm: 'Mastercard TQM for the contact (IFM) or contactless (PCD) interface.',
       other: 'Letters of equivalency and anything else.',
-    }[kind]}</div>
+    }[kind]} <a href="#" onClick=${(e) => { e.preventDefault(); setGuide(true); }}>What do the levels mean?</a></div>
+    ${guide ? html`<${LevelsGuide} onClose=${() => setGuide(false)} />` : null}
   </div>`;
 }
 

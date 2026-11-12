@@ -20,7 +20,8 @@ function bundleKey(platform, bundle) {
   return `${p}|${name}`;
 }
 
-const pciVersion = (v) => { const m = String(v || '').match(/\d+(?:\.\d+)?/); return m ? `v${m[0]}` : ''; };
+// PCI PTS is tracked by its single-digit version (v5, v6, v7).
+const pciVersion = (v) => require('./taxonomy').ptsVersion(v);
 const isContactlessTqm = (r, key) => /pcd|contactless/i.test(r.kernel_version || '') || (!/ifm|contact/i.test(r.kernel_version || '') && !!splitVariant(key).variant);
 
 /**

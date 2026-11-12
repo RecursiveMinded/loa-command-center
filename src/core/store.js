@@ -3,14 +3,14 @@
 // so the audit trail is written in the same transaction as the change.
 
 const crypto = require('crypto');
-const { normalizeCategory, normalizeScheme } = require('./taxonomy');
+const { normalizeCategory, normalizeScheme, ptsVersion } = require('./taxonomy');
 const { makeNormalizer, DEFAULT_NOISE_WORDS } = require('./devices');
 
 const RECORD_FIELDS = [
   'vendor', 'platform', 'bundle', 'device', 'family', 'category', 'scheme', 'kernel_version',
   'approval_number', 'issue_date', 'expiry_date', 'expiry_basis', 'restricted', 'stage',
   'disposition', 'owner', 'customer', 'market', 'next_action', 'next_action_date',
-  'extension_used', 'notes', 'portal_date', 'portal_status', 'change_ticket', 'tags', 'covers', 'eol', 'restriction', 'renewal_path', 'test_lab', 'archived',
+  'extension_used', 'notes', 'portal_date', 'portal_status', 'change_ticket', 'tags', 'covers', 'eol', 'restriction', 'reader_id', 'reader_hw_sw', 'spec_version', 'app_version', 'renewal_path', 'test_lab', 'archived',
   'source', 'verified_at', 'verified_by',
 ];
 const BOOL_FIELDS = new Set(['restricted', 'extension_used', 'archived']);
@@ -149,6 +149,7 @@ class Store {
     rec.scheme = normalizeScheme(rec.scheme || '');
     for (const f of ALIAS_FIELDS) if (rec[f]) rec[f] = this.aliasValue(f, rec[f]);
     rec.device = this.deviceSpelling(rec.device);
+    levelFields(rec, rec.category);
     if (rec.covers) rec.covers = this.coversList(rec.covers, rec.device);
     rec.tags = withReaderTag(rec.tags, rec.device);
     if (!rec.tags) delete rec.tags;
@@ -193,6 +194,7 @@ class Store {
         p.device = this.deviceSpelling(tagCl ? `${base}-${tagCl}` : base);
       }
     }
+    levelFields(p, p.category !== undefined ? p.category : cur.category, cur);
     const changed = [];
     for (const f of RECORD_FIELDS) {
       if (p[f] === undefined) continue;
@@ -396,6 +398,20 @@ class Store {
     return n;
   }
 
+  /**
+   * 1.0.32: PCI PTS versions become single digits (v6.1 -> v6) and L1 records lose their kernel
+   * (moved to the reader hardware/software field). Returns how many records changed.
+   */
+  tidyLevelFields({ actor = this.actor } = {}) {
+    let n = 0;
+    this.db.tx(() => {
+      for (const r of this.db.all("SELECT id, category, kernel_version FROM records WHERE kernel_version <> '' AND (category = 'PCI PTS' OR category LIKE 'EMV L1%')")) {
+        try { if (this.updateRecord(r.id, { kernel_version: r.kernel_version }, { source: 'upgrade', actor }).length) n++; } catch (_) { /* two PCI records of one version: leave them for the user */ }
+      }
+    });
+    return n;
+  }
+
   /** Tag every record whose device names a reader version (CL1, CL2...) with it. Returns how many changed. */
   tagReaders() {
     let n = 0;
@@ -582,6 +598,24 @@ class Store {
   }
 
   notifications(limit = 50) { return this.db.all('SELECT * FROM notifications ORDER BY id DESC LIMIT ?', [limit]); }
+}
+
+/**
+ * Keep each level's identity in its own field. PCI PTS is a single-digit version, never a kernel;
+ * EMV L1 is physical hardware (reader module, hardware and software versions), never a kernel.
+ * A version typed into an L1 record's kernel field moves to its hardware/software field.
+ */
+function levelFields(p, category, cur = {}) {
+  if (category === 'PCI PTS' && p.kernel_version) p.kernel_version = ptsVersion(p.kernel_version) || p.kernel_version;
+  if (/^EMV L1/.test(category || '')) {
+    const k = p.kernel_version !== undefined ? p.kernel_version : cur.kernel_version;
+    if (k) {
+      const hw = p.reader_hw_sw !== undefined ? p.reader_hw_sw : cur.reader_hw_sw;
+      if (!hw) p.reader_hw_sw = k;
+      p.kernel_version = '';
+    }
+  }
+  return p;
 }
 
 function sanitize(data) {
