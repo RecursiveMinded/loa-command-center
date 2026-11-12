@@ -276,7 +276,7 @@ const ISSUERS = {
       return out;
     },
     kernel: (t) => grab(t, /(?:EMV\s+Application\s+Kernel|Kernel):\s*(.+?)\s+(?:Approval|The\s+EMV|$)/i, 0.8),
-    spec: (t) => grab(t, /(?:Analogue|Digital)\s+Test\s+Cases:\s*(\S+)/i, 0.6),
+    spec: (t) => grab(t, /(?:Analogue|Digital|Electrical\s*(?:&|and)\s*Mechanical|Protocol)\s+Test\s+Cases:\s*(\S+)/i, 0.6),
     dates: (t, base) => {
       const issue = dateAfter(t, /(?<!(?:Expiry|Renewal|Expiration|Effective|Issue|Approval)\s)\bDate:/i, 40, 0.9) || base.letterDate;
       let expiry = dateAfter(t, /Renewal\s+Date\s*:?/i) || dateAfter(t, /Expiry\s+Date\s*:?/i);
@@ -488,6 +488,32 @@ const ISSUERS = {
   },
 };
 
+// An L1 approval is for a reader module: the IFM (contact, ISO 7816) or the PCD
+// (contactless antenna, ISO 14443), named with its hardware and software builds.
+// EMVCo prints them as "IFM Identification: T3IFM1PP1  Version: V1.0",
+// "Hardware: T3IFM1PP1 HW  Version: V01.01", "Software: T3IFM1 SW  Version: V01.04";
+// the versions sometimes come out as a column of their own after the names.
+const digitsOf = (v) => String(v || '').replace(/\D/g, '');
+const L1_STOP = '(?=[ \\t]+(?:Version|Hardware|Software|As\\s+tested|Electrical|Protocol|Analogue|Digital|Renewal|Approval)\\b|[ \\t]*\\n|[ \\t]*$)';
+function labelled(t, label) {
+  const m = t.match(new RegExp(`${label}\\s*:[ \\t]*(\\S[^\\n]*?)${L1_STOP}([ \\t]+Version\\s*:?[ \\t]*(V?\\d[\\w.]*))?`, 'i'));
+  return m ? { name: clean(m[1]), ver: m[3] || '', ev: clean(m[0]) } : null;
+}
+function l1Reader(t) {
+  const id = labelled(t, '(?:IFM|PCD)\\s+Identification');
+  if (!id) return {};
+  const hw = labelled(t, 'Hardware'), sw = labelled(t, 'Software');
+  const parts = [id, hw, sw].filter(Boolean);
+  if (parts.every((p) => !p.ver)) {
+    const loose = [...t.matchAll(/Version\s*:?[ \t]*(V?\d[\w.]*)/gi)].map((m) => m[1]);
+    parts.forEach((p, i) => { p.ver = loose[i] || ''; });
+  }
+  const v = (p) => `${p.name}${p.ver ? ` ${p.ver}` : ''}`;
+  const out = { readerId: field(v(id), id.ev, 0.85) };
+  if (hw || sw) out.readerHwSw = field([hw, sw].filter(Boolean).map(v).join(' · '), [hw, sw].filter(Boolean).map((p) => p.ev).join(' '), 0.8);
+  return out;
+}
+
 // An L2 approval is for one kernel build, so its identity matters: name,
 // version, checksum and the entry point it was tested with. Brands print it
 // under many labels; the first one found wins.
@@ -617,9 +643,15 @@ function parseLetter(seg) {
       expiryDate: g.expiry, expiryBasis: g.expiry ? 'Date found near an expiry label' : '', l1Reference: null,
     };
   }
-  // Kernel versions belong to L2 approvals only.
-  if (/^EMV L2/.test(r.category)) r.kernelVersion = l2Kernel(t, r.kernelVersion) || l2Kernel(t.replace(/[ \t]*\n[ \t]*/g, ' '), null);
-  else if (/^EMV L1/.test(r.category)) r.kernelVersion = null;
+  // Kernel versions belong to L2 approvals only. L1 is physical hardware: the reader module.
+  if (/^EMV L2/.test(r.category)) {
+    r.kernelVersion = l2Kernel(t, r.kernelVersion) || l2Kernel(t.replace(/[ \t]*\n[ \t]*/g, ' '), null);
+    const app = grab(t, /App(?:lication)?\s+Version\s*:?[ \t]*(\d[\d.]{2,})/i, 0.7);
+    if (app && (!r.kernelVersion || digitsOf(app.value) !== digitsOf(r.kernelVersion.value))) r.appVersion = app;
+  } else if (/^EMV L1/.test(r.category)) {
+    r.kernelVersion = null;
+    Object.assign(r, l1Reader(t));
+  }
   r.restricted = restrictedFlag(t);
   r.renewalType = /restricted\s+renewal/i.test(t) ? 'Restricted Renewal' : /[-–]\s*Renewal\b/i.test(t) ? 'Renewal' : 'Initial';
   r.type = seg.type;

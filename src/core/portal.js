@@ -106,7 +106,7 @@ function tablesToRecords(tables, ctx = {}) {
         const w = isWaiverCell(cells[spec.exp]);
         const v = (cells[spec.version] || '').replace(STRUCK, '').trim();
         if (!d && !v) continue;
-        out.push({ ...base, device, category: 'PCI PTS', scheme: 'PCI SSC', kernel_version: v, portal_date: d, expiry_date: d, ...(w ? { restriction: 'waiver' } : {}) });
+        out.push({ ...base, device, category: 'PCI PTS', scheme: 'PCI SSC', kernel_version: require('./taxonomy').ptsVersion(v) || v, portal_date: d, expiry_date: d, ...(w ? { restriction: 'waiver' } : {}) });
       }
     }
   }

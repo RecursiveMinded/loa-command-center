@@ -420,8 +420,12 @@ function Review({ it, app, threshold, readOnly, selected, onSelect, onDone }) {
         <${Fact} k="Approval number" v=${val(L.approvalNumber)} ev=${L.approvalNumber && L.approvalNumber.evidence} optional />
         <${Fact} k="Issued" v=${fmtDate(val(L.issueDate))} ev=${L.issueDate && L.issueDate.evidence} optional />
         <${Fact} k="Expires" v=${fmtDate(val(L.expiryDate))} ev=${L.expiryBasis || (L.expiryDate && L.expiryDate.evidence)} />
-        ${val(L.kernelVersion) ? html`<${Fact} k="Kernel / version" v=${val(L.kernelVersion)} ev=${L.kernelVersion.evidence} />`
+        ${val(L.kernelVersion) ? html`<${Fact} k=${L.category === 'PCI PTS' ? 'PTS version' : /^EMV L2/.test(L.category || '') ? 'Kernel version' : 'Kernel / version'} v=${val(L.kernelVersion)} ev=${L.kernelVersion.evidence} />`
           : /^EMV L2/.test(L.category || '') && !L.informational ? html`<${Fact} k="Kernel / version" v="" ev="Not read from the letter: tell me below" />` : null}
+        ${val(L.readerId) ? html`<${Fact} k="Reader module" v=${val(L.readerId)} ev=${L.readerId.evidence} />` : null}
+        ${val(L.readerHwSw) ? html`<${Fact} k="Hardware / software" v=${val(L.readerHwSw)} ev=${L.readerHwSw.evidence} optional />` : null}
+        ${val(L.appVersion) ? html`<${Fact} k="Application version" v=${val(L.appVersion)} ev=${L.appVersion.evidence} optional />` : null}
+        ${val(L.specVersion) && /^EMV L1/.test(L.category || '') ? html`<${Fact} k="Test cases" v=${val(L.specVersion)} ev=${L.specVersion.evidence} optional />` : null}
         ${L.restricted ? html`<${Fact} k="Restriction" v="Restricted / final extension" />` : null}
       </div>
       ${it.kernelFit !== undefined ? html`<${KernelFit} it=${it} readOnly=${readOnly} onDone=${onDone} />` : null}

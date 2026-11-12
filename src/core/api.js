@@ -15,6 +15,7 @@ const { LocalAI } = require('./ai');
 const { todayIso, addDays } = require('./dates');
 const { daysRemaining, effectiveStage, health, windowFor, coverage } = require('./lifecycle');
 const taxonomy = require('./taxonomy');
+const { ptsVersion } = taxonomy;
 const { sampleRecords } = require('./sample');
 const schedule = require('./schedule');
 
@@ -95,6 +96,7 @@ class AppApi {
     return { version: VERSION, dataDir: this.dataDir, archiveDir: this.archiveDir, backupDir: this.backupDir, taxonomy: {
       categories: taxonomy.CATEGORIES, schemes: taxonomy.SCHEMES, stages: taxonomy.STAGES,
       dispositions: taxonomy.DISPOSITIONS, portalStatuses: taxonomy.PORTAL_STATUSES, renewalPaths: taxonomy.RENEWAL_PATHS,
+      ptsVersions: taxonomy.PTS_VERSIONS, clessKernels: taxonomy.CLESS_KERNELS,
     } };
   }
 
@@ -130,7 +132,16 @@ class AppApi {
       documents: this.store.documentsFor(id).map(({ stored_path: p, ...d }) => ({ ...d, missing: !p || !fs.existsSync(p) })),
       audit: this.store.auditLog({ recordId: id, limit: 200 }),
       coverage: replacement ? coverage(r.expiry_date || (current && current.expiry_date), replacement.issue_date) : null,
+      sameReader: this.sameReader(r),
     };
+  }
+
+  /** Other L1 records on the same reader module (IFM or PCD): they rest on the same hardware approval. */
+  sameReader(r) {
+    const k = (v) => String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (!/^EMV L1/.test(r.category || '') || k(r.reader_id).length < 4) return [];
+    return this.store.listRecords().filter((x) => x.id !== r.id && !x.archived && x.category === r.category && k(x.reader_id) === k(r.reader_id))
+      .map((x) => ({ id: x.id, device: x.device, platform: x.platform, bundle: x.bundle, expiry_date: x.expiry_date }));
   }
 
   saveRecord(id, patch) {
@@ -1721,7 +1732,7 @@ class AppApi {
       if (same.length) hits = same;
     }
     if (hits.length > 1 && cat === 'PCI PTS' && c.kernel_version) {
-      const v = hits.filter((r) => n(r.kernel_version) === n(c.kernel_version));
+      const v = hits.filter((r) => ptsVersion(r.kernel_version) === ptsVersion(c.kernel_version));
       if (v.length) hits = v;
     }
     if (hits.length > 1) hits = [...hits].sort((a, b) => String(b.expiry_date || '').localeCompare(String(a.expiry_date || ''))).slice(0, 1);
@@ -1924,6 +1935,7 @@ class AppApi {
     this.store.tagReaders();
     this.store.migrateArchivedFlag();
     this.store.restoreL2Contact();
+    this.store.tidyLevelFields();
     this.store.unifyDeviceSpellings();
     // A new version may read letters better; refresh what is waiting for review.
     if (this.store.listInbox({ status: 'pending' }).length || this.store.listInbox({ status: 'info' }).length) this.intake.reread();

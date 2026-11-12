@@ -285,6 +285,16 @@ function inferPlace(device, records, norm, platformDevices) {
   return { fields: {}, note: '' };
 }
 
+/** What identifies the approval, as read from the letter: L1 reader module, test spec, L2 application version. */
+function identityOf(L) {
+  const out = {};
+  const put = (k, v) => { if (v) out[k] = v; };
+  if (/^EMV L1/.test(L.category || '')) { put('reader_id', val(L.readerId)); put('reader_hw_sw', val(L.readerHwSw)); }
+  if (/^EMV L[12]/.test(L.category || '')) put('spec_version', val(L.specVersion));
+  if (/^EMV L2/.test(L.category || '')) put('app_version', val(L.appVersion));
+  return out;
+}
+
 /** A new record built from a letter's details, for one device it names. */
 function letterRecord(letter, device, prod = {}) {
   return {
@@ -296,6 +306,7 @@ function letterRecord(letter, device, prod = {}) {
     expiry_date: prod.expiry || val(letter.expiryDate),
     expiry_basis: letter.expiryBasis || '',
     kernel_version: /^EMV L1/.test(letter.category) ? '' : prod.interface || val(letter.kernelVersion) || '',
+    ...identityOf(letter),
     restricted: !!letter.restricted,
     stage: letter.restricted ? 'Restricted Extension' : '',
   };
@@ -408,6 +419,7 @@ function proposalFor(r, score, L, { asOf, auditFor, pages }) {
     const changes = {};
     if (L.approval && !r.approval_number) changes.approval_number = { from: '', to: L.approval };
     if (L.issue && !r.issue_date) changes.issue_date = { from: '', to: L.issue };
+    for (const [k, v] of Object.entries(identityOf(L))) if (!r[k]) changes[k] = { from: '', to: v };
     return { ...base, action: 'attach', changes, warnings: kernelWarn, note: 'Matches the date already recorded' };
   }
   if (cur && L.expiry < cur) {
@@ -425,8 +437,16 @@ function proposalFor(r, score, L, { asOf, auditFor, pages }) {
   const newKernel = kv && r.kernel_version && /^EMV L2/.test(r.category) && kernelKey(kv) !== kernelKey(r.kernel_version);
   if (kv && (!r.kernel_version || newKernel)) changes.kernel_version = { from: r.kernel_version || '', to: kv };
   if (L.restricted && !r.restricted) changes.restricted = { from: false, to: true };
-
   const warnings = [...kernelWarn];
+  // L1 is physical hardware: a renewal keeps the same reader module. A different module or build
+  // is a hardware change (a new CL/CT version of the device), not a renewal of this one.
+  for (const [k, v] of Object.entries(identityOf(L))) {
+    if (!r[k]) { changes[k] = { from: '', to: v }; continue; }
+    if (String(r[k]).toUpperCase().replace(/[^A-Z0-9]/g, '') === String(v).toUpperCase().replace(/[^A-Z0-9]/g, '')) continue;
+    changes[k] = { from: r[k], to: v };
+    if (k === 'reader_id' || k === 'reader_hw_sw') warnings.push(`Different reader hardware: this L1 letter is for ${v}, the record has ${r[k]}. A changed reader module is a hardware change (a new CL or CT version of the device), not a renewal. Check it belongs to ${r.device}.`);
+  }
+
   // The catalog says this bundle runs the letter's kernel: the record's old kernel value was out of date.
   const runs = kv && kernelBundles(pages, r, kv).some((b) => b.key === bundleKey(r.platform, r.bundle));
   if (newKernel && !runs) warnings.push(`Different kernel: this letter approves ${kv}, the record has ${r.kernel_version}. Check that the new kernel replaces the old one and is not a second approval to track separately`);

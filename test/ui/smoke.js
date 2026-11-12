@@ -324,6 +324,17 @@ function pdfFromPages(pages) {
     await p.click('.drawer .typepick button:has-text("EMV Level 2")');
     await p.click('.drawer .typepick [aria-label="Interface"] button:has-text("Contactless")');
     check(await p.locator('.drawer .typepick [aria-label="Card brand"] button').count() === 7, 'approval type picker asks for the card brand on L2 contactless');
+    check(await p.locator('.drawer label:has-text("Application version")').count() === 1, 'L2 asks for the kernel and application versions');
+    await p.click('.drawer .typepick button:has-text("EMV Level 1")');
+    check(await p.locator('.drawer label:has-text("Reader module")').count() === 1 && await p.locator('.drawer label:has-text("Kernel version")').count() === 0, 'L1 asks for the reader module, never a kernel');
+    if (process.env.LOA_SHOTS) await p.locator('.drawer').screenshot({ path: path.join(process.env.LOA_SHOTS, 'l1-reader-fields.png') });
+    await p.click('.drawer .typepick button:has-text("PCI PTS")');
+    check(await p.locator('.drawer select[aria-label="PTS version"]').count() === 1, 'PCI asks for a one-digit PTS version');
+    await p.click('.drawer .typepick >> text=What do the levels mean?');
+    await p.waitForSelector('.modal .levels-guide', { timeout: 5000 });
+    if (process.env.LOA_SHOTS) await p.locator('.modal').screenshot({ path: path.join(process.env.LOA_SHOTS, 'levels-guide.png') });
+    check(await p.locator('.modal .levels-guide tbody tr').count() === 7, 'the levels guide explains PCI, L1, TQM, L2 and L3');
+    await p.click('.modal button[aria-label="Close"]');
     await p.click('.drawer >> text=Close');
     await p.click('.drawer[aria-label] button[aria-label="Close"]');
     await p.waitForSelector('.drawer', { state: 'detached', timeout: 5000 });

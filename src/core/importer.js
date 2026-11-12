@@ -5,7 +5,7 @@
 // older one; those cases are reported as conflicts instead.
 
 const { parseDate } = require('./dates');
-const { normalizeCategory, normalizeScheme } = require('./taxonomy');
+const { normalizeCategory, normalizeScheme, ptsVersion } = require('./taxonomy');
 
 const COLUMNS = {
   platform: ['platform', 'program', 'product line', 'solution', 'software', 'os platform'],
@@ -219,7 +219,7 @@ function looseMatch(store, c, index) {
   const cat = normalizeCategory(c.category), sch = normalizeScheme(c.scheme).toLowerCase();
   const fits = (a, b) => !n(a) || !n(b) || n(a) === n(b);
   const hits = (index.get(`${n(c.device)}|${cat}|${sch}`) || []).filter((r) => fits(r.platform, c.platform) && fits(r.bundle, c.bundle)
-    && (cat !== 'PCI PTS' || fits(r.kernel_version, c.kernel_version)));
+    && (cat !== 'PCI PTS' || fits(ptsVersion(r.kernel_version), ptsVersion(c.kernel_version))));
   return hits.length === 1 ? hits[0] : null;
 }
 

@@ -76,6 +76,27 @@ function dataChecks(records, { norm = defaultNorm, pages = {} } = {}) {
     'The same approval number carries different expiry dates on different records. One of them is out of date.', 'Open them together and apply the latest LOA to all.',
     clash);
 
+  // An L1 approval belongs to the reader module (IFM or PCD), not the terminal around it. Devices built
+  // on the same module share it, so the same module showing different expiry dates means one is out of date.
+  const byReader = new Map();
+  for (const r of live) {
+    const id = String(r.reader_id || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (!/^EMV L1/.test(r.category) || id.length < 4 || !r.expiry_date || isEol(r)) continue;
+    const k = `${r.category}|${id}`;
+    if (!byReader.has(k)) byReader.set(k, []);
+    byReader.get(k).push(r);
+  }
+  add('reader-dates', 'medium', (n) => `${n} L1 records share a reader module but disagree on its expiry`,
+    'EMV Level 1 certifies the reader module (IFM for contact, PCD for contactless). Devices built on the same module rest on the same L1 approval, so their dates should match. One of them has probably missed a renewal.',
+    'Open them together; drop the newest L1 LOA for that module in the inbox and apply it to each device, or add the devices to the LOA\'s "also certifies" list.',
+    [...byReader.values()].filter((list) => new Set(list.map((r) => r.expiry_date)).size > 1).flat());
+
+  // PCI PTS is tracked by its single-digit version; each version has its own end date set by PCI SSC.
+  add('pci-no-version', 'low', (n) => `${n} PCI PTS approval${n === 1 ? ' has' : 's have'} no PTS version`,
+    'A PCI PTS approval is identified by the PTS POI version the device was approved under (v4, v5, v6, v7). Every version has its own end date, so without it the approval cannot be planned.',
+    'Open the PCI letter or the PCI SSC listing and set the version (one digit, e.g. v6).',
+    live.filter((r) => r.category === 'PCI PTS' && !isEol(r) && !String(r.kernel_version || '').trim()));
+
   // Device names that look like typos of each other (same model number).
   const names = new Map();
   for (const r of live) { const k = norm(r.device); if (!names.has(k)) names.set(k, []); names.get(k).push(r); }

@@ -1535,3 +1535,45 @@ test('team email: updates become decisions, open points become questions, and a 
   assert.equal(api.listTeamEmails({ status: 'done' }).length, 1);
   assert.ok(b);
 });
+
+test('levels: PCI is a one-digit PTS version, L1 is reader hardware (no kernel), L2 keeps its kernel', async () => {
+  const { api } = await fresh();
+  const pci = api.saveRecord(null, { device: 'NX100', category: 'PCI PTS', scheme: 'PCI SSC', kernel_version: 'PTS POI v6.1', expiry_date: '2031-04-30' }).record;
+  assert.equal(pci.kernel_version, 'v6');
+  const l1 = api.saveRecord(null, { device: 'NX100', category: 'EMV L1 Contact', scheme: 'EMVCo', kernel_version: 'HW V01.01', expiry_date: '2028-07-12' }).record;
+  assert.equal(l1.kernel_version, '', 'an L1 approval never carries a kernel');
+  assert.equal(l1.reader_hw_sw, 'HW V01.01', 'what was typed moves to the hardware field');
+  const l2 = api.saveRecord(null, { device: 'NX100', category: 'EMV L2 Contactless', scheme: 'Visa', kernel_version: '0202', app_version: '002.00.005', expiry_date: '2028-01-01' }).record;
+  assert.equal(l2.kernel_version, '0202');
+  assert.equal(l2.app_version, '002.00.005');
+});
+
+test('levels: an L1 letter fills the reader module; devices on one module with different dates are flagged', async () => {
+  const { api } = await fresh();
+  const letter = `March 4, 2024
+
+Re: EMVCo Letter of Approval - Contact Terminal Level 1 - Renewal
+
+Approval Number: 15204 0816 430 43a 43a LABX
+IFM Identification: NWIFM1PP1 Version: V1.0
+Hardware: NWIFM1PP1 HW Version: V01.01
+Software: NWIFM1 SW Version: V01.04
+As tested in: NX700 Version n/a
+Electrical & Mechanical Test Cases: 4.3d Protocol Test Cases: 4.3d
+Renewal Date: July 12, 2028
+
+Dear Pat, EMVCo has reviewed the test results.`;
+  const { parseDocument } = require('../src/core/loa-parser');
+  const p = parseDocument([letter])[0];
+  assert.equal(p.category, 'EMV L1 Contact');
+  assert.equal(p.kernelVersion, null);
+  assert.equal(p.readerId.value, 'NWIFM1PP1 V1.0');
+  assert.equal(p.readerHwSw.value, 'NWIFM1PP1 HW V01.01 · NWIFM1 SW V01.04');
+  assert.equal(p.specVersion.value, '4.3d');
+
+  const a = api.saveRecord(null, { device: 'NX700', category: 'EMV L1 Contact', scheme: 'EMVCo', reader_id: 'NWIFM1PP1 V1.0', expiry_date: '2028-07-12' }).record;
+  const b = api.saveRecord(null, { device: 'NX750', category: 'EMV L1 Contact', scheme: 'EMVCo', reader_id: 'NWIFM1PP1 v1.0', expiry_date: '2025-07-12' }).record;
+  assert.deepEqual(api.getRecord(a.id).sameReader.map((x) => x.device), ['NX750']);
+  const check = api.dataChecks().find((c) => c.key === 'reader-dates');
+  assert.ok(check && check.recordIds.includes(a.id) && check.recordIds.includes(b.id));
+});
