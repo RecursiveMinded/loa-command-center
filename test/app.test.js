@@ -1577,3 +1577,19 @@ Dear Pat, EMVCo has reviewed the test results.`;
   const check = api.dataChecks().find((c) => c.key === 'reader-dates');
   assert.ok(check && check.recordIds.includes(a.id) && check.recordIds.includes(b.id));
 });
+
+test('letter templates: a template saved before any box is drawn is kept until removed', async () => {
+  const { api } = await fresh();
+  api.saveLetterTemplate('pci', { regions: [], sample: { name: 'pci-sample.pdf', pages: [], words: [] } });
+  let t = api.listLetterTemplates().types.find((x) => x.key === 'pci').template;
+  assert.ok(t, 'a blank template with its sample is saved');
+  assert.equal(t.regions.length, 0);
+  assert.equal(t.sample.name, 'pci-sample.pdf');
+  api.saveLetterTemplate('pci', { regions: [] });
+  t = api.listLetterTemplates().types.find((x) => x.key === 'pci').template;
+  assert.equal(t && t.sample.name, 'pci-sample.pdf', 'saving again without boxes keeps the sample');
+  api.saveLetterTemplate('l1c', { regions: [] });
+  assert.ok(api.listLetterTemplates().types.find((x) => x.key === 'l1c').template, 'a placeholder with no sample is kept too');
+  api.removeLetterTemplate('pci');
+  assert.equal(api.listLetterTemplates().types.find((x) => x.key === 'pci').template, null);
+});

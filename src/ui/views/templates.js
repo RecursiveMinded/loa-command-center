@@ -78,7 +78,7 @@ export function LetterTemplates() {
     setBusy('Saving…');
     try {
       await call('saveLetterTemplate', cur.key, { regions, sample });
-      toast(`${cur.label}: template saved. New letters of this type are read from these boxes; press Re-read in the LOA inbox for ones waiting.`, 'ok');
+      toast(regions.length ? `${cur.label}: template saved. New letters of this type are read from these boxes; press Re-read in the LOA inbox for ones waiting.` : `${cur.label}: saved with its sample LOA. Draw the boxes whenever you are ready; nothing is read from it until then.`, 'ok');
       setDirty(false); reload();
     } catch (e) { toastError(e); } finally { setBusy(''); }
   };
@@ -95,7 +95,8 @@ export function LetterTemplates() {
     <div class="card tpl-types">
       <div class="hd"><h3>Letter types</h3></div>
       ${types.map((t) => html`<button class=${`tpl-type ${t.key === cur.key ? 'on' : ''}`} onClick=${() => { if (!dirty || confirm('Discard the boxes you have not saved?')) setType(t.key); }}>
-        <span class="grow">${t.label}</span>${t.template ? html`<span class="pill good" title=${`Saved ${fmtWhen(t.template.savedAt)}`}>${plural(t.template.regions.length, 'box', 'boxes')}</span>` : html`<span class="faint small">not mapped</span>`}</button>`)}
+        <span class="grow">${t.label}</span>${t.template && t.template.regions.length ? html`<span class="pill good" title=${`Saved ${fmtWhen(t.template.savedAt)}`}>${plural(t.template.regions.length, 'box', 'boxes')}</span>`
+          : t.template ? html`<span class="pill warning" title=${`Saved ${fmtWhen(t.template.savedAt)}`}>saved, no boxes yet</span>` : html`<span class="faint small">not mapped</span>`}</button>`)}
       <p class="faint small" style="padding:8px 16px;margin:0">LOAs for other card brands are archived, so they need no template.</p>
       <div class="hd"><h3>Kernel labels learned</h3></div>
       ${data.kernelLabels.length ? data.kernelLabels.map((x) => html`<div class="row" style="padding:4px 16px"><span class="grow small"><b>${x.label}</b>${x.scheme ? html` <span class="faint">· ${x.scheme}</span>` : null}</span>
@@ -107,7 +108,7 @@ export function LetterTemplates() {
         <input type="file" ref=${file} class="hidden" accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp" onChange=${load} />
         <button class="btn" disabled=${!!busy} onClick=${() => file.current.click()}><${Icon} name="upload" /> ${sample ? 'Use another sample' : 'Open a sample LOA'}</button>
         ${cur.template ? html`<button class="btn ghost" onClick=${remove}><${Icon} name="trash" /> Remove</button>` : null}
-        <button class="btn primary" disabled=${!!busy || !dirty} onClick=${save}><${Icon} name="check" /> Save template</button></div>
+        <button class="btn primary" disabled=${!!busy || (!dirty && !!cur.template)} onClick=${save}><${Icon} name="check" /> Save template</button></div>
       <p class="muted small">Open one ${cur.label} letter, pick a value below, then drag a box around where it is printed. Boxes are kept as positions on the page, so letters scanned at another size still line up. The box text and the value it gives are shown underneath.</p>
       ${guess ? html`<div class="callout warn">This sample looks like ${(types.find((t) => t.key === guess) || {}).label}. <a onClick=${() => { const s = sample; setType(guess); setTimeout(() => { setSample(s); setDirty(true); }, 0); }}>Map it there instead</a></div>` : null}
       <div class="row wrap mt">${fields.map((f) => html`<button class=${`chip ${f.key === field ? 'on' : ''}`} onClick=${() => setField(f.key)}>
