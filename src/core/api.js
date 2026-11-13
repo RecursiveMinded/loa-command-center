@@ -29,6 +29,8 @@ const VERSION = require('../../package.json').version;
 function currentFamilies(letters, device, n) {
   return require('./validity').lettersFor(device, letters, n, { iface: 'contact' })[0] || null;
 }
+// Marked by the end of life report (not by a person deciding a device is retired).
+const ASSUMED_EOL = /^Assumed end of life/i;
 function coveredDevices(r) { return String(r.covers || '').split(/[,;\n]/).map((x) => x.trim()).filter(Boolean); }
 
 const DEFAULT_BRANDS = ['Visa', 'Mastercard', 'Amex', 'Discover', 'UnionPay', 'JCB', 'Interac'];
@@ -226,6 +228,71 @@ class AppApi {
   setEol(ids, reason = 'Not renewing') {
     return this.store.bulkUpdate(ids || [], { eol: String(reason || '').trim() }, { source: 'manual' }).changed;
   }
+
+  // ------------------------------------------------- likely end of life
+  /**
+   * Certifications expired for a long time (default 1 year, settings.eolAfterDays)
+   * are most likely devices that are no longer supported. Grouped by device:
+   * "device" when every certification of the device has lapsed (end of life
+   * likely), "partial" when some are still valid (one approval not renewed,
+   * often an older kernel). Records already marked as assumed end of life are
+   * listed too, so the report stays complete after marking.
+   */
+  eolCandidates({ days } = {}) {
+    const minDays = Number(days || this.store.getSettings().eolAfterDays || 365);
+    const asOf = todayIso();
+    const cutoff = addDays(asOf, -minDays);
+    const recs = this.listRecords().filter((r) => !r.archived);
+    const n = this.store.norm();
+    const groups = new Map();
+    for (const r of recs) {
+      const assumed = ASSUMED_EOL.test(r.eol || '');
+      if (r.eol && !assumed) continue;
+      if (!r.expiry_date || r.expiry_date > cutoff) continue;
+      const k = `${n(r.device)}|${r.platform || ''}|${r.bundle || ''}`;
+      if (!groups.has(k)) groups.set(k, { device: r.device, platform: r.platform || '', bundle: r.bundle || '', records: [] });
+      groups.get(k).records.push(r);
+    }
+    const out = [];
+    for (const g of groups.values()) {
+      const mine = recs.filter((r) => n(r.device) === n(g.device) && (r.platform || '') === g.platform && (r.bundle || '') === g.bundle);
+      const valid = mine.filter((r) => !r.eol && (!r.expiry_date || r.expiry_date >= asOf));
+      const newest = mine.map((r) => r.expiry_date).filter(Boolean).sort().pop() || '';
+      out.push({
+        ...g,
+        kind: valid.length ? 'partial' : 'device',
+        stillValid: valid.map((r) => ({ id: r.id, category: r.category, scheme: r.scheme, expiry_date: r.expiry_date })),
+        newestExpiry: newest,
+        marked: g.records.every((r) => ASSUMED_EOL.test(r.eol || '')),
+        records: g.records.map((r) => ({ id: r.id, category: r.category, scheme: r.scheme, kernel_version: r.kernel_version || '', approval_number: r.approval_number || '',
+          expiry_date: r.expiry_date, daysExpired: -r.days, eol: r.eol || '', assumed: ASSUMED_EOL.test(r.eol || '') })),
+      });
+    }
+    out.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'device' ? -1 : 1) || String(a.newestExpiry).localeCompare(String(b.newestExpiry)) || a.device.localeCompare(b.device, undefined, { numeric: true }));
+    const count = (f) => out.filter(f).reduce((s, g) => s + g.records.length, 0);
+    return { days: minDays, cutoff, groups: out, toMark: count(() => true) - out.reduce((s, g) => s + g.records.filter((r) => r.assumed).length, 0), marked: out.reduce((s, g) => s + g.records.filter((r) => r.assumed).length, 0), devices: out.filter((g) => g.kind === 'device').length, partial: out.filter((g) => g.kind === 'partial').length };
+  }
+
+  /** Mark certifications as assumed end of life (after a backup). Undo with undoAssumedEol. */
+  markAssumedEol(ids, days) {
+    const d = Number(days || this.store.getSettings().eolAfterDays || 365);
+    const live = new Set(this.eolCandidates({ days: d }).groups.flatMap((g) => g.records.filter((r) => !r.assumed).map((r) => r.id)));
+    const pick = (ids || []).filter((id) => live.has(id));
+    if (!pick.length) return 0;
+    this.backup('before-assumed-eol');
+    const span = d % 365 === 0 ? `${d / 365} year${d === 365 ? '' : 's'}` : `${Math.round(d / 30.4)} months`;
+    return this.setEol(pick, `Assumed end of life: expired over ${span} (from the end of life report)`);
+  }
+
+  /** Track certifications marked as assumed end of life again (all of them, or the ids given). */
+  undoAssumedEol(ids) {
+    const all = this.listRecords().filter((r) => ASSUMED_EOL.test(r.eol || '')).map((r) => r.id);
+    const pick = ids && ids.length ? all.filter((id) => ids.includes(id)) : all;
+    return pick.length ? this.setEol(pick, '') : 0;
+  }
+
+  /** The end of life report as Excel. */
+  exportEolReport(days) { return require('./reports').eolWorkbook(this.eolCandidates({ days })); }
 
   // ----------------------------------------------------------------- archive
   listArchive(q = '') { return this.store.listArchive({ q }); }
@@ -2100,7 +2167,7 @@ const PUBLIC_METHODS = [
   'listArchive', 'archiveCount', 'expiredRecords', 'archiveExpired', 'restoreArchived', 'purgeArchived',
   'activateReplacement', 'deviceCoverage', 'deviceProfile', 'listBundles', 'bundleView', 'kernelCatalog', 'setKernelCatalog', 'removeKernelBundle', 'importKernelCatalog', 'readBundlePage', 'bundleDifferences', 'cleanBundle', 'bundleReport', 'checkRecord', 'listReaderGroups', 'setReaderGroup', 'listFamilyNotes', 'setCoverageNA', 'createMissing', 'createSlot', 'addCertWithLoa', 'listTags', 'knownDevices', 'listAliases', 'listLearned', 'forgetLearned', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'listPlatformDevices', 'setPlatformDevices', 'platformForDevice', 'devicesOnPlatform', 'applyPlatformDevices', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
   'ingestDocument', 'documentFile', 'listInbox', 'setInboxKernel', 'certQuestions', 'syncFromBundlePages', 'clCleanupPlan', 'applyClCleanup', 'removeKernelLabel', 'certStatus', 'readCertReply', 'applyCertReply', 'listLetterTemplates', 'saveLetterTemplate', 'removeLetterTemplate', 'previewLetterTemplate', 'sampleLetterType', 'platformReference', 'setBundleCount', 'allBundles', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
-  'documentText', 'deviceView', 'listValidityLetters', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'setEol', 'dataChecks', 'aiDataReview', 'briefingReport', 'exportL3Sheet', 'duplicateInfo', 'mapDuplicate', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
+  'documentText', 'deviceView', 'listValidityLetters', 'eolCandidates', 'markAssumedEol', 'undoAssumedEol', 'exportEolReport', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'setEol', 'dataChecks', 'aiDataReview', 'briefingReport', 'exportL3Sheet', 'duplicateInfo', 'mapDuplicate', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'heldChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
   'aiDraftEmail', 'addTeamEmail', 'listTeamEmails', 'answerTeamEmail', 'applyTeamEmail', 'closeTeamEmail', 'aiReadTeamEmail', 'backup', 'listBackups', 'restore', 'health',
 ];

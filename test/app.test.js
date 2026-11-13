@@ -1739,3 +1739,42 @@ test('validity letters in the app: kept without review, a newer one replaces the
   assert.equal(api.getRecord(dx4.id).validity.problems.length, 0);
   assert.equal(api.getRecord(dx4.id).validity.letters[0].interface, 'contactless');
 });
+
+test('end of life report: certifications expired a year or more, by device; marking is undoable', async () => {
+  const { api } = await fresh();
+  const t = todayIso();
+  const mk = (device, category, scheme, expiry, extra = {}) => api.store.createRecord({ device, category, scheme, platform: 'UPP', bundle: 'Bundle 1', expiry_date: expiry, ...extra });
+  // Old device: every certification lapsed long ago.
+  const a1 = mk('Old/100', 'EMV L1 Contact', 'EMVCo', addDays(t, -800));
+  const a2 = mk('Old/100', 'PCI PTS', 'PCI SSC', addDays(t, -400), { kernel_version: 'v4' });
+  // Live device with one old kernel approval never renewed.
+  const b1 = mk('Live/200', 'EMV L2 Contactless', 'Visa', addDays(t, -500), { kernel_version: '0301' });
+  mk('Live/200', 'EMV L1 Contact', 'EMVCo', addDays(t, 300));
+  // Expired recently: not yet a year.
+  mk('Recent/300', 'EMV L1 Contact', 'EMVCo', addDays(t, -100));
+  // Already decided by a person: left alone.
+  mk('Done/400', 'EMV L1 Contact', 'EMVCo', addDays(t, -900), { eol: 'Not renewing' });
+
+  let rep = api.eolCandidates();
+  assert.equal(rep.days, 365);
+  assert.deepEqual(rep.groups.map((g) => [g.device, g.kind]), [['Old/100', 'device'], ['Live/200', 'partial']]);
+  assert.equal(rep.toMark, 3);
+  assert.deepEqual(rep.groups[1].stillValid.map((v) => v.category), ['EMV L1 Contact']);
+  assert.deepEqual(api.eolCandidates({ days: 730 }).groups.map((g) => g.device), ['Old/100'], 'the threshold can be 2 years');
+
+  assert.equal(api.markAssumedEol([a1.id, a2.id, b1.id]), 3);
+  assert.match(api.getRecord(a1.id).record.eol, /^Assumed end of life: expired over 1 year/);
+  rep = api.eolCandidates();
+  assert.equal(rep.toMark, 0);
+  assert.equal(rep.marked, 3, 'marked certifications stay in the report');
+  assert.equal(rep.groups[0].marked, true);
+  const buf = await api.exportEolReport();
+  const ExcelJS = require('exceljs');
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buf);
+  assert.equal(wb.getWorksheet('Likely end of life').rowCount, 4);
+  assert.equal(api.markAssumedEol([a1.id]), 0, 'already marked');
+  assert.equal(api.undoAssumedEol(), 3);
+  assert.equal(api.getRecord(a1.id).record.eol, '');
+  assert.equal(api.listRecords().find((r) => r.device === 'Done/400').eol, 'Not renewing', 'a person\'s decision is never undone');
+});

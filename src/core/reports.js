@@ -364,6 +364,44 @@ async function exportL3Sheet(cov, { asOf = todayIso() } = {}) {
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
+/** End of life report: certifications expired over the threshold, by device. */
+async function eolWorkbook(rep, { asOf = todayIso() } = {}) {
+  const ExcelJS = require('exceljs');
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'LOA Command Center';
+  wb.created = new Date();
+  const ws = wb.addWorksheet('Likely end of life', { views: [{ state: 'frozen', ySplit: 1, xSplit: 3 }] });
+  ws.columns = [
+    { header: 'Platform', key: 'platform', width: 12 }, { header: 'Bundle', key: 'bundle', width: 14 }, { header: 'Device', key: 'device', width: 22 },
+    { header: 'Assessment', key: 'kind', width: 34 }, { header: 'Level', key: 'category', width: 20 }, { header: 'Brand', key: 'scheme', width: 14 },
+    { header: 'Kernel', key: 'kernel', width: 12 }, { header: 'Approval number', key: 'approval', width: 26 }, { header: 'Expired on', key: 'expiry', width: 12 },
+    { header: 'Years expired', key: 'years', width: 12 }, { header: "Device's newest expiry", key: 'newest', width: 18 },
+    { header: 'Still valid on this device', key: 'valid', width: 40 }, { header: 'Status', key: 'status', width: 34 },
+  ];
+  for (const g of rep.groups) {
+    for (const r of g.records) {
+      ws.addRow({ platform: g.platform, bundle: g.bundle, device: g.device,
+        kind: g.kind === 'device' ? 'Every certification lapsed: end of life likely' : 'Some certifications still valid: not renewed',
+        category: r.category, scheme: r.scheme, kernel: r.kernel_version, approval: r.approval_number, expiry: r.expiry_date,
+        years: Math.round((r.daysExpired / 365) * 10) / 10, newest: g.newestExpiry,
+        valid: g.stillValid.map((v) => `${v.scheme && v.scheme !== 'EMVCo' ? `${v.scheme} ` : ''}${v.category} (${v.expiry_date || 'no date'})`).join('; '),
+        status: r.assumed ? 'Marked end of life (assumed)' : 'Not marked yet' });
+    }
+  }
+  ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF142F4C' } };
+  ws.autoFilter = { from: 'A1', to: { row: 1, column: ws.columns.length } };
+  const sum = wb.addWorksheet('Summary');
+  sum.columns = [{ header: 'Item', key: 'k', width: 46 }, { header: 'Value', key: 'v', width: 16 }];
+  sum.addRows([
+    { k: 'Report date', v: asOf }, { k: 'Expired at least (days)', v: rep.days }, { k: 'Expired on or before', v: rep.cutoff },
+    { k: 'Devices with every certification lapsed', v: rep.devices }, { k: 'Devices with some certifications still valid', v: rep.partial },
+    { k: 'Certifications not marked yet', v: rep.toMark }, { k: 'Certifications marked end of life (assumed)', v: rep.marked },
+  ]);
+  sum.getRow(1).font = { bold: true };
+  return Buffer.from(await wb.xlsx.writeBuffer());
+}
+
 // ---------------------------------------------------------------------------
 // Bundle report: the register laid out like the published kernel bundle page,
 // so the two can be compared side by side.
@@ -447,4 +485,4 @@ function digestEmail(dg, analysis, { settings = {} } = {}) {
   return lines.join('\n');
 }
 
-module.exports = { summaryReport, briefingReport, bundleReport, bundleWorkbook, exportL3Sheet, exportExcel, exportCsv, portalChanges, exportChangeRequest, digestEmail, timelineSvg, esc };
+module.exports = { eolWorkbook, summaryReport, briefingReport, bundleReport, bundleWorkbook, exportL3Sheet, exportExcel, exportCsv, portalChanges, exportChangeRequest, digestEmail, timelineSvg, esc };

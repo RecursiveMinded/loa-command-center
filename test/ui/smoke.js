@@ -292,6 +292,10 @@ function pdfFromPages(pages) {
     check(/Zeta/.test(await learnedCard.textContent()), 'family pick from a review card is listed as learned');
     const st = await p.evaluate(() => window.__loaSelfTest());
     check(st.ok, `PDF reader and OCR self test ${JSON.stringify(st)}`);
+    await p.click('nav >> text=Reports');
+    await p.click('.tabs button:has-text("End of life")');
+    await p.waitForSelector('.eol-report h3:has-text("Likely end of life")', { timeout: 10000 });
+    check(true, `Reports > End of life (${await p.locator('.eol-report tbody tr').count()} devices)`);
     await p.click('nav >> text=Today');
     await p.click('.card:has-text("Briefing") button:has-text("Export")');
     await p.waitForSelector('.modal .briefing-preview table', { timeout: 10000 });
