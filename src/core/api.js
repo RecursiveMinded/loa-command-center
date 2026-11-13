@@ -1456,6 +1456,7 @@ class AppApi {
     return all;
   }
 
+  /** Saves even before any box is drawn (a placeholder, with or without its sample), so it can be finished later. Only Remove deletes it. */
   saveLetterTemplate(key, { regions = [], sample = null } = {}) {
     const { LETTER_TYPES, FIELDS } = require('./templates');
     const type = LETTER_TYPES.find((t) => t.key === key);
@@ -1465,13 +1466,18 @@ class AppApi {
     const clean = regions.filter((r) => ok.has(r.field) && Number(r.w) > 0.002 && Number(r.h) > 0.002)
       .map((r) => ({ field: r.field, page: Math.max(0, Math.floor(Number(r.page) || 0)), x: clamp(r.x), y: clamp(r.y), w: clamp(r.w), h: clamp(r.h) }));
     const all = { ...(this.store.getSettings().letterTemplates || {}) };
-    if (!clean.length) delete all[key];
-    else all[key] = { label: type.label, regions: clean, sample: sample || (all[key] && all[key].sample) || null, savedAt: new Date().toISOString() };
+    const keepSample = sample || (all[key] && all[key].sample) || null;
+    all[key] = { label: type.label, regions: clean, sample: keepSample, savedAt: new Date().toISOString() };
     this.store.setSettings({ letterTemplates: all });
     return all[key] || null;
   }
 
-  removeLetterTemplate(key) { return this.saveLetterTemplate(key, { regions: [] }); }
+  removeLetterTemplate(key) {
+    const all = { ...(this.store.getSettings().letterTemplates || {}) };
+    delete all[key];
+    this.store.setSettings({ letterTemplates: all });
+    return null;
+  }
 
   /** What each region reads on a sample: [{ field, text, value }]. */
   previewLetterTemplate(regions = [], words = []) {

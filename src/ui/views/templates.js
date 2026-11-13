@@ -22,6 +22,10 @@ export function LetterTemplates() {
   const [busy, setBusy] = useState('');
   const [dirty, setDirty] = useState(false);
   const [guess, setGuess] = useState('');
+  // Every box change can be undone (button or Ctrl+Z) and redone (Ctrl+Y).
+  const [past, setPast] = useState([]);
+  const [future, setFuture] = useState([]);
+  const keys = useRef({});
   const file = useRef();
   const stage = useRef();
 
@@ -33,8 +37,19 @@ export function LetterTemplates() {
     const t = cur.template;
     setRegions(t ? t.regions : []);
     setSample(t && t.sample ? t.sample : null);
-    setPage(0); setDirty(false); setGuess('');
+    setPage(0); setDirty(false); setGuess(''); setPast([]); setFuture([]);
   }, [cur && cur.key, data]);
+  useEffect(() => {
+    const k = (e) => {
+      if (!(e.ctrlKey || e.metaKey) || /INPUT|TEXTAREA|SELECT/.test((e.target && e.target.tagName) || '')) return;
+      const key = e.key.toLowerCase();
+      const { undo, redo } = keys.current;
+      if (!undo) return;
+      if (key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); } else if (key === 'y' || (key === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
+    };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  });
   useEffect(() => {
     if (!sample || !regions.length) { setPreview([]); return; }
     call('previewLetterTemplate', regions, sample.words || []).then(setPreview).catch(() => setPreview([]));
@@ -42,6 +57,12 @@ export function LetterTemplates() {
 
   if (!data) return html`<div class="row"><${Spinner} /> Loading…</div>`;
   const fields = data.fields;
+  const change = (next) => { setPast([...past, regions]); setFuture([]); setRegions(next); setDirty(true); };
+  const undo = () => { if (!past.length) return; setFuture([regions, ...future]); setRegions(past[past.length - 1]); setPast(past.slice(0, -1)); setDirty(true); };
+  const redo = () => { if (!future.length) return; setPast([...past, regions]); setRegions(future[0]); setFuture(future.slice(1)); setDirty(true); };
+  keys.current = { undo, redo };
+  const removeBox = (r) => change(regions.filter((x) => x !== r));
+  const revert = () => { if (!cur.template) return; change(cur.template.regions || []); setDirty(false); };
   const flabel = (k) => (fields.find((f) => f.key === k) || {}).label || k;
 
   const load = async (e) => {
@@ -69,8 +90,7 @@ export function LetterTemplates() {
     setDrag(null);
     if (r.w < 0.01 || r.h < 0.005) return;
     // One box per field: drawing it again moves it.
-    setRegions([...regions.filter((x) => x.field !== field), r]);
-    setDirty(true);
+    change([...regions.filter((x) => x.field !== field), r]);
     const next = fields.find((f) => f.key !== field && !regions.some((x) => x.field === f.key));
     if (next) setField(next.key);
   };
@@ -78,7 +98,7 @@ export function LetterTemplates() {
     setBusy('Saving…');
     try {
       await call('saveLetterTemplate', cur.key, { regions, sample });
-      toast(`${cur.label}: template saved. New letters of this type are read from these boxes; press Re-read in the LOA inbox for ones waiting.`, 'ok');
+      toast(regions.length ? `${cur.label}: template saved. New letters of this type are read from these boxes; press Re-read in the LOA inbox for ones waiting.` : `${cur.label}: saved with its sample LOA. Draw the boxes whenever you are ready; nothing is read from it until then.`, 'ok');
       setDirty(false); reload();
     } catch (e) { toastError(e); } finally { setBusy(''); }
   };
@@ -87,7 +107,8 @@ export function LetterTemplates() {
     try { await call('removeLetterTemplate', cur.key); reload(); } catch (e) { toastError(e); }
   };
   const box = (r, i) => html`<div class="tpl-box" key=${i} style=${`left:${r.x * 100}%;top:${r.y * 100}%;width:${r.w * 100}%;height:${r.h * 100}%;border-color:${COLORS[r.field]};background:${COLORS[r.field]}22`}>
-    <span style=${`background:${COLORS[r.field]}`}>${flabel(r.field)}</span></div>`;
+    <span style=${`background:${COLORS[r.field]}`}>${flabel(r.field)}${i !== 'd' ? html`<button class="tpl-x" aria-label=${`Remove the ${flabel(r.field)} box`} title="Remove this box"
+      onMouseDown=${(e) => e.stopPropagation()} onClick=${(e) => { e.stopPropagation(); removeBox(r); }}>×</button>` : null}</span></div>`;
   const pv = (k) => preview.find((x) => x.field === k);
   const show = (k, v) => (v == null ? '' : Array.isArray(v) ? v.join(', ') : /^\d{4}-\d{2}-\d{2}$/.test(v) ? fmtDate(v) : String(v));
 
@@ -95,7 +116,8 @@ export function LetterTemplates() {
     <div class="card tpl-types">
       <div class="hd"><h3>Letter types</h3></div>
       ${types.map((t) => html`<button class=${`tpl-type ${t.key === cur.key ? 'on' : ''}`} onClick=${() => { if (!dirty || confirm('Discard the boxes you have not saved?')) setType(t.key); }}>
-        <span class="grow">${t.label}</span>${t.template ? html`<span class="pill good" title=${`Saved ${fmtWhen(t.template.savedAt)}`}>${plural(t.template.regions.length, 'box', 'boxes')}</span>` : html`<span class="faint small">not mapped</span>`}</button>`)}
+        <span class="grow">${t.label}</span>${t.template && t.template.regions.length ? html`<span class="pill good" title=${`Saved ${fmtWhen(t.template.savedAt)}`}>${plural(t.template.regions.length, 'box', 'boxes')}</span>`
+          : t.template ? html`<span class="pill warning" title=${`Saved ${fmtWhen(t.template.savedAt)}`}>saved, no boxes yet</span>` : html`<span class="faint small">not mapped</span>`}</button>`)}
       <p class="faint small" style="padding:8px 16px;margin:0">LOAs for other card brands are archived, so they need no template.</p>
       <div class="hd"><h3>Kernel labels learned</h3></div>
       ${data.kernelLabels.length ? data.kernelLabels.map((x) => html`<div class="row" style="padding:4px 16px"><span class="grow small"><b>${x.label}</b>${x.scheme ? html` <span class="faint">· ${x.scheme}</span>` : null}</span>
@@ -107,11 +129,17 @@ export function LetterTemplates() {
         <input type="file" ref=${file} class="hidden" accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp" onChange=${load} />
         <button class="btn" disabled=${!!busy} onClick=${() => file.current.click()}><${Icon} name="upload" /> ${sample ? 'Use another sample' : 'Open a sample LOA'}</button>
         ${cur.template ? html`<button class="btn ghost" onClick=${remove}><${Icon} name="trash" /> Remove</button>` : null}
-        <button class="btn primary" disabled=${!!busy || !dirty} onClick=${save}><${Icon} name="check" /> Save template</button></div>
+        <button class="btn primary" disabled=${!!busy || (!dirty && !!cur.template)} onClick=${save}><${Icon} name="check" /> Save template</button></div>
       <p class="muted small">Open one ${cur.label} letter, pick a value below, then drag a box around where it is printed. Boxes are kept as positions on the page, so letters scanned at another size still line up. The box text and the value it gives are shown underneath.</p>
       ${guess ? html`<div class="callout warn">This sample looks like ${(types.find((t) => t.key === guess) || {}).label}. <a onClick=${() => { const s = sample; setType(guess); setTimeout(() => { setSample(s); setDirty(true); }, 0); }}>Map it there instead</a></div>` : null}
       <div class="row wrap mt">${fields.map((f) => html`<button class=${`chip ${f.key === field ? 'on' : ''}`} onClick=${() => setField(f.key)}>
         <i class="sw" style=${`background:${COLORS[f.key]}`}></i>${f.label}${regions.some((r) => r.field === f.key) ? ' ✓' : ''}</button>`)}</div>
+      <div class="row wrap mt tpl-tools">
+        <button class="btn sm" disabled=${!past.length} onClick=${undo} title="Undo (Ctrl+Z)"><${Icon} name="undo" /> Undo</button>
+        <button class="btn sm" disabled=${!future.length} onClick=${redo} title="Redo (Ctrl+Y)"><${Icon} name="redo" /> Redo</button>
+        <button class="btn sm ghost" disabled=${!regions.length} onClick=${() => change([])}>Clear all boxes</button>
+        ${cur.template && dirty ? html`<button class="btn sm ghost" onClick=${revert}>Back to saved</button>` : null}
+        <span class="faint small">Click × on a box to remove it, or draw the same value again to move it.</span></div>
       ${busy ? html`<div class="row mt"><${Spinner} /> ${busy}</div>` : null}
       ${sample ? html`
         ${sample.pages.length > 1 ? html`<div class="tabs mt">${sample.pages.map((_, i) => html`<button class=${i === page ? 'on' : ''} onClick=${() => setPage(i)}>Page ${i + 1}</button>`)}</div>` : null}
@@ -125,7 +153,7 @@ export function LetterTemplates() {
       ${regions.length ? html`<table class="mt tpl-read"><thead><tr><th>Value</th><th>Page</th><th>Text in the box</th><th>Reads as</th><th></th></tr></thead>
         <tbody>${regions.map((r) => { const p = pv(r.field); return html`<tr><td><i class="sw" style=${`background:${COLORS[r.field]}`}></i> ${flabel(r.field)}</td><td>${r.page + 1}</td>
           <td class="small">${p ? p.text || html`<span class="faint">nothing in this box</span>` : '…'}</td><td><b>${p ? show(r.field, p.value) || html`<span class="bad">no ${r.field === 'device' ? 'device' : 'value'}</span>` : ''}</b></td>
-          <td><button class="btn ghost sm icon" aria-label="Remove box" onClick=${() => { setRegions(regions.filter((x) => x !== r)); setDirty(true); }}><${Icon} name="x" /></button></td></tr>`; })}</tbody></table>` : null}
+          <td><button class="btn ghost sm icon" aria-label="Remove box" onClick=${() => removeBox(r)}><${Icon} name="x" /></button></td></tr>`; })}</tbody></table>` : null}
     </div>
   </div>`;
 }

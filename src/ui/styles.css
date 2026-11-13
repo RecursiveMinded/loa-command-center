@@ -471,3 +471,6 @@ table.tpl-read .sw, .tpl .chip .sw { display: inline-block; width: 9px; height: 
 .warn-text { color: var(--warn); }
 .levels-guide { width: 100%; border-collapse: collapse; }
 .levels-guide th, .levels-guide td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--line, rgba(127,127,127,.25)); }
+.tpl-box .tpl-x { pointer-events: auto; margin-left: 4px; border: 0; background: rgba(0,0,0,.25); color: #fff; border-radius: 3px; cursor: pointer; font-size: 12px; line-height: 14px; padding: 0 4px; }
+.tpl-box .tpl-x:hover { background: rgba(0,0,0,.5); }
+.tpl-tools { gap: 6px; align-items: center; }

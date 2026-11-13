@@ -21,6 +21,8 @@ const P = {
   file: 'M7 3h7l5 5v13H7zM14 3v5h5',
   check: 'M5 12l5 5L20 7',
   x: 'M6 6l12 12M18 6L6 18',
+  undo: 'M9 14L4 9l5-5M4 9h10a6 6 0 010 12h-3',
+  redo: 'M15 14l5-5-5-5M20 9H10a6 6 0 000 12h3',
   clock: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3 2',
   warn: 'M12 3l10 18H2zM12 10v5M12 18v.5',
   plus: 'M12 5v14M5 12h14',
