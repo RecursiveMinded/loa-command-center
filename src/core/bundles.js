@@ -218,12 +218,12 @@ function kernelPages(settings = {}) {
     const ctx = p.ctx || {};
     const kernels = { ...(ctx.kernels || {}) };
     out[key] = { platform: p.platform, bundle: p.bundle, rows: p.rows || [], filename: p.filename, at: p.at,
-      ctx: { l2Contact: ctx.l2Contact || null, kernels, kernelIds: { ...(ctx.kernelIds || {}) } },
+      ctx: { l2Contact: ctx.l2Contact || null, kernels, kernelIds: { ...(ctx.kernelIds || {}) }, appVersions: { ...(ctx.appVersions || {}) } },
       source: Object.fromEntries([...Object.keys(kernels).map((b) => [b, 'page']), ...(ctx.l2Contact && ctx.l2Contact.version ? [['EMV Contact', 'page']] : [])]) };
   }
   for (const [key, c] of Object.entries(settings.kernelCatalog || {})) {
     if (!c) continue;
-    const o = out[key] || (out[key] = { platform: c.platform, bundle: c.bundle, rows: [], ctx: { l2Contact: null, kernels: {}, kernelIds: {} }, source: {} });
+    const o = out[key] || (out[key] = { platform: c.platform, bundle: c.bundle, rows: [], ctx: { l2Contact: null, kernels: {}, kernelIds: {}, appVersions: {} }, source: {} });
     if (c.l2Contact) { o.ctx.l2Contact = { ...(o.ctx.l2Contact || {}), version: c.l2Contact }; o.source['EMV Contact'] = 'catalog'; }
     for (const [b, v] of Object.entries(c.kernels || {})) {
       if (!String(v || '').trim()) continue;

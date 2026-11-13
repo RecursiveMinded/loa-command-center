@@ -16,6 +16,9 @@ const { todayIso, addDays } = require('./dates');
 const { daysRemaining, effectiveStage, health, windowFor, coverage } = require('./lifecycle');
 const taxonomy = require('./taxonomy');
 const { ptsVersion } = taxonomy;
+// Bump when the bundle page reader changes what it reads, so pages read before are flagged to read again.
+// 2: Discover ZIP kept apart from D-PAS; a "Kernel" column keeps every number (087300 0306).
+const PAGE_READER = 2;
 const { sampleRecords } = require('./sample');
 const schedule = require('./schedule');
 
@@ -485,7 +488,7 @@ class AppApi {
       out.push({
         key: g.key, platform: g.platform, bundle: g.bundle, records: g.records.length,
         dates: g.records.filter((r) => r.expiry_date && require('./bundles').cellOf(r, norm)).length,
-        page: page ? { filename: page.filename, at: page.at, dates: check.pageDates } : null,
+        page: page ? { filename: page.filename, at: page.at, dates: check.pageDates, stale: (page.reader || 1) < PAGE_READER } : null,
         issues: check ? summarizeCheck(check) : null, gap: !!g.gap && !g.records.length && !page,
         unnumbered: !/\d/.test(String(g.bundle || '')),
       });
@@ -549,7 +552,7 @@ class AppApi {
       sections, l2missing,
       l2contact: cell(view.l2contact), l2contactKernel: l2k, l2contactAlsoIn: l2k ? alsoIn('EMV L2 Contact', 'EMVCo', l2k) : [],
       brands: allBrands.map((b) => ({ ...b, kernel: kernels[b.key] || '', alsoIn: kernels[b.key] ? alsoIn('EMV L2 Contactless', b.label, kernels[b.key]) : [] })), dates: view.dates, duplicates: view.duplicates.length,
-      page: page ? { filename: page.filename, at: page.at, dates: check.pageDates, blanks: check.pageBlanks } : null,
+      page: page ? { filename: page.filename, at: page.at, dates: check.pageDates, blanks: check.pageBlanks, stale: (page.reader || 1) < PAGE_READER } : null,
       issues: check ? summarizeCheck(check) : null, missing,
     };
   }
@@ -713,7 +716,7 @@ class AppApi {
     const g = this.bundleGroups().get(key);
     const rows = parsed.records.map((r) => ({ device: r.device, category: r.category, scheme: r.scheme, kernel_version: r.kernel_version || '', expiry_date: r.expiry_date || null, ...(r.restriction ? { restriction: r.restriction } : {}) }));
     const pages = { ...(this.store.getSettings().bundlePages || {}) };
-    pages[key] = { filename, at: new Date().toISOString(), platform: g ? g.platform : ctx.platform, bundle: g ? g.bundle : ctx.bundle, ctx: { l2Contact: ctx.l2Contact || null, kernels: { ...(ctx.kernels || {}) }, kernelIds: ctx.kernelIds || {} }, rows };
+    pages[key] = { filename, at: new Date().toISOString(), platform: g ? g.platform : ctx.platform, bundle: g ? g.bundle : ctx.bundle, ctx: { l2Contact: ctx.l2Contact || null, kernels: { ...(ctx.kernels || {}) }, kernelIds: ctx.kernelIds || {}, appVersions: ctx.appVersions || {} }, reader: PAGE_READER, rows };
     this.store.setSettings({ bundlePages: pages });
     const sync = this.syncFromBundlePages();
     const g2 = this.bundleGroups().get(key) || g;
@@ -1220,12 +1223,24 @@ class AppApi {
           placed++;
         } catch (_) { /* would clash with another record: left for review */ }
       }
+      const { kernelIds } = require('./bundles');
+      const same = (a, b) => kernelIds(a).join(' ') === kernelIds(b).join(' ');
       for (const r of this.store.listRecords()) {
-        if (r.archived || r.kernel_version || !/^EMV L2/.test(r.category || '')) continue;
+        if (r.archived || !/^EMV L2/.test(r.category || '')) continue;
         const k = bundleKernel(kp, r);
         if (!k || !k.kernel) continue;
-        this.store.updateRecord(r.id, { kernel_version: k.kernel }, { source: 'bundle page' });
-        kernels++;
+        const app = ((k.page && k.page.ctx && k.page.ctx.appVersions) || {})[r.category === 'EMV L2 Contact' ? 'EMV Contact' : r.scheme] || '';
+        const patch = {};
+        if (!r.kernel_version) patch.kernel_version = k.kernel;
+        // A kernel the app filled in from a page earlier follows the page when it is read again (a person's entry is never touched).
+        else if (!same(r.kernel_version, k.kernel)) {
+          const last = this.store.auditLog({ recordId: r.id, limit: 200 }).find((a) => a.field === 'kernel_version');
+          if (last && last.source === 'bundle page') patch.kernel_version = k.kernel;
+        }
+        if (app && !r.app_version) patch.app_version = app;
+        if (!Object.keys(patch).length) continue;
+        this.store.updateRecord(r.id, patch, { source: 'bundle page' });
+        if (patch.kernel_version) kernels++;
       }
     });
     if (placed || kernels) this.store.setSettings({ lastPageSync: { at: new Date().toISOString(), placed, kernels } });
