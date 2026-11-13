@@ -30,7 +30,7 @@ function distance(a, b) {
  * Returns [{ key, severity: 'high'|'medium'|'low', title, detail, fix, recordIds }].
  * `records` are live (not archived) records.
  */
-function dataChecks(records, { norm = defaultNorm, pages = {} } = {}) {
+function dataChecks(records, { norm = defaultNorm, pages = {}, validity = [] } = {}) {
   const live = records.filter((r) => !r.archived);
   const out = [];
   const add = (key, severity, title, detail, fix, list) => {
@@ -51,6 +51,33 @@ function dataChecks(records, { norm = defaultNorm, pages = {} } = {}) {
       'Each bundle runs one kernel per card brand, and the same kernel often runs in several bundles. Without it, the app cannot tell which bundles an L2 LOA applies to.',
       'Open Bundles > Kernel catalog and fill in the kernel for these bundles and brands (or read the bundle\'s website page).',
       live.filter((r) => /^EMV L2/.test(r.category) && r.platform && r.bundle && !bundleKernel(pages, r)));
+  }
+
+  // Validity letters' fine print: a minimum contact kernel for some devices,
+  // and older contactless kernels that may not be certified on a newer generation.
+  if (validity.length) {
+    const V = require('./validity');
+    // The bundle's L2 Contact kernel must meet a letter's minimum for each device of the bundle.
+    const { bundleKernel } = require('./bundles');
+    const seen = new Set();
+    const below = [];
+    for (const r of live) {
+      const k = `${norm(r.device)}|${r.platform}|${r.bundle}`;
+      if (seen.has(k) || !r.platform || !r.bundle) continue;
+      seen.add(k);
+      const l2c = live.find((x) => x.category === 'EMV L2 Contact' && x.platform === r.platform && x.bundle === r.bundle && x.kernel_version);
+      const pk = bundleKernel(pages, { category: 'EMV L2 Contact', platform: r.platform, bundle: r.bundle });
+      const kernel = (l2c && l2c.kernel_version) || (pk && pk.kernel);
+      if (kernel && V.lettersFor(r.device, validity, norm, { iface: 'contact' }).some((L) => V.contactRuleBroken(L, r.device, kernel, norm))) below.push(r);
+    }
+    add('validity-contact-kernel', 'high', (n) => `${n} device${n === 1 ? ' is' : 's are'} in a bundle whose L2 Contact kernel the validity letter does not allow on ${n === 1 ? 'it' : 'them'}`,
+      'The manufacturer\'s contact validity letter lets one L2 Contact LoA cover the whole family, but some devices may only run a minimum kernel version or newer (for example 09.06). An older bundle runs an older contact kernel.',
+      'Check whether these devices really run in that bundle. If they do, the bundle\'s L2 Contact date does not cover them.',
+      below);
+    add('validity-next-gen', 'high', (n) => `${n} L2 Contactless approval${n === 1 ? ' is' : 's are'} for an older kernel that is not allowed on the newer product generation`,
+      'The validity letter\'s compatibility column lists older kernels for the older generation only: scheme rules do not allow certifying them on the newer generation.',
+      'Check the kernel on these records. The newer generation needs the newest kernel listed for the brand.',
+      live.filter((r) => r.category === 'EMV L2 Contactless' && r.kernel_version && V.lettersFor(r.device, validity, norm, { iface: 'contactless' }).some((L) => V.nextGenBroken(L, r.device, r.scheme, r.kernel_version, norm))));
   }
 
   // Dates that cannot be right.

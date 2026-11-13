@@ -30,16 +30,67 @@ export function ReportModal({ opts, onClose }) {
 export function Reports({ app, params }) {
   const [tab, setTab] = useState((params && params.tab) || 'summary');
   useEffect(() => { if (params && params.tab) setTab(params.tab); }, [params]);
-  const tabs = [['summary', 'Summary report'], ['portal', 'Website change request'], ['digest', 'Digest'], ['exports', 'Exports'], ['audit', 'Audit log'], ['imports', 'Imports']];
+  const tabs = [['summary', 'Summary report'], ['eol', 'End of life'], ['portal', 'Website change request'], ['digest', 'Digest'], ['exports', 'Exports'], ['audit', 'Audit log'], ['imports', 'Imports']];
   return html`
     <div class="page-head"><div><h1>Reports</h1><p>Share status with your team, keep the published portal in sync, and see every change.</p></div></div>
     <div class="tabs">${tabs.map(([k, l]) => html`<button class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${l}</button>`)}</div>
     ${tab === 'summary' ? html`<${ReportPreview} opts=${{}} />` : null}
+    ${tab === 'eol' ? html`<${EolReport} app=${app} />` : null}
     ${tab === 'portal' ? html`<${PortalChanges} app=${app} />` : null}
     ${tab === 'digest' ? html`<${Digest} app=${app} />` : null}
     ${tab === 'exports' ? html`<${Exports} />` : null}
     ${tab === 'audit' ? html`<${Audit} app=${app} />` : null}
     ${tab === 'imports' ? html`<${Imports} app=${app} />` : null}`;
+}
+
+/**
+ * Certifications expired for a year or more: most likely devices no longer
+ * supported. Review the list, mark them end of life (a backup is taken
+ * first, and it can be undone), and export the report.
+ */
+function EolReport({ app }) {
+  const [days, setDays] = useState((app.settings && app.settings.eolAfterDays) || 365);
+  const [rep, reload] = useLoad(() => call('eolCandidates', { days }), [app.version, days]);
+  const [off, setOff] = useState(new Set());
+  const [busy, setBusy] = useState(false);
+  if (!rep) return html`<${Spinner} />`;
+  const open = rep.groups.flatMap((g) => g.records.filter((r) => !r.assumed && !off.has(g.device + g.platform + g.bundle)).map((r) => r.id));
+  const toggle = (g) => { const k = g.device + g.platform + g.bundle; const n = new Set(off); if (n.has(k)) n.delete(k); else n.add(k); setOff(n); };
+  const pickDays = async (v) => { setDays(v); try { const ns = await call('setSettings', { eolAfterDays: v }); app.setSettings && app.setSettings(ns); } catch (e) { toastError(e); } };
+  const mark = async () => {
+    setBusy(true);
+    try { const n = await call('markAssumedEol', open, days); toast(`Marked ${plural(n, 'certification')} end of life. A backup was taken first.`, 'ok'); reload(); app.refresh(); } catch (e) { toastError(e); } finally { setBusy(false); }
+  };
+  const undo = async () => {
+    setBusy(true);
+    try { const n = await call('undoAssumedEol'); toast(`Tracking ${plural(n, 'certification')} again`, 'ok'); reload(); app.refresh(); } catch (e) { toastError(e); } finally { setBusy(false); }
+  };
+  const xl = async () => { try { await saveAs(`End of life report ${stamp()}.xlsx`, await call('exportEolReport', days), [{ name: 'Excel', extensions: ['xlsx'] }]); } catch (e) { toastError(e); } };
+  const span = days >= 365 ? plural(Math.round(days / 365), 'year') : `${Math.round(days / 30.4)} months`;
+  return html`<div class="card pad eol-report">
+    <div class="row between wrap"><div><h3>Likely end of life</h3>
+      <p class="muted small mt">Certifications expired ${span} or more ago usually belong to devices that are no longer supported. Marking them end of life stops them showing as gaps and actions; their dates are kept, and you can track them again at any time.</p></div>
+      <label class="field" style="min-width:160px">Expired at least<select value=${days} onChange=${(e) => pickDays(Number(e.target.value))}>
+        ${[[365, '1 year'], [548, '18 months'], [730, '2 years'], [1095, '3 years']].map(([v, l]) => html`<option value=${v}>${l}</option>`)}</select></label></div>
+    <div class="row wrap mt">
+      <span class="pill expired">${plural(rep.devices, 'device')} with every certification lapsed</span>
+      <span class="pill warning">${plural(rep.partial, 'device')} with some still valid</span>
+      <span class="pill info">${plural(rep.toMark, 'certification')} to mark</span>
+      ${rep.marked ? html`<span class="pill">${plural(rep.marked, 'certification')} marked already</span>` : null}</div>
+    <div class="row mt">
+      <button class="btn primary" disabled=${busy || !open.length} onClick=${mark}>${busy ? html`<${Spinner} />` : html`<${Icon} name="check" />`} Mark ${plural(open.length, 'certification')} end of life</button>
+      <button class="btn" onClick=${xl}><${Icon} name="download" /> Export report</button>
+      ${rep.marked ? html`<button class="btn ghost" disabled=${busy} onClick=${undo} title="Track every certification this report marked again">Undo marking (${rep.marked})</button>` : null}</div>
+    ${!rep.groups.length ? html`<div class="empty mt"><${Icon} name="check" /><h3>Nothing expired ${span} or more</h3></div>` : html`
+    <table class="mt"><thead><tr><th></th><th>Device</th><th>Platform · bundle</th><th>Assessment</th><th>Expired certifications</th><th>Newest expiry</th></tr></thead><tbody>
+      ${rep.groups.map((g) => { const k = g.device + g.platform + g.bundle; return html`<tr class=${g.marked ? 'faint' : ''}>
+        <td>${g.marked ? html`<span class="tag">Marked</span>` : html`<input type="checkbox" aria-label=${`Mark ${g.device}`} checked=${!off.has(k)} onChange=${() => toggle(g)} />`}</td>
+        <td><b>${g.device}</b></td><td class="small">${[g.platform, g.bundle].filter(Boolean).join(' · ') || '—'}</td>
+        <td class="small">${g.kind === 'device' ? html`<span class="bad-text">Every certification lapsed: end of life likely</span>` : html`<span class="warn-text">Still valid: ${g.stillValid.map((v) => (v.scheme && v.scheme !== 'EMVCo' ? v.scheme : v.category)).join(', ')}</span>`}</td>
+        <td class="small">${g.records.map((r) => html`<div><a href="#" onClick=${(e) => { e.preventDefault(); app.openRecord(r.id); }}>${r.scheme && r.scheme !== 'EMVCo' ? `${r.scheme} ` : ''}${r.category}${r.kernel_version ? ` ${r.kernel_version}` : ''}</a> <span class="faint">expired ${fmtDate(r.expiry_date)} (${Math.round(r.daysExpired / 36.5) / 10} y)</span>${r.assumed ? html` <span class="tag">EOL</span>` : null}</div>`)}</td>
+        <td class="small nowrap">${fmtDate(g.newestExpiry)}</td></tr>`; })}
+    </tbody></table>`}
+  </div>`;
 }
 
 function PortalChanges({ app }) {

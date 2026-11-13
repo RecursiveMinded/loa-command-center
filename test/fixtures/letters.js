@@ -128,4 +128,71 @@ Mastercard Contactless Kernel            NW.C2 version 100100
 
 Sincerely, Mastercard`;
 
-module.exports = { amex, discover, emvco, mastercard, pci, bulletin, bulletinTable, mastercardKernel };
+// Manufacturer validity letters (fictional "Nimbus" families).
+const validityContact = `                                                         Northwind Terminals
+                                                         1 Main Street, Springfield
+
+ Ref. /        NWT-000111-001                                  Springfield, 11 April 2024
+
+ Subject / EMV contact LoA validity on the Nimbus family of products
+
+To whom it may concern,
+
+The Nimbus Architecture enables the same binary to run on each Terminal model.
+I hereby certify that all hardware variants of the products of the Nimbus family are minor
+changes according to EMVCo Type Approval Bulletin N° 11 of June 2021. Therefore, EMVCo
+Letters of Approval for Northwind EMV contact kernels approved on a Nimbus terminal are
+valid on any other product of the Nimbus family1.
+
+Among others, the following products are covered by this letter:
+    - Nim/1000, Nim/2000, Nim/3000
+    - Cloud/500
+    - Rain/7000 with Tetra terminal
+
+Yours faithfully,
+
+Pat Doe
+Level 2 Certification Manager
+1 Only the kernel NW.EMV.Contact Version 09.06 and future versions can be used on
+configurations with Nim/1600 and Rain/8000
+`;
+
+const validityContactless = `                                                         Northwind Terminals
+
+Ref. /        NWT-000111-002                                  Springfield, 27 August 2026
+
+Subject / Contactless kernels compatibility on the NWX family of products
+
+To whom it may concern,
+
+I hereby certify that the behaviour of existing contactless kernels is not affected throughout
+the different models of the NWX platform, including the NWX Next-Gen products.
+
+In particular the kernels listed in kernel_list, run identically on the terminals listed in
+Product_list.
+
+Kernel_list:
+              Specification                   kernel                          Compatibility1
+         -    Mastercard MCL4.0 / 4.1         kernel PAYPASS_L2 04.04         NWX / NWX Next-Gen
+         -    MasterCard MCL3.1.4             kernel PAYPASS_L2 04.03         NWX
+         -    Visa payWave 2.2:               kernel 1234567890 versions 070000 and 070803
+         -    UPI QuickPass                   kernel Quickpass_L2_03.03       NWX / NWX Next-Gen
+         -    Discover D-PAS 1.0:             kernels 844557-0311 (and kernel ZIP 846004-0200)
+
+1 The compatibility is not due to any technical limitation. Old version of the kernels cannot be
+certified on NWX Next-Gen because of payment schemes regulations.
+
+\f
+Product_list :
+
+                      NWX                                                  NWX Next-Gen
+       -      NWX DX4000                                           -   NWX DX2
+       -      NWX DX8000                                           -   NWX DX8
+       -      NWX SX7000
+
+However, most of approvals are provided by product. You need to check with your contact if a
+particular couple {terminal, kernel version} is approved. We warn you to take care of the version
+of PCD for each product.
+`;
+
+module.exports = { amex, discover, emvco, mastercard, pci, bulletin, bulletinTable, mastercardKernel, validityContact, validityContactless };

@@ -430,7 +430,7 @@ function Review({ it, app, threshold, readOnly, selected, onSelect, onDone }) {
       </div>
       ${it.kernelFit !== undefined ? html`<${KernelFit} it=${it} readOnly=${readOnly} onDone=${onDone} />` : null}
       ${(L.warnings || []).map((w) => html`<div class="warnline"><${Icon} name="warn" />${w}</div>`)}
-      ${L.informational ? html`<div class="callout mt">${L.type === 'otherBrand' ? html`<b>Other card brand: archived.</b> ${L.scheme} is not one of the brands you track, so this LOA is kept in the archive and searchable but creates and changes no records.` : `Supporting document (${L.type || 'bulletin'}). It is kept in the archive and searchable, but does not change any dates.`}</div>` : null}
+      ${L.type === 'validity' && L.validity ? html`<${ValiditySummary} v=${L.validity} />` : L.informational ? html`<div class="callout mt">${L.type === 'otherBrand' ? html`<b>Other card brand: archived.</b> ${L.scheme} is not one of the brands you track, so this LOA is kept in the archive and searchable but creates and changes no records.` : `Supporting document (${L.type || 'bulletin'}). It is kept in the archive and searchable, but does not change any dates.`}</div>` : null}
       ${!it.proposals.length && !L.informational ? html`<div class="callout warn mt">No matching records for this letter's brand and approval type. Create the record below, import your tracker first, or add a device alias in Settings and press Re-match.</div>` : null}
       ${!it.proposals.length && !L.informational && !readOnly ? html`<${NewRecords} title="Create records from this letter" L=${L} names=${fresh.devices} edits=${fresh.edits} withFields
         onNames=${(devices) => setFresh({ ...fresh, devices })} onEdits=${(e) => setFresh({ ...fresh, edits: { ...fresh.edits, ...e } })} />` : null}
@@ -450,7 +450,29 @@ function Review({ it, app, threshold, readOnly, selected, onSelect, onDone }) {
   </div>`;
 }
 
-const DOC_TYPES = { otherBrand: 'Other card brand LOA (archived)', bulletin: 'Product configuration bulletin', loe: 'Letter of equivalency', tqm: 'TQM statement', pci: 'PCI PTS approval' };
+/** What a manufacturer validity letter says, and what the app does with it. */
+export function ValiditySummary({ v }) {
+  const groups = [...new Set(v.products.map((p) => p.group || ''))];
+  return html`<div class="callout mt validity">
+    <b>${v.family} ${v.interface} validity letter.</b> ${v.interface === 'contact'
+      ? 'An EMV L2 Contact LoA won on any model below is valid on every model below, so a sibling\'s L2 Contact LoA fills a device\'s gap on the Devices and Bundles screens.'
+      : 'The listed kernels run identically on every model below. This is evidence only: approvals stay per product, so it fills no gaps.'}
+    It has no expiry of its own and changes no dates. A newer letter for the same family replaces it.
+    <div class="vl-grid mt">
+      ${v.reference ? html`<span class="k">Reference</span><span>${v.reference}</span>` : null}
+      ${v.issued ? html`<span class="k">Dated</span><span>${fmtDate(v.issued)}</span>` : null}
+      ${v.basis ? html`<span class="k">Basis</span><span>${v.basis} (minor hardware changes)</span>` : null}
+      ${v.contactKernel ? html`<span class="k">Contact kernel</span><span>${v.contactKernel.name} ${v.contactKernel.version}</span>` : null}
+      <span class="k">Products (${v.products.length})</span><span>${groups.map((g) => html`<div>${g ? html`<b>${g}: </b>` : null}${v.products.filter((p) => (p.group || '') === g).map((p) => p.value + (p.condition ? ` (${p.condition})` : '')).join(', ')}</div>`)}${v.openList ? html`<div class="faint small">The letter says "among others": the list is not complete.</div>` : null}</span>
+    </div>
+    ${v.kernels && v.kernels.length ? html`<table class="mt small"><thead><tr><th>Brand</th><th>Specification</th><th>Kernel</th><th>Versions</th>${v.kernels.some((k) => k.nextGen != null) ? html`<th>Newer generation</th>` : null}</tr></thead><tbody>
+      ${v.kernels.map((k) => html`<tr><td>${k.brand}</td><td>${k.spec}</td><td>${k.name || '—'}</td><td>${k.versions.join(', ') || '—'}</td>${v.kernels.some((x) => x.nextGen != null) ? html`<td>${k.nextGen == null ? '' : k.nextGen ? 'Allowed' : html`<span class="bad-text">Older generation only</span>`}</td>` : null}</tr>`)}</tbody></table>` : null}
+    ${(v.restrictions || []).map((r) => html`<div class="warnline"><${Icon} name="warn" />Only ${r.kernel} ${r.minVersion} or newer may be used on ${r.devices.join(' and ')}.</div>`)}
+    ${v.perProduct ? html`<div class="warnline"><${Icon} name="warn" />The letter says approvals are given per product: check each terminal and kernel pair.${v.pcdCaveat ? ' The contactless reader (PCD) version matters too.' : ''}</div>` : null}
+  </div>`;
+}
+
+const DOC_TYPES = { validity: 'Validity letter', otherBrand: 'Other card brand LOA (archived)', bulletin: 'Product configuration bulletin', loe: 'Letter of equivalency', tqm: 'TQM statement', pci: 'PCI PTS approval' };
 function letterTitle(L) {
   if (L.type === 'otherBrand') return `${L.scheme || L.issuer || 'Other brand'} LOA (other card brand, archived)`;
   const kind = DOC_TYPES[L.type] || (L.informational ? 'Supporting document' : 'Letter of approval');

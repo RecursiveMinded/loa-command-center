@@ -292,6 +292,10 @@ function pdfFromPages(pages) {
     check(/Zeta/.test(await learnedCard.textContent()), 'family pick from a review card is listed as learned');
     const st = await p.evaluate(() => window.__loaSelfTest());
     check(st.ok, `PDF reader and OCR self test ${JSON.stringify(st)}`);
+    await p.click('nav >> text=Reports');
+    await p.click('.tabs button:has-text("End of life")');
+    await p.waitForSelector('.eol-report h3:has-text("Likely end of life")', { timeout: 10000 });
+    check(true, `Reports > End of life (${await p.locator('.eol-report tbody tr').count()} devices)`);
     await p.click('nav >> text=Today');
     await p.click('.card:has-text("Briefing") button:has-text("Export")');
     await p.waitForSelector('.modal .briefing-preview table', { timeout: 10000 });
@@ -305,6 +309,10 @@ function pdfFromPages(pages) {
     await p.click('nav >> text=Devices');
     const [l3] = await Promise.all([p.waitForEvent('download', { timeout: 10000 }), p.click('button:has-text("L3 sheet")')]);
     check(/L3 approval numbers/.test(l3.suggestedFilename()), `L3 sheet download: ${l3.suggestedFilename()}`);
+    await p.click('button:has-text("Validity letters")');
+    await p.waitForSelector('.modal >> text=No validity letters yet', { timeout: 10000 });
+    check(true, 'Devices > Validity letters list opens');
+    await p.click('.modal button[aria-label="Close"]');
     // Add on a missing certification asks for its LOA first: nothing is created without one.
     const missBefore = await p.locator("table.cov .cell.miss").count();
     const [chAdd] = await Promise.all([p.waitForEvent('filechooser', { timeout: 5000 }), p.locator('table.cov button:has-text("Add LOA")').first().click()]);

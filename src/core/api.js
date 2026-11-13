@@ -25,6 +25,12 @@ const schedule = require('./schedule');
 const VERSION = require('../../package.json').version;
 // Card brands whose L2 contactless approval a reader needs (US market by default; editable in Settings).
 /** Other devices a record's LOA also certifies (its "Covers devices" list). */
+/** The current contact validity letter that names a device, or null. */
+function currentFamilies(letters, device, n) {
+  return require('./validity').lettersFor(device, letters, n, { iface: 'contact' })[0] || null;
+}
+// Marked by the end of life report (not by a person deciding a device is retired).
+const ASSUMED_EOL = /^Assumed end of life/i;
 function coveredDevices(r) { return String(r.covers || '').split(/[,;\n]/).map((x) => x.trim()).filter(Boolean); }
 
 const DEFAULT_BRANDS = ['Visa', 'Mastercard', 'Amex', 'Discover', 'UnionPay', 'JCB', 'Interac'];
@@ -136,7 +142,57 @@ class AppApi {
       audit: this.store.auditLog({ recordId: id, limit: 200 }),
       coverage: replacement ? coverage(r.expiry_date || (current && current.expiry_date), replacement.issue_date) : null,
       sameReader: this.sameReader(r),
+      validity: this.validityFor(r),
     };
+  }
+
+  // ------------------------------------------------------------ validity letters
+  /**
+   * Manufacturer validity letters read from the inbox (any not rejected):
+   * each says an L2 approval on one model of a family is valid on every model.
+   */
+  validityLetters() {
+    const out = [];
+    for (const it of this.store.listInbox()) {
+      const v = it.parsed && it.parsed.type === 'validity' ? it.parsed.validity : null;
+      if (!v || it.status === 'rejected') continue;
+      out.push({ ...v, inboxId: it.id, document_id: it.document_id, filename: it.filename || '' });
+    }
+    return out;
+  }
+
+  /** Validity letters, newest first, each marked current or replaced by a newer one for the same family and interface. */
+  listValidityLetters() {
+    const { currentLetters } = require('./validity');
+    const all = this.validityLetters();
+    const cur = new Set(currentLetters(all).map((L) => L.inboxId));
+    return all.map((L) => ({ ...L, current: cur.has(L.inboxId) }))
+      .sort((a, b) => String(a.family).localeCompare(String(b.family)) || a.interface.localeCompare(b.interface) || String(b.issued || '').localeCompare(String(a.issued || '')));
+  }
+
+  /** What the validity letters say about one record's device: the letters naming it, its spec name, and any rule it breaks. */
+  validityFor(r, letters = this.validityLetters()) {
+    const V = require('./validity');
+    const n = this.store.norm();
+    const list = V.lettersFor(r.device, letters, n);
+    const out = { letters: list.map((L) => ({ inboxId: L.inboxId, document_id: L.document_id, family: L.family, interface: L.interface, reference: L.reference, issued: L.issued, group: V.groupOf(L, r.device, n), perProduct: L.perProduct, pcdCaveat: L.pcdCaveat })), spec: '', problems: [] };
+    // The bundle's one L2 Contact kernel must meet a letter's minimum for this device.
+    if (r.platform && r.bundle) {
+      const l2c = this.store.listRecords().find((x) => !x.archived && x.category === 'EMV L2 Contact' && x.platform === r.platform && x.bundle === r.bundle && x.kernel_version);
+      const pk = require('./bundles').bundleKernel(this.kernelPages(), { category: 'EMV L2 Contact', platform: r.platform, bundle: r.bundle });
+      const kernel = (l2c && l2c.kernel_version) || (pk && pk.kernel);
+      for (const L of list.filter((x) => x.interface === 'contact')) {
+        const rule = kernel ? V.contactRuleBroken(L, r.device, kernel, n) : null;
+        if (rule) out.problems.push(`${V.letterLabel(L)}: only kernel ${rule.minVersion} or newer may be used on ${r.device}, but ${r.platform} ${r.bundle} runs L2 Contact kernel ${kernel}.`);
+      }
+    }
+    if (r.category !== 'EMV L2 Contactless') return out;
+    out.spec = V.specFor(letters, r.scheme, r.kernel_version);
+    for (const L of list.filter((x) => x.interface === 'contactless')) {
+      const hit = V.nextGenBroken(L, r.device, r.scheme, r.kernel_version, n);
+      if (hit) out.problems.push(`${V.letterLabel(L)}: ${r.scheme} kernel ${r.kernel_version} (${hit.spec}) is listed for the older generation only. Scheme rules do not allow it on ${V.groupOf(L, r.device, n) || 'this device'}.`);
+    }
+    return out;
   }
 
   /** Other L1 records on the same reader module (IFM or PCD): they rest on the same hardware approval. */
@@ -172,6 +228,71 @@ class AppApi {
   setEol(ids, reason = 'Not renewing') {
     return this.store.bulkUpdate(ids || [], { eol: String(reason || '').trim() }, { source: 'manual' }).changed;
   }
+
+  // ------------------------------------------------- likely end of life
+  /**
+   * Certifications expired for a long time (default 1 year, settings.eolAfterDays)
+   * are most likely devices that are no longer supported. Grouped by device:
+   * "device" when every certification of the device has lapsed (end of life
+   * likely), "partial" when some are still valid (one approval not renewed,
+   * often an older kernel). Records already marked as assumed end of life are
+   * listed too, so the report stays complete after marking.
+   */
+  eolCandidates({ days } = {}) {
+    const minDays = Number(days || this.store.getSettings().eolAfterDays || 365);
+    const asOf = todayIso();
+    const cutoff = addDays(asOf, -minDays);
+    const recs = this.listRecords().filter((r) => !r.archived);
+    const n = this.store.norm();
+    const groups = new Map();
+    for (const r of recs) {
+      const assumed = ASSUMED_EOL.test(r.eol || '');
+      if (r.eol && !assumed) continue;
+      if (!r.expiry_date || r.expiry_date > cutoff) continue;
+      const k = `${n(r.device)}|${r.platform || ''}|${r.bundle || ''}`;
+      if (!groups.has(k)) groups.set(k, { device: r.device, platform: r.platform || '', bundle: r.bundle || '', records: [] });
+      groups.get(k).records.push(r);
+    }
+    const out = [];
+    for (const g of groups.values()) {
+      const mine = recs.filter((r) => n(r.device) === n(g.device) && (r.platform || '') === g.platform && (r.bundle || '') === g.bundle);
+      const valid = mine.filter((r) => !r.eol && (!r.expiry_date || r.expiry_date >= asOf));
+      const newest = mine.map((r) => r.expiry_date).filter(Boolean).sort().pop() || '';
+      out.push({
+        ...g,
+        kind: valid.length ? 'partial' : 'device',
+        stillValid: valid.map((r) => ({ id: r.id, category: r.category, scheme: r.scheme, expiry_date: r.expiry_date })),
+        newestExpiry: newest,
+        marked: g.records.every((r) => ASSUMED_EOL.test(r.eol || '')),
+        records: g.records.map((r) => ({ id: r.id, category: r.category, scheme: r.scheme, kernel_version: r.kernel_version || '', approval_number: r.approval_number || '',
+          expiry_date: r.expiry_date, daysExpired: -r.days, eol: r.eol || '', assumed: ASSUMED_EOL.test(r.eol || '') })),
+      });
+    }
+    out.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'device' ? -1 : 1) || String(a.newestExpiry).localeCompare(String(b.newestExpiry)) || a.device.localeCompare(b.device, undefined, { numeric: true }));
+    const count = (f) => out.filter(f).reduce((s, g) => s + g.records.length, 0);
+    return { days: minDays, cutoff, groups: out, toMark: count(() => true) - out.reduce((s, g) => s + g.records.filter((r) => r.assumed).length, 0), marked: out.reduce((s, g) => s + g.records.filter((r) => r.assumed).length, 0), devices: out.filter((g) => g.kind === 'device').length, partial: out.filter((g) => g.kind === 'partial').length };
+  }
+
+  /** Mark certifications as assumed end of life (after a backup). Undo with undoAssumedEol. */
+  markAssumedEol(ids, days) {
+    const d = Number(days || this.store.getSettings().eolAfterDays || 365);
+    const live = new Set(this.eolCandidates({ days: d }).groups.flatMap((g) => g.records.filter((r) => !r.assumed).map((r) => r.id)));
+    const pick = (ids || []).filter((id) => live.has(id));
+    if (!pick.length) return 0;
+    this.backup('before-assumed-eol');
+    const span = d % 365 === 0 ? `${d / 365} year${d === 365 ? '' : 's'}` : `${Math.round(d / 30.4)} months`;
+    return this.setEol(pick, `Assumed end of life: expired over ${span} (from the end of life report)`);
+  }
+
+  /** Track certifications marked as assumed end of life again (all of them, or the ids given). */
+  undoAssumedEol(ids) {
+    const all = this.listRecords().filter((r) => ASSUMED_EOL.test(r.eol || '')).map((r) => r.id);
+    const pick = ids && ids.length ? all.filter((id) => ids.includes(id)) : all;
+    return pick.length ? this.setEol(pick, '') : 0;
+  }
+
+  /** The end of life report as Excel. */
+  exportEolReport(days) { return require('./reports').eolWorkbook(this.eolCandidates({ days })); }
 
   // ----------------------------------------------------------------- archive
   listArchive(q = '') { return this.store.listArchive({ q }); }
@@ -919,7 +1040,8 @@ class AppApi {
     // The record's platform and bundle, plus records not placed in any bundle.
     const same = this.listRecords().filter((r) => ((r.platform || '') === g.platform && (r.bundle || '') === g.bundle) || (!r.platform && !r.bundle));
     const sum = (r) => ({ id: r.id, category: r.category, scheme: r.scheme, approval_number: r.approval_number, issue_date: r.issue_date, expiry_date: r.expiry_date,
-      kernel_version: r.kernel_version, days: r.days, health: r.health, doc_count: r.doc_count, covers: r.covers || '', eol: r.eol || '', renewal_path: r.renewal_path || '', sharedFrom: r.sharedFrom || '' });
+      kernel_version: r.kernel_version, days: r.days, health: r.health, doc_count: r.doc_count, covers: r.covers || '', eol: r.eol || '', renewal_path: r.renewal_path || '', sharedFrom: r.sharedFrom || '', via: r.via || '' });
+    const letters = this.validityLetters();
     const st = (r) => (r.eol ? 'eol' : r.expiry_date ? 'ok' : awaitingLoa(r) ? 'awaiting' : 'nodate');
     const parts = this.deviceParts(same, () => [g]).filter((p) => p.base === base)
       .sort((a, b) => (a.version ? Number(a.version.slice(2)) : 0) - (b.version ? Number(b.version.slice(2)) : 0));
@@ -938,7 +1060,29 @@ class AppApi {
     });
     // The EMV L2 contact kernel is one approval for the whole bundle.
     const l2c = same.find((r) => r.category === 'EMV L2 Contact' && !r.archived && (r.platform || '') === g.platform && (r.bundle || '') === g.bundle);
-    return { device: parts.length ? parts[0].device : device, platform: g.platform, bundle: g.bundle, sections, l2contact: l2c ? sum(l2c) : null };
+    const dev = parts.length ? parts[0].device : device;
+    const names = [...new Set([dev, ...parts.map((p) => p.device)])];
+    const V = require('./validity');
+    const seen = new Set();
+    const validity = names.flatMap((nm) => V.lettersFor(nm, letters, n)).filter((L) => !seen.has(L.inboxId) && seen.add(L.inboxId))
+      .map((L) => ({ inboxId: L.inboxId, document_id: L.document_id, family: L.family, interface: L.interface, reference: L.reference, issued: L.issued, label: V.letterLabel(L), perProduct: L.perProduct, pcdCaveat: L.pcdCaveat, group: names.map((nm) => V.groupOf(L, nm, n)).find(Boolean) || '' }));
+    // The bundle's one L2 Contact LoA names one model; a contact validity letter is what extends it to this one.
+    const pageK = require('./bundles').bundleKernel(this.kernelPages(), { category: 'EMV L2 Contact', platform: g.platform, bundle: g.bundle });
+    const kernel = (l2c && l2c.kernel_version) || (pageK && pageK.kernel) || '';
+    const contactLetters = names.flatMap((nm) => V.lettersFor(nm, letters, n, { iface: 'contact' }));
+    let l2contactNote = null;
+    if (contactLetters.length) {
+      const L = contactLetters[0];
+      const nm = names.find((x) => V.lettersFor(x, [L], n).length) || dev;
+      const rule = kernel ? V.contactRuleBroken(L, nm, kernel, n) : null;
+      l2contactNote = rule
+        ? { level: 'bad', text: `The ${V.letterLabel(L)} allows only kernel ${rule.minVersion} or newer on ${nm}; this bundle runs ${kernel}.` }
+        : { level: 'ok', text: `Covered by the ${V.letterLabel(L)}${(L.products.find((p) => n(p.value) === n(nm)) || {}).condition ? ` (${L.products.find((p) => n(p.value) === n(nm)).condition})` : ''}.` };
+    } else if (l2c && n(l2c.device) !== n(dev)) {
+      const fam = currentFamilies(letters, l2c.device, n);
+      if (fam) l2contactNote = { level: 'warn', text: `The L2 Contact LoA names ${l2c.device}. ${dev} is not listed in the ${V.letterLabel(fam)}${fam.openList ? ', which says its list is not complete' : ''}. Confirm it is part of the family.` };
+    }
+    return { device: dev, platform: g.platform, bundle: g.bundle, sections, l2contact: l2c ? sum(l2c) : null, l2contactNote, validity };
   }
 
   /** Saved device series that share one reader, e.g. { "Reader A": ["Lane/5000", "Lane/3600", "Desk/1700"] }. */
@@ -1915,7 +2059,7 @@ class AppApi {
     return { renamed, merged, skipped };
   }
 
-  dataChecks() { return require('./integrity').dataChecks(this.listRecords(), { norm: this.store.norm(), pages: this.kernelPages() }); }
+  dataChecks() { return require('./integrity').dataChecks(this.listRecords(), { norm: this.store.norm(), pages: this.kernelPages(), validity: this.validityLetters() }); }
 
   /** The data checks with clean-up recommendations from the local AI when it is on. */
   async aiDataReview() {
@@ -2023,7 +2167,7 @@ const PUBLIC_METHODS = [
   'listArchive', 'archiveCount', 'expiredRecords', 'archiveExpired', 'restoreArchived', 'purgeArchived',
   'activateReplacement', 'deviceCoverage', 'deviceProfile', 'listBundles', 'bundleView', 'kernelCatalog', 'setKernelCatalog', 'removeKernelBundle', 'importKernelCatalog', 'readBundlePage', 'bundleDifferences', 'cleanBundle', 'bundleReport', 'checkRecord', 'listReaderGroups', 'setReaderGroup', 'listFamilyNotes', 'setCoverageNA', 'createMissing', 'createSlot', 'addCertWithLoa', 'listTags', 'knownDevices', 'listAliases', 'listLearned', 'forgetLearned', 'setAlias', 'listFieldAliases', 'setFieldAlias', 'listPlatformDevices', 'setPlatformDevices', 'platformForDevice', 'devicesOnPlatform', 'applyPlatformDevices', 'previewAlias', 'applyAllAliases', 'listImports', 'getDashboard', 'getActions', 'setTask', 'digest', 'notificationHistory',
   'ingestDocument', 'documentFile', 'listInbox', 'setInboxKernel', 'certQuestions', 'syncFromBundlePages', 'clCleanupPlan', 'applyClCleanup', 'removeKernelLabel', 'certStatus', 'readCertReply', 'applyCertReply', 'listLetterTemplates', 'saveLetterTemplate', 'removeLetterTemplate', 'previewLetterTemplate', 'sampleLetterType', 'platformReference', 'setBundleCount', 'allBundles', 'applyInbox', 'rejectInbox', 'setInboxDefaults', 'approveInboxMany', 'rejectInboxMany', 'approveAllSafe', 'rematch', 'rereadInbox', 'listDocuments',
-  'documentText', 'deviceView', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'setEol', 'dataChecks', 'aiDataReview', 'briefingReport', 'exportL3Sheet', 'duplicateInfo', 'mapDuplicate', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
+  'documentText', 'deviceView', 'listValidityLetters', 'eolCandidates', 'markAssumedEol', 'undoAssumedEol', 'exportEolReport', 'unlinkDocument', 'checkAttach', 'linkDocumentToRecord', 'setEol', 'dataChecks', 'aiDataReview', 'briefingReport', 'exportL3Sheet', 'duplicateInfo', 'mapDuplicate', 'attachNewDocument', 'assistInbox', 'importTracker', 'importPortal', 'loadSampleData', 'clearAllData',
   'summaryReport', 'exportExcel', 'exportCsv', 'portalChanges', 'heldChanges', 'exportChangeRequest', 'auditLog', 'aiStatus', 'aiBriefing', 'aiAsk',
   'aiDraftEmail', 'addTeamEmail', 'listTeamEmails', 'answerTeamEmail', 'applyTeamEmail', 'closeTeamEmail', 'aiReadTeamEmail', 'backup', 'listBackups', 'restore', 'health',
 ];

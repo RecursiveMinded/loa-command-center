@@ -5,6 +5,7 @@ import { useState, useEffect } from 'preact/hooks';
 import { html, Icon, Drawer, Spinner, fmtDate, HealthPill, toastError } from '../lib.js';
 import { call } from '../api.js';
 import { DeviceCerts } from './record.js';
+import { openDoc } from '../docs.js';
 
 export function DeviceDrawer({ dev, app, onClose }) {
   const [p, setP] = useState(null);
@@ -23,6 +24,10 @@ export function DeviceDrawer({ dev, app, onClose }) {
     ${!p.sections.length ? html`<div class="empty"><${Icon} name="shield" /><h3>No certifications for ${dev.device}</h3><div>Add its LOAs in the LOA inbox.</div></div>` : html`
     <div class="loa-strip"><${Icon} name="grid" /><span class="grow"><b>EMV L2 Contact kernel</b> <span class="faint small">· one approval for the whole ${p.bundle || 'bundle'}</span></span>
       ${l2 ? html`<a onClick=${() => app.openRecord(l2.id)}>${l2.kernel_version ? `v${l2.kernel_version} · ` : ''}expires ${fmtDate(l2.expiry_date) || 'no date'}</a> <${HealthPill} r=${l2} />` : html`<span class="bad-text small">Not on file</span>`}</div>
+    ${p.l2contactNote ? html`<div class=${`callout ${p.l2contactNote.level === 'ok' ? 'good' : p.l2contactNote.level}`} style="margin:-4px 0 10px">${p.l2contactNote.text}</div>` : null}
+    ${(p.validity || []).length ? html`<div class="loa-strip"><${Icon} name="file" /><span class="grow"><b>Validity letters</b> <span class="faint small">· the manufacturer's word that one family LoA covers every model</span>
+      ${p.validity.map((L) => html`<div class="small">${L.label}${L.group ? ` · ${L.group}` : ''} · ${L.interface === 'contact' ? 'a sibling\'s L2 Contact LoA covers this device' : 'evidence only: contactless approvals stay per product'}</div>`)}</span>
+      ${p.validity.filter((L) => L.document_id).slice(0, 2).map((L) => html`<button class="btn sm ghost" onClick=${() => openDoc({ id: L.document_id })}><${Icon} name="eye" /> ${L.interface}</button>`)}</div>` : null}
     <${DeviceCerts} p=${p} app=${app} reload=${load} />`}
   <//>`;
 }
