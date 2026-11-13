@@ -394,6 +394,13 @@ function pdfFromPages(pages) {
     await p.mouse.move(bb.x + bb.width * 0.95, bb.y + bb.height * 0.218, { steps: 4 });
     await p.mouse.up();
     await p.waitForSelector('table.tpl-read >> text=Jan 5, 2029');
+    await p.click('.tpl-tools button:has-text("Undo")');
+    check(await p.locator('.tpl-stage .tpl-box').count() === 0, 'letter template: Undo takes the box back');
+    await p.click('.tpl-tools button:has-text("Redo")');
+    await p.locator('.tpl-stage .tpl-x').first().click();
+    check(await p.locator('.tpl-stage .tpl-box').count() === 0, 'letter template: × on a box removes it');
+    await p.keyboard.press('Control+z');
+    await p.waitForSelector('table.tpl-read >> text=Jan 5, 2029');
     await p.click('button:has-text("Save template")');
     await p.waitForSelector('.tpl-type.on >> text=1 box');
     check(true, 'letter template: a box drawn on a sample reads the expiry date and is saved');
