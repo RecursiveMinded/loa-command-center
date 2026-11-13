@@ -1593,3 +1593,34 @@ test('letter templates: a template saved before any box is drawn is kept until r
   api.removeLetterTemplate('pci');
   assert.equal(api.listLetterTemplates().types.find((x) => x.key === 'pci').template, null);
 });
+
+test('website pages: kernel table kept whole: Discover ZIP apart from D-PAS, full kernel builds, rows on the next page', async () => {
+  const { contextFromText } = require('../src/core/portal');
+  const page1 = `Kernel Bundle 1
+This kernel bundle for NWP uses the EMV Contact kernel v9.01, which expires on 04/02/23 located here .
+Specification   Kernel
+EMV Contact   9.01
+Visa Paywave   070000
+Mastercard Paypass   087300 0306
+Discover DPAS   0311
+Discover ZIP   0200
+JCB Speedy   030001
+https://example.test/nwp-kernel-bundle-1.html   1/11
+11/13/26, 9:40 AM   Kernel Bundle 1 - EMV LoA
+Specification   Kernel
+Interac Flash   0200
+Terminal & Level 1 Certifications`;
+  const c = contextFromText(page1);
+  assert.equal(c.kernels.Discover, '0311', 'Discover ZIP never replaces the D-PAS kernel');
+  assert.equal(c.kernels['Discover ZIP'], '0200');
+  assert.equal(c.kernels.Mastercard, '087300 0306', 'a Kernel-only column keeps every number');
+  assert.equal(c.kernels.Interac, '0200', 'the table continues on the next printed page');
+  const arc = contextFromText(`Kernel Bundle 5 Rev 00
+This kernel bundle of NWA uses the EMV Contact kernel v3.02, which expires on 01/01/28 located here .
+Specification   Kernel Version   App Version
+EMV Contact   0302   002.00.008
+Mastercard Paypass   0404 020006   002.00.008
+Visa Paywave   0302   002.00.012`);
+  assert.equal(arc.kernels.Mastercard, '0404 020006');
+  assert.equal(arc.appVersions.Visa, '002.00.012');
+});

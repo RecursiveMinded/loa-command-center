@@ -32,23 +32,35 @@ function classifyHeader(cells) {
   return null;
 }
 
-// The page's specification table names each brand's L2 kernel version:
+// The page's specification table names each brand's L2 kernel version. Its columns vary by page:
+//   "Mastercard Paypass   087300 0306"       (Kernel only: every number is the kernel build)
 //   "Visa Paywave   2.2   070803"            (Card Version, Kernel Version)
 //   "Visa Paywave   0302  002.00.012"        (Kernel Version, App Version)
+// The table can continue on the next printed page under a repeated header.
+// "Discover ZIP" is Discover's legacy magstripe kernel, not D-PAS: it is kept apart so it
+// never takes the place of the Discover (D-PAS) kernel.
 const ID = Symbol('kernel ids');
+const APP = Symbol('app versions');
 function kernelTable(t) {
   const out = {};
   const head = t.match(/Specification\s+(Card\s+Version\s+Kernel\s+Version|Kernel\s+Version\s+App\s+Version|Kernel(?:\s+Version)?\b)/i);
   if (!head) return out;
   const kernelLast = /^Card/i.test(head[1]);
-  const lines = t.slice(head.index + head[0].length).split(/\n/).slice(0, 40);
+  const appLast = /App/i.test(head[1]);
+  const lines = t.slice(head.index + head[0].length).split(/\n/).slice(0, 160);
   for (const line of lines) {
     const m = line.trim().match(/^([A-Za-z][A-Za-z ]+?)\s+(\d[\d./ ]*)$/);
-    if (!m) { if (/Terminal|Certifications/i.test(line)) break; continue; }
-    const brand = normalizeScheme(m[1].replace(/\s+(paywave|paypass|expresspay|dpas|d-pas|quickpay|quickpass|speedy|flash)$/i, '').trim());
+    if (!m) { if (/Terminal\s*&|Level\s*1\s+Certifications|^\s*Terminal\s+(Version|Visa|Bulletin)/i.test(line)) break; continue; }
+    const name = m[1].trim();
+    const brand = /\bzip\b/i.test(name) ? 'Discover ZIP'
+      : normalizeScheme(name.replace(/\s+(paywave|paypass|expresspay|dpas|d-pas|quickpay|quickpass|speedy|flash)$/i, '').trim());
+    if (Object.prototype.hasOwnProperty.call(out, brand)) continue; // a brand's first row wins
     const nums = m[2].trim().split(/\s+/);
-    const kernel = kernelLast ? nums[nums.length - 1] : (nums.length > 1 ? nums.slice(0, -1) : nums).join(' ');
-    if (kernel) { out[brand] = kernel; (out[ID] = out[ID] || {})[brand] = kernelLast ? nums : kernel.split(' '); }
+    const kernel = kernelLast ? nums[nums.length - 1] : appLast && nums.length > 1 ? nums.slice(0, -1).join(' ') : nums.join(' ');
+    if (!kernel) continue;
+    out[brand] = kernel;
+    (out[ID] = out[ID] || {})[brand] = kernelLast ? nums : kernel.split(' ');
+    if (appLast && nums.length > 1) (out[APP] = out[APP] || {})[brand] = nums[nums.length - 1];
   }
   return out;
 }
@@ -66,6 +78,8 @@ function contextFromText(text) {
     kernels: kernels,
     // Every number the kernel table gives a brand (card version and kernel build), for matching letters.
     kernelIds: kernels[ID] || {},
+    // The application version printed next to each kernel (pages with an App Version column).
+    appVersions: kernels[APP] || {},
   };
 }
 

@@ -87,7 +87,7 @@ export function Bundles({ app }) {
       <div class="kpis compact mt">
         <div><div class="v">${cur.dates}</div><div class="l">expiry dates in the app</div></div>
         <div><div class="v">${cur.page ? cur.page.dates : '—'}</div><div class="l">${cur.page ? `on the website page` : 'website page not read yet'}</div></div>
-        <div class="grow muted small">${cur.page ? html`Page: <b>${cur.page.filename}</b>, read ${fmtWhen(cur.page.at)}` : 'Read the bundle page to check every date against it.'}</div>
+        <div class="grow muted small">${cur.page ? html`Page: <b>${cur.page.filename}</b>, read ${fmtWhen(cur.page.at)}${cur.page.stale ? html` <span class="pill warning" title="The page reader was improved after this page was read (Discover ZIP no longer replaces the Discover D-PAS kernel; full Mastercard kernel builds). Read the page again to refresh the kernels.">read it again</span>` : null}` : 'Read the bundle page to check every date against it.'}</div>
       </div>`}
       ${cur.issues && !cur.issues.ok ? html`<div class="callout warn mt row"><${Icon} name="warn" /><span class="grow">${describe(cur.issues)}</span>
         <button class="btn sm primary" onClick=${openDiff}>Review and fix</button></div>`
