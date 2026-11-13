@@ -8,6 +8,7 @@
 
 const { parseDate, findDates, addYears, addMonths, wordToNumber, MONTH_RE } = require('./dates');
 const { splitProducts } = require('./devices');
+const { parseValidity, SIGNATURE: VALIDITY } = require('./validity');
 
 // ---------------------------------------------------------------------------
 // Letter boundaries
@@ -30,6 +31,8 @@ const STARTS = [
   { type: 'eftpos', re: /eftpos[\s\S]{0,60}?(?:Letter\s+of\s+Approval|Certificate)/i },
   { type: 'loe', re: /Letter\s+of\s+Equivalen(?:cy|ce)/i },
   { type: 'bulletin', re: /Product\s+Configuration\s+Bulletin/i },
+  // A manufacturer's statement that an L2 LoA on one family model is valid on every model.
+  { type: 'validity', re: VALIDITY },
 ];
 
 /**
@@ -471,6 +474,15 @@ const ISSUERS = {
     dates: (t, base) => ({ issue: base.letterDate, expiry: null, basis: 'No expiration (equivalency statement)' }),
   },
 
+  // Validity letter: no expiry of its own; coverage lasts as long as the LoA it points at.
+  validity: {
+    issuer: 'Manufacturer', scheme: 'Other', informational: true,
+    category: () => 'Validity Letter',
+    products: (t) => { const v = parseValidity(t); return v ? v.products.map((p) => field(p.value, p.value, 0.8)) : []; },
+    approval: (t) => { const v = parseValidity(t); return v && v.reference ? field(v.reference, v.reference, 0.9) : null; },
+    dates: (t, base) => { const v = parseValidity(t); return { issue: v && v.issued ? field(v.issued, v.issued, 0.85) : base.letterDate, expiry: null, basis: 'No expiration (validity letter: lasts as long as the LoA it points at)' }; },
+  },
+
   bulletin: {
     issuer: 'Manufacturer', scheme: 'EMVCo', informational: true,
     category: (t) => (/Level\s*1\s+Contactless|\bPCD\b/i.test(t.slice(0, 400)) ? 'EMV L1 Contactless' : /Level\s*1\s+Contact/i.test(t.slice(0, 400)) ? 'EMV L1 Contact' : 'Other'),
@@ -655,6 +667,7 @@ function parseLetter(seg) {
   r.restricted = restrictedFlag(t);
   r.renewalType = /restricted\s+renewal/i.test(t) ? 'Restricted Renewal' : /[-–]\s*Renewal\b/i.test(t) ? 'Renewal' : 'Initial';
   r.type = seg.type;
+  if (seg.type === 'validity') r.validity = parseValidity(t);
   r.pageStart = seg.pageStart;
   r.pageEnd = seg.pageEnd;
   r.excerpt = clean(t).slice(0, 600);

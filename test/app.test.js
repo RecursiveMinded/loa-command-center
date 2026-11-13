@@ -1624,3 +1624,118 @@ Visa Paywave   0302   002.00.012`);
   assert.equal(arc.kernels.Mastercard, '0404 020006');
   assert.equal(arc.appVersions.Visa, '002.00.012');
 });
+
+test('validity letters: a contact letter is read with its products, footnote minimum kernel and basis', () => {
+  const V = require('../src/core/validity');
+  const { parseDocument } = require('../src/core/loa-parser');
+  const v = V.parseValidity(L.validityContact);
+  assert.equal(v.family, 'Nimbus');
+  assert.equal(v.interface, 'contact');
+  assert.equal(v.reference, 'NWT-000111-001');
+  assert.equal(v.issued, '2024-04-11');
+  assert.equal(v.basis, 'EMVCo Type Approval Bulletin 11 (June 2021)');
+  assert.equal(v.openList, true, '"Among others": the list is not complete');
+  assert.deepEqual(v.products.map((p) => p.value), ['Nim/1000', 'Nim/2000', 'Nim/3000', 'Cloud/500', 'Rain/7000', 'Nim/1600', 'Rain/8000']);
+  assert.equal(v.products.find((p) => p.value === 'Nim/1600').condition, 'kernel 09.06 or newer');
+  assert.deepEqual(v.restrictions.map((r) => [r.minVersion, r.devices]), [['09.06', ['Nim/1600', 'Rain/8000']]]);
+  const [doc] = parseDocument([L.validityContact]);
+  assert.equal(doc.type, 'validity');
+  assert.equal(doc.category, 'Validity Letter');
+  assert.equal(doc.informational, true, 'a validity letter changes no dates');
+  assert.equal(doc.expiryDate, null);
+  // Minimum kernel: dotted and undotted versions compare the same way.
+  assert.ok(V.cmpVersion('9.04', '09.06') < 0);
+  assert.ok(V.cmpVersion('0906', '09.06') === 0);
+  assert.ok(V.cmpVersion('10.01', '09.06') > 0);
+});
+
+test('validity letters: a contactless letter lists kernels per brand with spec names and the newer-generation column', () => {
+  const V = require('../src/core/validity');
+  const v = V.parseValidity(L.validityContactless);
+  assert.equal(v.interface, 'contactless');
+  assert.equal(v.family, 'NWX');
+  assert.equal(v.perProduct, true);
+  assert.equal(v.pcdCaveat, true);
+  assert.deepEqual(v.products.map((p) => `${p.value}:${p.group}`), ['NWX DX4000:NWX', 'NWX DX2:NWX Next-Gen', 'NWX DX8000:NWX', 'NWX DX8:NWX Next-Gen', 'NWX SX7000:NWX']);
+  const mc = v.kernels.filter((k) => k.brand === 'Mastercard');
+  assert.deepEqual(mc.map((k) => [k.versions[0], k.nextGen]), [['04.04', true], ['04.03', false]]);
+  assert.deepEqual(v.kernels.find((k) => k.brand === 'Visa').versions, ['070000', '070803']);
+  assert.deepEqual(v.kernels.find((k) => k.brand === 'UnionPay').versions, ['03.03'], 'a version glued to the kernel name');
+  const dpas = v.kernels.filter((k) => k.brand === 'Discover');
+  assert.deepEqual(dpas.map((k) => [k.versions[0], k.zip]), [['0311', false], ['0200', true]], 'D-PAS and the legacy ZIP kernel are told apart');
+  assert.equal(V.specFor([v], 'Mastercard', '0403'), 'MasterCard MCL3.1.4');
+});
+
+test('validity letters: a scanned (OCR) contact letter and a sentence product list are read', () => {
+  const V = require('../src/core/validity');
+  const ocr = `Ref. / NWT-OPE-2019-0024-LB Springfield, 29 January 2019
+Subject / Validity of EMV contact LoA on the Nimbus 2 family of products
+I hereby certify that all hardware variants of the products of the Nimbus 2 family are minor
+changes according to EMVCo Type Approval Bulletin N° 11 of February 2017.
+Among others, the following products are covered by this letter:
+- iNM220, iNM250, iDN280
+- iSMP, iSMP-C, iSMP2, iSelf
+Yours faithfully,`;
+  const v = V.parseValidity(ocr);
+  assert.equal(v.family, 'Nimbus 2');
+  assert.equal(v.reference, 'NWT-OPE-2019-0024-LB');
+  assert.deepEqual(v.products.map((p) => p.value), ['iNM220', 'iNM250', 'iDN280', 'iSMP', 'iSMP-C', 'iSMP2', 'iSelf']);
+  const moby = V.parseValidity(`Dear Customer,
+Northwind Inc. uses the same EMV Contactless Kernel versions in the products listed here; NIM EM3,
+NIM EM3 TDA, NIM EM5, fully supporting the transaction features set of each device.
+The kernel versions are:
+    •   Visa Paywave V2.2
+    •   Mastercard Contactless 4.0
+If you have any questions, please ask.`);
+  assert.equal(moby.interface, 'contactless');
+  assert.deepEqual(moby.products.map((p) => p.value), ['NIM EM3', 'NIM EM3 TDA', 'NIM EM5']);
+  assert.deepEqual(moby.kernels.map((k) => [k.brand, k.spec]), [['Visa', 'Visa Paywave V2.2'], ['Mastercard', 'Mastercard Contactless 4.0']]);
+});
+
+test('validity letters in the app: kept without review, a newer one replaces the older, and their fine print is checked', async () => {
+  const { api } = await fresh();
+  const d = addDays(todayIso(), 400);
+  const res = api.ingestDocument({ filename: 'Nimbus contact validity.pdf', bytes: Buffer.from('v1'), pages: [L.validityContact] });
+  api.ingestDocument({ filename: 'NWX contactless validity.pdf', bytes: Buffer.from('v2'), pages: [L.validityContactless] });
+  assert.ok(res);
+  const items = api.store.listInbox().filter((it) => it.parsed.type === 'validity');
+  assert.equal(items.length, 2);
+  assert.ok(items.every((it) => it.status === 'info' && !it.proposals.length), 'no review needed: no dates change');
+  let list = api.listValidityLetters();
+  assert.deepEqual(list.map((x) => `${x.family}|${x.interface}|${x.current}`).sort(), ['NWX|contactless|true', 'Nimbus|contact|true']);
+  // A newer letter for the same family and interface replaces the older one.
+  api.ingestDocument({ filename: 'Nimbus contact validity 2026.pdf', bytes: Buffer.from('v3'), pages: [L.validityContact.replace('11 April 2024', '9 April 2026').replace('NWT-000111-001', 'NWT-000111-009')] });
+  list = api.listValidityLetters().filter((x) => x.family === 'Nimbus');
+  assert.deepEqual(list.map((x) => [x.reference, x.current]), [['NWT-000111-009', true], ['NWT-000111-001', false]]);
+
+  // Contact: the bundle's one L2 Contact LoA names Nim/1000; Nim/1600 may only run 09.06 or newer.
+  const mk = (device, category, scheme, extra = {}) => api.store.createRecord({ device, category, scheme, platform: 'UPP', bundle: 'Bundle 2', expiry_date: d, ...extra });
+  mk('Nim/1000', 'EMV L2 Contact', 'EMVCo', { kernel_version: '9.04' });
+  mk('Nim/2000', 'EMV L1 Contact', 'EMVCo');
+  const n1600 = mk('Nim/1600', 'EMV L1 Contact', 'EMVCo');
+  mk('Gale/9000', 'EMV L1 Contact', 'EMVCo');
+  const ok = api.deviceView({ device: 'Nim/2000', platform: 'UPP', bundle: 'Bundle 2' });
+  assert.equal(ok.l2contactNote.level, 'ok');
+  assert.match(ok.l2contactNote.text, /Nimbus contact validity letter NWT-000111-009/);
+  assert.equal(ok.validity.length, 1);
+  const bad = api.deviceView({ device: 'Nim/1600', platform: 'UPP', bundle: 'Bundle 2' });
+  assert.equal(bad.l2contactNote.level, 'bad');
+  assert.match(bad.l2contactNote.text, /only kernel 09\.06 or newer on Nim\/1600; this bundle runs 9\.04/);
+  const stray = api.deviceView({ device: 'Gale/9000', platform: 'UPP', bundle: 'Bundle 2' });
+  assert.equal(stray.l2contactNote.level, 'warn', 'a device the family letter does not list');
+  assert.match(api.getRecord(n1600.id).validity.problems[0], /09\.06 or newer/);
+  const checks = api.dataChecks();
+  const ck = checks.find((c) => c.key === 'validity-contact-kernel');
+  assert.ok(ck && ck.recordIds.includes(n1600.id));
+
+  // Contactless: an older kernel on a newer-generation model breaks the scheme rule; on the older model it is fine.
+  const dx2 = api.store.createRecord({ device: 'NWX DX2', category: 'EMV L2 Contactless', scheme: 'Mastercard', platform: 'ARC', bundle: 'Bundle 5', kernel_version: '0403', expiry_date: d });
+  const dx4 = api.store.createRecord({ device: 'NWX DX4000', category: 'EMV L2 Contactless', scheme: 'Mastercard', platform: 'ARC', bundle: 'Bundle 5', kernel_version: '0403', expiry_date: d });
+  const ng = api.dataChecks().find((c) => c.key === 'validity-next-gen');
+  assert.deepEqual(ng.recordIds, [dx2.id]);
+  const r = api.getRecord(dx2.id).validity;
+  assert.equal(r.spec, 'MasterCard MCL3.1.4');
+  assert.match(r.problems[0], /older generation only/);
+  assert.equal(api.getRecord(dx4.id).validity.problems.length, 0);
+  assert.equal(api.getRecord(dx4.id).validity.letters[0].interface, 'contactless');
+});

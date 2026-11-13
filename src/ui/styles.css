@@ -474,3 +474,6 @@ table.tpl-read .sw, .tpl .chip .sw { display: inline-block; width: 9px; height: 
 .tpl-box .tpl-x { pointer-events: auto; margin-left: 4px; border: 0; background: rgba(0,0,0,.25); color: #fff; border-radius: 3px; cursor: pointer; font-size: 12px; line-height: 14px; padding: 0 4px; }
 .tpl-box .tpl-x:hover { background: rgba(0,0,0,.5); }
 .tpl-tools { gap: 6px; align-items: center; }
+.vl-grid { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; }
+.vl-grid .k { color: var(--muted); font-size: 12px; }
+.callout.validity table { width: 100%; }
